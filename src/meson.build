@@ -283,6 +283,7 @@ aegisub_core_src = files(
     'ass_karaoke.cpp',
     'ass_override.cpp',
     'ass_parser.cpp',
+    'ass_style.cpp',
     'ass_style_storage.cpp',
 
     # yardımcılar
