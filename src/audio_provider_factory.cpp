@@ -16,10 +16,15 @@
 
 #include "audio_provider_factory.h"
 
+#ifndef AGI_CORE
 #include "compat.h"
+#include "utils.h"
+#else
+// Velsub Faz 1 (P1.3): çekirdekte provider seçimi agi::compat'tan sorgulanır.
+#include "core/compat/ui_abi.h"
+#endif
 #include "factory_manager.h"
 #include "options.h"
-#include "utils.h"
 
 #include <libaegisub/audio/provider.h>
 #include <libaegisub/format.h>
@@ -126,7 +131,14 @@ std::unique_ptr<agi::AudioProvider> SelectAudioProvider(fs::path const& filename
 	for (auto const& f : remaining_providers)
 		names.push_back(f->name);
 
+#ifdef AGI_CORE
+	int choice = agi::compat::single_choice(
+		agi::format("Could not open %s with the preferred provider:\n\n%s\nPlease choose a different audio provider to try:", filename.string(), errors),
+		"Error loading audio",
+		names);
+#else
 	int choice = wxGetSingleChoiceIndex(agi::format("Could not open %s with the preferred provider:\n\n%s\nPlease choose a different audio provider to try:", filename.string(), errors), _("Error loading audio"), to_wx(names));
+#endif
 	if (choice == -1) {
 		throw agi::UserCancelException("audio loading cancelled by user");
 	}

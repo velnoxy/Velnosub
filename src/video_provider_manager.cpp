@@ -16,7 +16,6 @@
 
 #include "video_provider_manager.h"
 
-#include "compat.h"
 #include "factory_manager.h"
 #include "include/aegisub/video_provider.h"
 #include "options.h"
@@ -27,7 +26,14 @@
 
 #include <boost/range/iterator_range.hpp>
 
+#ifndef AGI_CORE
+#include "compat.h"
 #include <wx/choicdlg.h>
+#include <wx/intl.h>
+#else
+// Velsub Faz 1 (P1.3): çekirdekte provider seçimi agi::compat'tan sorgulanır.
+#include "core/compat/ui_abi.h"
+#endif
 
 std::unique_ptr<VideoProvider> CreateDummyVideoProvider(agi::fs::path const&, std::string const&, agi::BackgroundRunner *);
 std::unique_ptr<VideoProvider> CreateYUV4MPEGVideoProvider(agi::fs::path const&, std::string const&, agi::BackgroundRunner *);
@@ -207,7 +213,14 @@ std::unique_ptr<VideoProvider> VideoProviderFactory::GetProvider(agi::fs::path c
 	for (auto const& f : remaining_providers)
 		names.push_back(f->name);
 
+#ifdef AGI_CORE
+	int choice = agi::compat::single_choice(
+		agi::format("Could not open %s with the preferred provider:\n\n%s\nPlease choose a different video provider to try:", filename.string(), errors),
+		"Error loading video",
+		names);
+#else
 	int choice = wxGetSingleChoiceIndex(agi::format("Could not open %s with the preferred provider:\n\n%s\nPlease choose a different video provider to try:", filename.string(), errors), _("Error loading video"), to_wx(names));
+#endif
 	if (choice == -1) {
 		throw agi::UserCancelException("video loading cancelled by user");
 	}

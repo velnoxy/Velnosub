@@ -34,14 +34,19 @@
 
 #include "charset_detect.h"
 
+#ifndef AGI_CORE
 #include "compat.h"
-
-#include <libaegisub/charset.h>
-#include <libaegisub/charset_conv.h>
-
 #include <wx/arrstr.h>
 #include <wx/choicdlg.h>
 #include <wx/intl.h>
+#else
+// Velsub Faz 1 (P1.3): çekirdek yolunda seçim agi::compat üzerinden sorgulanır.
+#include "core/compat/ui_abi.h"
+#endif
+
+#include <libaegisub/charset.h>
+#include <libaegisub/charset_conv.h>
+#include <libaegisub/exception.h>
 
 namespace CharSetDetect {
 
@@ -50,13 +55,25 @@ std::string GetEncoding(agi::fs::path const& filename) {
 	if (!encoding.empty())
 		return encoding;
 
+#ifdef AGI_CORE
+	auto choices = agi::charset::GetEncodingsList<std::vector<std::string>>();
+	int choice = agi::compat::single_choice(
+		"Aegisub could not narrow down the character set to a single one.\nPlease pick one below:",
+		"Choose character set",
+		choices);
+#else
 	auto choices = agi::charset::GetEncodingsList<wxArrayString>();
 	int choice = wxGetSingleChoiceIndex(
 		_("Aegisub could not narrow down the character set to a single one.\nPlease pick one below:"),
 		_("Choose character set"),
 		choices);
+#endif
 	if (choice == -1) throw agi::UserCancelException("Cancelled encoding selection");
+#ifdef AGI_CORE
+	return choices[choice];
+#else
 	return from_wx(choices[choice]);
+#endif
 }
 
 }

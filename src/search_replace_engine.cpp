@@ -18,17 +18,26 @@
 
 #include "ass_dialogue.h"
 #include "ass_file.h"
-#include "format.h"
 #include "include/aegisub/context.h"
 #include "selection_controller.h"
 #include "text_selection_controller.h"
+
+#ifndef AGI_CORE
+// Velsub Faz 1 (P1.3): masaüstü wx i18n'li kalır (fmt_tl/_).
+#include "format.h"
+#else
+#include "core/compat/ui_abi.h"
+#include <libaegisub/format.h>
+#endif
 
 #include <libaegisub/exception.h>
 #include <libaegisub/util.h>
 
 #include <boost/locale/conversion.hpp>
 
+#ifndef AGI_CORE
 #include <wx/msgdlg.h>
+#endif
 
 namespace {
 static const size_t bad_pos = -1;
@@ -186,7 +195,11 @@ bool SearchReplaceEngine::FindReplace(bool replace) {
 			if (end == bad_pos || (pos == replace_ms.start && end == replace_ms.end)) {
 				Replace(line, replace_ms);
 				pos = replace_ms.end;
+#ifdef AGI_CORE
+				context->ass->Commit("replace", AssFile::COMMIT_DIAG_TEXT);
+#else
 				context->ass->Commit(_("replace"), AssFile::COMMIT_DIAG_TEXT);
+#endif
 			}
 			else {
 				// The current line matches, but it wasn't already selected,
@@ -270,11 +283,22 @@ bool SearchReplaceEngine::ReplaceAll() {
 	}
 
 	if (count > 0) {
+#ifdef AGI_CORE
+		context->ass->Commit("replace", AssFile::COMMIT_DIAG_TEXT);
+		agi::compat::confirm(
+			count == 1 ? std::string("One match was replaced.") : agi::format("%d matches were replaced.", (int)count),
+			"Replace", 0);
+#else
 		context->ass->Commit(_("replace"), AssFile::COMMIT_DIAG_TEXT);
 		wxMessageBox(fmt_plural(count, "One match was replaced.", "%d matches were replaced.", (int)count));
+#endif
 	}
 	else {
+#ifdef AGI_CORE
+		agi::compat::confirm("No matches found.", "Replace", 0);
+#else
 		wxMessageBox(_("No matches found."));
+#endif
 	}
 
 	return true;

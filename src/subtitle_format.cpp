@@ -36,8 +36,15 @@
 
 #include "ass_dialogue.h"
 #include "ass_file.h"
+#ifndef AGI_CORE
 #include "compat.h"
 #include "format.h"
+#include <wx/intl.h>
+#else
+// Velsub Faz 1 (P1.3): FPS seçimi agi::compat'tan sorgulanır.
+#include "core/compat/ui_abi.h"
+#include <libaegisub/format.h>
+#endif
 #include "subtitle_format_ass.h"
 #include "subtitle_format_ebu3264.h"
 #include "subtitle_format_encore.h"
@@ -56,7 +63,9 @@
 #include <algorithm>
 #include <boost/algorithm/string/join.hpp>
 #include <boost/algorithm/string/replace.hpp>
+#ifndef AGI_CORE
 #include <wx/choicdlg.h>
+#endif
 
 namespace {
 	std::vector<std::unique_ptr<SubtitleFormat>> formats;
@@ -93,9 +102,41 @@ bool SubtitleFormat::CanSave(const AssFile *subs) const {
 }
 
 agi::vfr::Framerate SubtitleFormat::AskForFPS(bool allow_vfr, bool show_smpte, agi::vfr::Framerate const& fps) {
+	bool vidLoaded = false;
+
+	int choice;
+#ifdef AGI_CORE
+	// Çekirdek: ham UTF-8 listesi; çeviriyi UI yapar.
+	std::vector<std::string> choices;
+	if (fps.IsLoaded()) {
+		vidLoaded = true;
+		if (!fps.IsVFR())
+			choices.push_back(agi::format("From video (%g)", fps.FPS()));
+		else if (allow_vfr)
+			choices.push_back("From video (VFR)");
+		else
+			vidLoaded = false;
+	}
+
+	// Standard FPS values
+	choices.push_back("15.000 FPS");
+	choices.push_back("23.976 FPS (Decimated NTSC)");
+	choices.push_back("24.000 FPS (FILM)");
+	choices.push_back("25.000 FPS (PAL)");
+	choices.push_back("29.970 FPS (NTSC)");
+	if (show_smpte)
+		choices.push_back("29.970 FPS (NTSC with SMPTE dropframe)");
+	choices.push_back("30.000 FPS");
+	choices.push_back("50.000 FPS (PAL x2)");
+	choices.push_back("59.940 FPS (NTSC x2)");
+	choices.push_back("60.000 FPS");
+	choices.push_back("119.880 FPS (NTSC x4)");
+	choices.push_back("120.000 FPS");
+
+	choice = agi::compat::single_choice("Please choose the appropriate FPS for the subtitles:", "FPS", choices);
+#else
 	wxArrayString choices;
 
-	bool vidLoaded = false;
 	if (fps.IsLoaded()) {
 		vidLoaded = true;
 		if (!fps.IsVFR())
@@ -123,8 +164,9 @@ agi::vfr::Framerate SubtitleFormat::AskForFPS(bool allow_vfr, bool show_smpte, a
 
 	bool was_busy = wxIsBusy();
 	if (was_busy) wxEndBusyCursor();
-	int choice = wxGetSingleChoiceIndex(_("Please choose the appropriate FPS for the subtitles:"), _("FPS"), choices);
+	choice = wxGetSingleChoiceIndex(_("Please choose the appropriate FPS for the subtitles:"), _("FPS"), choices);
 	if (was_busy) wxBeginBusyCursor();
+#endif
 
 	using agi::vfr::Framerate;
 	if (choice == -1)
@@ -312,5 +354,10 @@ std::string SubtitleFormat::GetWildcards(int mode) {
 		final += "|" + format->GetName() + " (" + boost::join(cur, ",") + ")|" + boost::join(cur, ";");
 	}
 
+#ifdef AGI_CORE
+	// Çekirdek: çevirisi UI tarafında yapılır.
+	return std::string("All Supported Formats") + " (" + boost::join(all, ",") + ")|" + boost::join(all, ";") + final;
+#else
 	return from_wx(_("All Supported Formats")) + " (" + boost::join(all, ",") + ")|" + boost::join(all, ";") + final;
+#endif
 }

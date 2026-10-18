@@ -299,6 +299,7 @@ aegisub_core_src = files(
     'spellchecker.cpp',
 
     # format I/O (mkv, ebu3264, ttxt ileride: ChoiceSelector/wxXML bağımlılıklarından sonra)
+    'subtitle_format.cpp',
     'subtitle_format_ass.cpp',
     'subtitle_format_encore.cpp',
     'subtitle_format_microdvd.cpp',
@@ -308,6 +309,10 @@ aegisub_core_src = files(
     'subtitle_format_txt.cpp',
 
     # diğeri
+    'charset_detect.cpp',
+    'audio_provider_factory.cpp',
+    'video_provider_manager.cpp',
+    'search_replace_engine.cpp',
     'resolution_resampler.cpp',
     'spellchecker_hunspell.cpp',
     'core/math_util.cpp',
