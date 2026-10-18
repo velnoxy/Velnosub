@@ -22,7 +22,7 @@ endif
 aegisub_core_deps += dependency('libass', version: '>= 0.9.7',
                                 fallback: ['libass', 'libass_dep'])
 
-aegisub_core = static_library('aegisub-core', aegisub_core_src, acconf,
+aegisub_core = static_library('aegisub-core', aegisub_core_src, acconf, version_h,
     include_directories: [libaegisub_inc, deps_inc, version_inc,
                           include_directories('..')],
     dependencies: aegisub_core_deps,

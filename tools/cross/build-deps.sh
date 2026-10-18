@@ -49,6 +49,7 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
         (cd "$SRC/icu-host-build" && CXXFLAGS="-std=c++17" "$SRC/icu/source/configure" --prefix="$SRC/icu-host" >/dev/null 2>&1 && make -j"$(nproc)" -s >/dev/null 2>&1 && make -s install >/dev/null 2>&1)
     fi
 
+# PIC zorunlu: velsub-core.so statik arşivleri shared'a taşır
     mkdir -p "$SRC/icu-cross-$ABI_DIR"
     (cd "$SRC/icu-cross-$ABI_DIR" && \
         CC="$TRIP$API-clang" CXX="$TRIP$API-clang++" \
@@ -60,7 +61,7 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
             --with-data-packaging=static \
             --disable-shared --enable-static \
             --disable-tests --disable-samples --disable-tools --disable-extras \
-            CFLAGS="-Os" CXXFLAGS="-Os -std=c++17" \
+            CFLAGS="-Os -fPIC" CXXFLAGS="-Os -std=c++17 -fPIC" \
         >/dev/null && \
         make -j"$(nproc)" -s >/dev/null && make -s install >/dev/null)
 fi
@@ -79,11 +80,26 @@ using clang : android : $TRIP$API-clang++ ;
 EOF
     ./b2 --user-config=user-config-android.jam toolset=clang-android \
         target-os=android link=static threading=multi \
-        cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os" \
+        cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os -fPIC" \
         linkflags="-L$PREFIX/lib" \
         --with-filesystem --with-regex --with-locale \
         --prefix="$PREFIX" install
     popd >/dev/null
+
+    # b2 .pc üretmez; meson'un boost özel-yordamı pkg-config ile bulsun:
+    # yoksa 'potential boost root' taraması HOST /usr/include bozabilecek.
+    cat > "$PREFIX/lib/pkgconfig/boost.pc" <<EOF
+prefix=$PREFIX
+exec_prefix=\${prefix}
+libdir=\${prefix}/lib
+includedir=\${prefix}/include
+
+Name: boost
+Description: Boost C++ Libraries (Android cross, static build)
+Version: $BOOST_VER
+Cflags: -I\${includedir}
+Libs: -L\${libdir} -lboost_filesystem -lboost_regex -lboost_locale -lboost_atomic
+EOF
 fi
 
 echo "deps ready: $PREFIX"
