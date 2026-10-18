@@ -38,7 +38,8 @@
 #include "visual_tool.h"
 #else
 // Velsub Faz 1 (P1.4): çekirdek'te VisualToolBase tanımı bulunmaz; dokunma
-// kutusu üyesi olduğu için yalnız CoordTranslator ABI'si üzerinden konuşur.
+// aracı sınıfı olduğu için çekirdek kolu yalnız CoordTranslator ABI'siyle
+// örtüşür.
 #include "core/compat/coord_translator.h"
 #endif
 

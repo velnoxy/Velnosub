@@ -299,7 +299,8 @@ aegisub_core_src = files(
     'thesaurus.cpp',
     'spellchecker.cpp',
 
-    # format I/O (mkv, ebu3264, ttxt ileride: ChoiceSelector/wxXML bağımlılıklarından sonra)
+    # format I/O: mkv katıldı (P1.4); ebu3264 ve ttxt faz 2+ bekliyor
+    # (charset katman bağı / wxXML)
     'subtitle_format.cpp',
     'subtitle_format_ass.cpp',
     'subtitle_format_encore.cpp',

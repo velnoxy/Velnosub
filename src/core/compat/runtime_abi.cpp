@@ -2,8 +2,6 @@
 
 #include "core/compat/runtime_abi.h"
 
-#include <memory>
-
 namespace agi::compat {
 
 namespace {

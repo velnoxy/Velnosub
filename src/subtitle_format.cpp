@@ -306,7 +306,7 @@ void SubtitleFormat::LoadFormats() {
 	if (formats.empty()) {
 #ifdef AGI_CORE
 		// Velsub Faz 1 (P1.6): çekirdek kayıtçısında yalnız wx'siz biçimler
-		// kurulur; ebu3264 (charset bağlaçları) ile ttxt (wxXML) Faz 2'de katılır.
+		// kurulur; ebu3264 (charset katman bağı) ile ttxt (wxXML) Faz 2'de katılır.
 		formats.emplace_back(agi::make_unique<AssSubtitleFormat>());
 		formats.emplace_back(agi::make_unique<EncoreSubtitleFormat>());
 		formats.emplace_back(agi::make_unique<MKVSubtitleFormat>());

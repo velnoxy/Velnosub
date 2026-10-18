@@ -32,8 +32,8 @@
 #include <string>
 #include <vector>
 
-// Velsub Faz 1 (P1.4): spline'ın koordinat çevirici bağı iki dalede aynı
-// mundialı ('Alias) ile konuşur: masaüstünde = VisualToolBase, çekirdekte =
+// Velsub Faz 1 (P1.4): spline'ın koordinat çevirici bağı iki kolda aynı
+// takma adla konuşur: masaüstünde = VisualToolBase, çekirdekte =
 // agi::compat::CoordTranslator (VisualToolBase bu ABI'yi uygular).
 #ifdef AGI_CORE
 #include "core/compat/coord_translator.h"

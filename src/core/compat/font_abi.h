@@ -3,7 +3,7 @@
 // auto4_base.cpp içindeki aegisub.text_extents ölçümü masaüstünde wx
 // (=wxMemoryDC/wxFont; Windows'ta GDI) ile sürdüğü YERDE kalır. Faz 1'de
 // çekirdekte gerçek ölçücü yoktur (headless: false döner, metrikler 0):
-// gerçek ölçücü Faz 2'de FreeType+HarfBuzz ime host gelir; masaüstü
+// gerçek ölçücü Faz 2'de FreeType+HarfBuzz ile host'tan gelir; masaüstü
 // çekirdeğe bağlanırken (P1.6+) set_font_measurer ile wx impl kayıtlanır.
 #pragma once
 
@@ -11,7 +11,7 @@
 
 namespace agi::compat {
 
-/// Ölçücü sıfe fonksiyon tipi: hiçölçmez +罐u dörün.
+/// Ölçücü imza türü: ölçmez; dönüş false (headless).
 using FontMeasurer = bool (*)(std::string const& font_family_utf8, double fontsize,
                               bool bold, bool italic, bool underline, bool strikeout,
                               int encoding,
