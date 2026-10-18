@@ -64,7 +64,9 @@ bool TXTSubtitleFormat::CanWriteFile(agi::fs::path const& filename) const {
 }
 
 void TXTSubtitleFormat::ReadFile(AssFile *target, agi::fs::path const& filename, agi::vfr::Framerate const& fps, std::string const& encoding) const {
+#ifndef AGI_CORE
 	if (!ShowPlainTextImportDialog()) return;
+#endif
 
 	TextFileReader file(filename, encoding, false);
 

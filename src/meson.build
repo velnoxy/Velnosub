@@ -277,6 +277,7 @@ endforeach
 aegisub_core_src = files(
     # ASS modeli
     'ass_attachment.cpp',
+    'ass_file.cpp',
     'ass_dialogue.cpp',
     'ass_entry.cpp',
     'ass_export_filter.cpp',
@@ -327,6 +328,8 @@ aegisub_core_src = files(
     'core/compat/ui_abi.cpp',
     'core/compat/runtime_abi.cpp',
     'core/compat/font_abi.cpp',
+    # P1.6: duman testi linkinde sürüm dizesi çözülmeli (wx'siz)
+    'version.cpp',
 )
 
 subdir('core')

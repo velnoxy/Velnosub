@@ -134,7 +134,10 @@ public:
 	/// @brief Get the effective layout resolution (i.e. falling back to the video resolution, if present)
 	/// @param[out] w Width
 	/// @param[in] h Height
+#ifndef AGI_CORE
+	// GUI bileşimi (Context/VideoProvider) gerektirir; çekirdek kolu dıştadır.
 	void GetEffectiveLayoutResolution(agi::Context *c, int &w,int &h) const;
+#endif
 	/// Get the value in a [Script Info] key as int, or 0 if it is not present
 	int GetScriptInfoAsInt(std::string const& key) const;
 	/// Get the value in a [Script Info] key as string.

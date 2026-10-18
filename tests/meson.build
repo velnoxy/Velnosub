@@ -86,3 +86,23 @@ custom_target('setup-test-data',
     command: [setup_sh, test_data_des],
     build_by_default: true
 )
+
+# Velsub Faz 1 (P1.6): aegisub-core CLI duman testi — wx'siz çekirdek bağlanır
+velsub_smoke_deps = all_test_deps
+velsub_smoke_deps += dependency('icu-uc', version: '>= 4.8.1.1')
+velsub_smoke_deps += dependency('icu-i18n', version: '>= 4.8.1.1')
+if conf.has('WITH_HUNSPELL')
+    velsub_smoke_deps += dependency('hunspell')
+endif
+if conf.has('WITH_FFMS2')
+    velsub_smoke_deps += dependency('ffms2', version: '>= 2.22')
+endif
+velsub_smoke_deps += dependency('libass', version: '>= 0.9.7')
+
+velsub_smoke = executable('velsub-core-smoke', ['tests/velsub_core_smoke.cpp', 'support/main.cpp'],
+    include_directories : [test_inc, libaegisub_inc, deps_inc, include_directories('../src')],
+    dependencies : velsub_smoke_deps,
+    cpp_args : extra_args + ['-DAGI_CORE'],
+    link_with : [libaegisub, aegisub_core],
+)
+test('velsub core smoke', velsub_smoke)
