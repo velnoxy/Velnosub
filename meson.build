@@ -433,6 +433,17 @@ if not meson.is_cross_build()
     subdir('tests')
 endif
 
+### Velsub Faz 2: Android/mobil çekirdek paylaşılan kitaplığı — libaegisub
+# ve aegisub-core tek .so'da birleştirilir (-Dvelsub_mobile=true + cross file).
+# GUI hedefleri bu kolun derlemesinden etkilenmez.
+if get_option('velsub_mobile')
+    velsub_core_so = shared_library('velsub-core',
+        link_whole: [libaegisub, aegisub_core],
+        dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
+                       dependency('icu-i18n', version: '>= 4.8.1.1')],
+        install: true)
+endif
+
 aegisub_cpp_pch = ['src/include/agi_pre.h']
 aegisub_c_pch = ['src/include/agi_pre_c.h']
 

@@ -1,0 +1,29 @@
+# Velsub Faz 2 — Android arm64-v8a cross file (NDK r26+/r27)
+# Kullanım: PATH=<ndk>/toolchains/llvm/prebuilt/linux-aarch64/bin:$PATH meson setup build-android-arm64 -Dvelsub_mobile=true --cross-file tools/cross/android-arm64.txt
+# ANDROID_API ortam değişkeni ile API düzeyi değiştirilebilir (varsayılan 29).
+
+[host_machine]
+system = 'android'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'
+
+[binaries]
+c = 'aarch64-linux-android29-clang'
+cpp = 'aarch64-linux-android29-clang++'
+ar = 'llvm-ar'
+strip = 'llvm-strip'
+nm = 'llvm-nm'
+ranlib = 'llvm-ranlib'
+pkg-config = 'pkg-config'
+
+# Paketlenmiş bağımlılıkların .pc dizini (tools/cross/build-deps.sh üretir)
+[built-in options]
+prefix = '/root/velsub/ndk-deps'
+c_args = ['-D__ANDROID_API__=29']
+cpp_args = ['-D__ANDROID_API__=29']
+c_link_args = []
+cpp_link_args = []
+
+[properties]
+sys_root = ''
