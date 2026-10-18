@@ -27,4 +27,8 @@ cpp_link_args = []
 
 [properties]
 pkg_config_libdir = ['/root/velsub/ndk-deps/arm64-v8a/lib/pkgconfig']
+# meson boost özel-bağımlılığı: sistem-boost aramasını tamamen kapat
+# (/usr/include zehri) — paketlenmiş kurulum dizinlerine öldörtten kilitler
+boost_includedir = '/root/velsub/ndk-deps/arm64-v8a/include'
+boost_librarydir = '/root/velsub/ndk-deps/arm64-v8a/lib'
 sys_root = ''
