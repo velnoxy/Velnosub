@@ -15,23 +15,24 @@
 #include "options.h"
 #include "subtitle_format.h"
 
+#include <libaegisub/dispatch.h>
 #include <libaegisub/exception.h>
 #include <libaegisub/fs.h>
+#include <libaegisub/log.h>
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
+// P2.2: config::opt / config::path tek tanım noktası core .so'dadır
+// (src/core/options_globals.cpp); CLI ikilisi .so üzerinden çözer,
+// kendi global kopyasını taşımaz (P1.6 statik-link yapısı değişti).
+
 #include <cstdlib>
+#include <fcntl.h>
+#include <unistd.h>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
-
-// P1.6 ile aynı ABI: AssStyleStorage config::path'i, AssFile::LoadDefault
-// zinciri config::opt'i (OPT_GET) çözer. CLI yalnızca opt'i kurar.
-namespace config {
-	agi::Options *opt = nullptr;
-	agi::Path *path = nullptr;
-}
 
 namespace {
 std::string read_all(std::string const& p) {
@@ -46,6 +47,7 @@ int main(int argc, char **argv) {
 		std::cerr << "kullanım: velsub-cli <giriş> <çıkış> [--edit-first \"metin\"]\n";
 		return 2;
 	}
+
 	std::string const in_path = argv[1];
 	std::string const out_path = argv[2];
 	std::string edit_text;
@@ -59,11 +61,21 @@ int main(int argc, char **argv) {
 	}
 
 	try {
+		// P2.2: GUI'de main.cpp MainLoop'a rassal bağlanır; CLI'da invoke_main
+		// çağrının kendisini koşturur (aynı iş parçacığı; LogSink Queue kullanır).
+		agi::dispatch::Init([](agi::dispatch::Thunk f) { f(); });
+		// P2.2: log sink singleton'ı GUI'de main.cpp kurar; CLI'ın kendi
+		// kurulumu yoksa log yazımı null'a düşer (Options ctor log ile başlar).
+		agi::log::log = new agi::log::LogSink;
+		std::cerr << "[0] config okuma\n";
 		// 1) seçenekler: gerçek default_config.json (masaüstüyle birebir)
 		char const *cfg = std::getenv("VELSUB_CONFIG_JSON");
 		std::string const cfg_text = read_all(cfg ? cfg : "default_config.json");
+		std::cerr << "[0b] config okundu: " << cfg_text.size()
+		          << " bayt\n";
 		config::opt = new agi::Options(
 			"", {cfg_text.data(), cfg_text.size()}, agi::Options::FLUSH_SKIP);
+		std::cerr << "[1] config hazır\n";
 
 		// 2) aç
 		agi::fs::path const in(in_path);
@@ -72,9 +84,10 @@ int main(int argc, char **argv) {
 			std::cerr << "okuyucu bulunamadı: " << in_path << "\n";
 			return 1;
 		}
+		std::cerr << "[2] okuyucu hazır\n";
 		AssFile file;
 		reader->ReadFile(&file, in, agi::vfr::Framerate(), "utf-8");
-		std::cout << "okundu: " << file.Events.size() << " satır, "
+		std::cerr << "[3] okundu: " << file.Events.size() << " satır, "
 		          << std::distance(file.Styles.begin(), file.Styles.end())
 		          << " stil\n";
 
