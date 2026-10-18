@@ -318,6 +318,7 @@ aegisub_core_src = files(
     'core/math_util.cpp',
     'core/commit_compat.cpp',
     'core/compat/ui_abi.cpp',
+    'core/compat/runtime_abi.cpp',
 )
 
 subdir('core')
