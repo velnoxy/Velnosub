@@ -326,6 +326,7 @@ aegisub_core_src = files(
     'core/commit_compat.cpp',
     'core/compat/ui_abi.cpp',
     'core/compat/runtime_abi.cpp',
+    'core/compat/font_abi.cpp',
 )
 
 subdir('core')
