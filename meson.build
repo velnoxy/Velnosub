@@ -77,7 +77,9 @@ if host_machine.system() == 'darwin'
     add_project_arguments('-DGL_SILENCE_DEPRECATION', language: 'cpp')
     # meson neither supports objcpp_std nor inherits cpp_std https://github.com/mesonbuild/meson/issues/5495
     add_project_arguments('-std=c++11', language: 'objcpp')
-elif host_machine.system() != 'windows'
+elif host_machine.system() != 'windows' and not get_option('velsub_mobile')
+    # Velsub Faz 2: fontconfig yalnız GUI listeleyicisi için gerekiyor
+    # (font_file_lister_fontconfig.cpp); mobil .so/CLI kullanmaz.
     conf.set('WITH_FONTCONFIG', 1)
     deps += dependency('fontconfig')
 endif
@@ -362,9 +364,14 @@ endif
 conf_platform = configuration_data()
 conf_platform.set('DEFAULT_PLAYER_AUDIO', def_audio)
 
-luajit = dependency('luajit', version: '>=2.0.0', required: get_option('system_luajit'))
-if luajit.found() and luajit.type_name() != 'internal'
-    luajit_test = cc.run('''#include <lauxlib.h>
+# Velsub Faz 2: mobil kol LuaJIT kullanmaz (automation Faz 5'te cihazda
+# yeniden devreye girer); vendor luajit meson'u Android hedefini
+# 'Unsupported' sayar. Masaüstü kolu birebir korunur.
+luajit_inc = []
+if not get_option('velsub_mobile')
+    luajit = dependency('luajit', version: '>=2.0.0', required: get_option('system_luajit'))
+    if luajit.found() and luajit.type_name() != 'internal'
+        luajit_test = cc.run('''#include <lauxlib.h>
 int main(void)
 {
     lua_State *L = luaL_newstate();
@@ -374,27 +381,33 @@ int main(void)
     return luaL_loadstring(L, testprogram) == LUA_ERRSYNTAX;
 }''', dependencies: luajit)
 
-    if luajit_test.returncode() == 1
-        if get_option('system_luajit')
-            error('System luajit found but not compiled in 5.2 mode')
+        if luajit_test.returncode() == 1
+            if get_option('system_luajit')
+                error('System luajit found but not compiled in 5.2 mode')
+            else
+                message('System luajit found but not compiled in 5.2 mode; using built-in luajit')
+            endif
         else
-            message('System luajit found but not compiled in 5.2 mode; using built-in luajit')
+            deps += luajit
         endif
     else
-        deps += luajit
+        message('System luajit not found; using built-in luajit')
     endif
-else
-    message('System luajit not found; using built-in luajit')
-endif
 
-if not deps.contains(luajit)
-    luajit_sp = subproject('luajit')
-    luajit_inc = luajit_sp.get_variable('src_inc')
-    deps += luajit_sp.get_variable('luajit_dep')
-else
-    luajit_inc = include_directories(luajit.get_variable('includedir'))
+    if not deps.contains(luajit)
+        luajit_sp = subproject('luajit')
+        luajit_inc = luajit_sp.get_variable('src_inc')
+        deps += luajit_sp.get_variable('luajit_dep')
+    else
+        luajit_inc = include_directories(luajit.get_variable('includedir'))
+    endif
 endif
-subdir('vendor/luabins/src')
+# Velsub Faz 2: mobil kol LuaJIT kullanmaz (automation Faz 5'te cihaz kenarında
+# yeniden devreye alır) — vendor LUajit meson'u Android'i 'Unsupported' saydığı
+# için bu kol devre dışı; GUI hedefleri masaüstünde birebir korunur.
+if not get_option('velsub_mobile')
+    subdir('vendor/luabins/src')
+endif
 
 dep_gl = dependency('gl', required: false)
 if not dep_gl.found()

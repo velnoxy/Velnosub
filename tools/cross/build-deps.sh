@@ -68,9 +68,9 @@ fi
 # ---------- Boost ----------
 if [ ! -d "$PREFIX/include/boost" ]; then
     DL "https://archives.boost.io/release/$BOOST_VER/source/boost_${BOOST_VER//./_}.tar.bz2" "$SRC/boost.tar.bz2"
-    [ -d "$SRC/boost-${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
+    [ -d "$SRC/boost_${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
 
-    pushd "$SRC/boost-${BOOST_VER//./_}" >/dev/null
+    pushd "$SRC/boost_${BOOST_VER//./_}" >/dev/null
     # b2 release tar'ın içi x86_64 önceden derlenmiş gelir; aarch64 host'ta
     # bootstrap.sh ile yeniden derlenir (idempotent).
     [ -x ./b2 ] || ./bootstrap.sh --with-toolset=gcc >/dev/null
@@ -81,7 +81,6 @@ EOF
         target-os=android link=static threading=multi \
         cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os" \
         linkflags="-L$PREFIX/lib" \
-        --without-python --without-mpi \
         --with-filesystem --with-regex --with-locale \
         --prefix="$PREFIX" install
     popd >/dev/null
