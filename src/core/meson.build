@@ -17,7 +17,10 @@ if conf.has('WITH_FFMS2')
 endif
 
 # P1.4: subtitles_provider_libass ve MatroskaParser yolu.
-aegisub_core_deps += dependency('libass', version: '>= 0.9.7')
+# P2.2 (Faz 2): cross'ta sistem libass yoksa wrap fallback devreye girer
+# (libass + freetype + harfbuzz + fribidi alt-projeleri).
+aegisub_core_deps += dependency('libass', version: '>= 0.9.7',
+                                fallback: ['libass', 'libass_dep'])
 
 aegisub_core = static_library('aegisub-core', aegisub_core_src, acconf,
     include_directories: [libaegisub_inc, deps_inc, version_inc,

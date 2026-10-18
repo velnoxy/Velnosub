@@ -51,6 +51,8 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
 
     mkdir -p "$SRC/icu-cross-$ABI_DIR"
     (cd "$SRC/icu-cross-$ABI_DIR" && \
+        CC="$TRIP$API-clang" CXX="$TRIP$API-clang++" \
+        AR=llvm-ar RANLIB=llvm-ranlib \
         "$SRC/icu/source/configure" \
             --host="$TRIP" \
             --with-cross-build="$SRC/icu-host-build" \

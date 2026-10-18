@@ -132,14 +132,17 @@ wx_minver = '>=' + get_option('wx_version')
 if host_machine.system() == 'darwin'
     wx_minver = '>=3.1.0'
 endif
-wx_dep = dependency('wxWidgets', version: wx_minver,
-                    required: false,
-                    modules: ['std', 'stc', 'gl'])
+# Velsub Faz 2: mobil kolda wx yok — ne bağımlılık araması ne vendor
+# alt-projesi çalışır; GUI hedefi aşağıda kapatılır.
+if not get_option('velsub_mobile')
+    wx_dep = dependency('wxWidgets', version: wx_minver,
+                        required: false,
+                        modules: ['std', 'stc', 'gl'])
 
-if wx_dep.found()
-    deps += wx_dep
-else
-    build_shared = true
+    if wx_dep.found()
+        deps += wx_dep
+    else
+        build_shared = true
     if get_option('default_library') == 'static'
         build_shared = false
     endif
@@ -204,6 +207,7 @@ else
         endif
     endif
 endif
+endif  # not velsub_mobile
 
 deps += dependency('icu-uc', version: '>=4.8.1.1')
 deps += dependency('icu-i18n', version: '>=4.8.1.1')
@@ -458,6 +462,9 @@ if host_machine.system() == 'windows'
     link_depends += manifest_file
 endif
 
+# Velsub Faz 2: mobil kolda GUI hedefi yok (wx bağımsız — çekirdek kitaplığı
+# ve CLI yalnız). Masaüstünde birebir davranış korunur.
+if not get_option('velsub_mobile')
 aegisub = executable('aegisub', aegisub_src, version_h, acconf, resrc,
                      link_with: [libresrc, libluabins, libaegisub],
                      link_args: link_args,
@@ -469,3 +476,4 @@ aegisub = executable('aegisub', aegisub_src, version_h, acconf, resrc,
                      install_dir: bindir,
                      dependencies: deps,
                      win_subsystem: 'windows')
+endif
