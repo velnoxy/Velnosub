@@ -67,9 +67,10 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
 fi
 
 # ---------- Boost ----------
-# Tüm başlıklar + thread/chrono/locale/regex/filesystem statik arşivler:
-# arşiv var mı (pc da o var) yeter; başlıklar b2 install ile her koşuda güncel.
-if [ ! -f "$PREFIX/lib/libboost_system.a" ]; then
+# Statik arşivler; cxxstd=17 çok önemli — core ile aynı dil modu (C++03 build
+# modunda static constexpr üyeler dış sembole düşer, core ile uyumsuz olur).
+# VELSUB_BOOST_FORCE=1 ile zorla yeniden derle.
+if [ ! -f "$PREFIX/lib/libboost_system.a" ] || [ "${VELSUB_BOOST_FORCE:-0}" = "1" ]; then
     DL "https://archives.boost.io/release/$BOOST_VER/source/boost_${BOOST_VER//./_}.tar.bz2" "$SRC/boost.tar.bz2"
     [ -d "$SRC/boost_${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
 
@@ -82,6 +83,7 @@ using clang : android : $TRIP$API-clang++ ;
 EOF
     ./b2 --user-config=user-config-android.jam toolset=clang-android \
         -j1 \
+        cxxstd=17 \
         target-os=android link=static threading=multi \
         cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os -fPIC" \
         linkflags="-L$PREFIX/lib" \
