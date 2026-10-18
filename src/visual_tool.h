@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include "core/compat/coord_translator.h"
 #include "gl_wrap.h"
 #include "vector2d.h"
 #include "options.h"
@@ -46,7 +47,8 @@ namespace agi {
 /// different VisualTool<T>s are unrelated types otherwise. In addition, as much
 /// functionality as possible is implemented here to avoid having four copies
 /// of each method for no good reason (and four times as many error messages)
-class VisualToolBase {
+/// @class VisualToolBase
+class VisualToolBase : public agi::compat::CoordTranslator {
 	void SetResolutions();
 	void OnCommit(int type);
 	void OnSeek(int new_frame);
@@ -158,9 +160,9 @@ protected:
 
 public:
 	/// Convert a point from video to script coordinates
-	Vector2D ToScriptCoords(Vector2D point) const;
+	Vector2D ToScriptCoords(Vector2D point) const override;
 	/// Convert a point from script to video coordinates
-	Vector2D FromScriptCoords(Vector2D point) const;
+	Vector2D FromScriptCoords(Vector2D point) const override;
 
 	// Stuff called by VideoDisplay
 	virtual void OnMouseEvent(wxMouseEvent &event)=0;

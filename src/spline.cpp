@@ -34,14 +34,20 @@
 
 #include "spline.h"
 
+#ifndef AGI_CORE
 #include "visual_tool.h"
+#else
+// Velsub Faz 1 (P1.4): çekirdek'te VisualToolBase tanımı bulunmaz; dokunma
+// kutusu üyesi olduğu için yalnız CoordTranslator ABI'si üzerinden konuşur.
+#include "core/compat/coord_translator.h"
+#endif
 
 #include <libaegisub/split.h>
 #include <libaegisub/util.h>
 
 #include <limits>
 
-Spline::Spline(const VisualToolBase *tl)
+Spline::Spline(const CoordTranslator *tl)
 : coord_translator(tl)
 {
 }

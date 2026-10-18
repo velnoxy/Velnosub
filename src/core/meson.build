@@ -16,6 +16,9 @@ if conf.has('WITH_FFMS2')
     aegisub_core_deps += dependency('ffms2', version: '>= 2.22')
 endif
 
+# P1.4: subtitles_provider_libass ve MatroskaParser yolu.
+aegisub_core_deps += dependency('libass', version: '>= 0.9.7')
+
 aegisub_core = static_library('aegisub-core', aegisub_core_src, acconf,
     include_directories: [libaegisub_inc, deps_inc, version_inc,
                           include_directories('..')],

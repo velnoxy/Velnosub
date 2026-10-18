@@ -36,10 +36,19 @@
 
 #include "ass_file.h"
 #include "ass_parser.h"
+#ifndef AGI_CORE
 #include "compat.h"
 #include "dialog_progress.h"
 #include "MatroskaParser.h"
 #include "options.h"
+#else
+// Velsub Faz 1 (P1.4): çekirdekte seçim agi::compat'tan, ilerleme no-op
+// koşucuyla köpürür; DialogProgress GUI kolu için kalır.
+#include "core/compat/runtime_abi.h"
+#include "core/compat/ui_abi.h"
+#include "MatroskaParser.h"
+#include "options.h"
+#endif
 
 #include <libaegisub/ass/time.h>
 #include <libaegisub/file_mapping.h>
@@ -53,7 +62,9 @@
 #include <boost/tokenizer.hpp>
 #include <iterator>
 
+#ifndef AGI_CORE
 #include <wx/choicdlg.h> // Keep this last so wxUSE_CHOICEDLG is set.
+#endif
 
 struct MkvStdIO final : InputStream {
 	agi::read_file_mapping file;
@@ -241,7 +252,11 @@ void MatroskaWrapper::GetSubtitles(agi::fs::path const& filename, AssFile *targe
 		trackToRead = tracksFound[0];
 	// Pick a track
 	else {
+#ifdef AGI_CORE
+		int choice = agi::compat::single_choice("Choose which track to read:", "Multiple subtitle tracks found", tracksNames);
+#else
 		int choice = wxGetSingleChoiceIndex(_("Choose which track to read:"), _("Multiple subtitle tracks found"), to_wx(tracksNames));
+#endif
 		if (choice == -1)
 			throw agi::UserCancelException("canceled");
 
@@ -286,7 +301,11 @@ void MatroskaWrapper::GetSubtitles(agi::fs::path const& filename, AssFile *targe
 
 	// Progress bar
 	auto totalTime = double(segInfo->Duration) / timecodeScale;
+#ifdef AGI_CORE
+	auto& progress = agi::compat::null_background_runner();
+#else
 	DialogProgress progress(nullptr, _("Parsing Matroska"), _("Reading subtitles from Matroska file."));
+#endif
 	bool result;
 	progress.Run([&](agi::ProgressSink *ps) { result = read_subtitles(ps, file, &input, srt, totalTime, &parser, cs); });
 

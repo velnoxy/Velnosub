@@ -34,7 +34,6 @@
 
 #include "subtitles_provider_libass.h"
 
-#include "compat.h"
 #include "include/aegisub/subtitles_provider.h"
 #include "video_frame.h"
 
@@ -50,8 +49,14 @@
 #include <memory>
 #include <mutex>
 
+#ifndef AGI_CORE
+#include "compat.h"
 #include <wx/intl.h>
 #include <wx/thread.h>
+#else
+// Velsub Faz 1 (P1.4): thread kontrolü agi::compat ABI'siyle; metin ham UTF-8.
+#include "core/compat/runtime_abi.h"
+#endif
 
 extern "C" {
 #include <ass/ass.h>
@@ -100,18 +105,30 @@ class LibassSubtitlesProvider final : public SubtitlesProvider {
 			if (shared->ready)
 				return;
 			br->Run([=](agi::ProgressSink *ps) {
+#ifdef AGI_CORE
+				ps->SetTitle("Updating font index");
+				ps->SetMessage("This may take several minutes");
+#else
 				ps->SetTitle(from_wx(_("Updating font index")));
 				ps->SetMessage(from_wx(_("This may take several minutes")));
+#endif
 				ps->SetIndeterminate();
 				while (!shared->ready && !ps->IsCancelled())
 					agi::util::sleep_for(250);
 			});
 		};
 
+#ifdef AGI_CORE
+		if (agi::compat::main_thread_is_current())
+			block();
+		else
+			agi::dispatch::Main().Sync(block);
+#else
 		if (wxThread::IsMain())
 			block();
 		else
 			agi::dispatch::Main().Sync(block);
+#endif
 		return shared->renderer;
 	}
 

@@ -309,10 +309,17 @@ aegisub_core_src = files(
     'subtitle_format_txt.cpp',
 
     # diğeri
+    # mkv yolu: MatroskaParser ikimțik derlenir (GUI liste sırası korunur)
+    'MatroskaParser.c',
     'charset_detect.cpp',
     'audio_provider_factory.cpp',
     'video_provider_manager.cpp',
     'search_replace_engine.cpp',
+    'subtitles_provider_libass.cpp',
+    'mkv_wrap.cpp',
+    'ffmpegsource_common.cpp',
+    'spline.cpp',
+    'subtitle_format_mkv.cpp',
     'resolution_resampler.cpp',
     'spellchecker_hunspell.cpp',
     'core/math_util.cpp',
