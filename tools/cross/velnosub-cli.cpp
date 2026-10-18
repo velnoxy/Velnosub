@@ -1,12 +1,12 @@
 // Aegisub Project http://www.aegisub.org/
 //
-// Velsub Faz 2 (P2.2) — mobil CLI dumanı: ASS aç → seçimli düzenleme → kaydet.
-// velsub-core.so'ya bağlanır (Android'de libc++_shared ile koşar); masaüstünde
+// velnosub Faz 2 (P2.2) — mobil CLI dumanı: ASS aç → seçimli düzenleme → kaydet.
+// velnosub-core.so'ya bağlanır (Android'de libc++_shared ile koşar); masaüstünde
 // cross zincir olmadan hızlı duman için de kullanılabilir.
 //
-// Kullanım: velsub-cli <giriş> <çıkış> [--edit-first "yeni metin"]
+// Kullanım: velnosub-cli <giriş> <çıkış> [--edit-first "yeni metin"]
 // Çıkış uzantısı yazıcı formatını belirler (GetWriter kuralı).
-// Yapılandırma: VELSUB_CONFIG_JSON ortam değişkeni veya çalışma dizinindeki
+// Yapılandırma: VELNOSUB_CONFIG_JSON ortam değişkeni veya çalışma dizinindeki
 // default_config.json (cihaza birlikte itilir).
 
 #include "ass_dialogue.h"
@@ -44,7 +44,7 @@ std::string read_all(std::string const& p) {
 
 int main(int argc, char **argv) {
 	if (argc < 3) {
-		std::cerr << "kullanım: velsub-cli <giriş> <çıkış> [--edit-first \"metin\"]\n";
+		std::cerr << "kullanım: velnosub-cli <giriş> <çıkış> [--edit-first \"metin\"]\n";
 		return 2;
 	}
 
@@ -69,7 +69,7 @@ int main(int argc, char **argv) {
 		agi::log::log = new agi::log::LogSink;
 		std::cerr << "[0] config okuma\n";
 		// 1) seçenekler: gerçek default_config.json (masaüstüyle birebir)
-		char const *cfg = std::getenv("VELSUB_CONFIG_JSON");
+		char const *cfg = std::getenv("VELNOSUB_CONFIG_JSON");
 		std::string const cfg_text = read_all(cfg ? cfg : "default_config.json");
 		std::cerr << "[0b] config okundu: " << cfg_text.size()
 		          << " bayt\n";
@@ -94,7 +94,7 @@ int main(int argc, char **argv) {
 		// 3) seçimli düzenleme (çekirdek Commit overload'u)
 		if (edit_first && !file.Events.empty()) {
 			file.Events.front().Text = edit_text;
-			file.Commit("velsub cli", AssFile::COMMIT_DIAG_TEXT);
+			file.Commit("velnosub cli", AssFile::COMMIT_DIAG_TEXT);
 			std::cout << "düzenlendi: " << edit_text << "\n";
 		}
 

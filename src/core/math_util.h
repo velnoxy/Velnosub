@@ -1,4 +1,4 @@
-// Velsub Faz 1 — wx'siz küçük yardımcılar
+// velnosub Faz 1 — wx'siz küçük yardımcılar
 //
 // utils.h wx tiplerini kullandığı için çekirdeğe konamıyor. Saf yardımcılar
 // (mid/tabs/countof/float_to_string) bu başlıkta INLINE olarak tanımlıdır.

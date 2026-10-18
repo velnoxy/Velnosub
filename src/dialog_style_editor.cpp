@@ -172,7 +172,7 @@ DialogStyleEditor::DialogStyleEditor(wxWindow *parent, AssStyle *style, agi::Con
 	wxString alignValues[9] = { "7", "8", "9", "4", "5", "6", "1", "2", "3" };
 
 	// Encoding options
-	// Velsub Faz 1 (P1.2): liste oluşturan AssStyle::GetEncodings UI'e taşındı;
+	// velnosub Faz 1 (P1.2): liste oluşturan AssStyle::GetEncodings UI'e taşındı;
 	// çekirdekteki ass_style.cpp wx'siz kaldı.
 	wxArrayString encodingStrings;
 	encodingStrings.Add(wxString("-1 - ") + _("Auto-detect base direction (libass only)"));

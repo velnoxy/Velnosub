@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.5) — font ölçüm ABI'sinin headless çekirdek varsayımı.
+// velnosub Faz 1 (P1.5) — font ölçüm ABI'sinin headless çekirdek varsayımı.
 
 #include "core/compat/font_abi.h"
 

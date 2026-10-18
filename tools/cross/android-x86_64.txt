@@ -1,5 +1,5 @@
-# Velsub Faz 2 — Android x86_64 (emülatör) cross file (NDK r26+/r27)
-# Kullanım: PATH=<ndk>/toolchains/llvm/prebuilt/linux-aarch64/bin:$PATH meson setup build-android-x86_64 -Dvelsub_mobile=true --cross-file tools/cross/android-x86_64.txt
+# velnosub Faz 2 — Android x86_64 (emülatör) cross file (NDK r26+/r27)
+# Kullanım: PATH=<ndk>/toolchains/llvm/prebuilt/linux-aarch64/bin:$PATH meson setup build-android-x86_64 -Dvelnosub_mobile=true --cross-file tools/cross/android-x86_64.txt
 
 [host_machine]
 system = 'android'

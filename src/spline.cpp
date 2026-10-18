@@ -37,7 +37,7 @@
 #ifndef AGI_CORE
 #include "visual_tool.h"
 #else
-// Velsub Faz 1 (P1.4): çekirdek'te VisualToolBase tanımı bulunmaz; dokunma
+// velnosub Faz 1 (P1.4): çekirdek'te VisualToolBase tanımı bulunmaz; dokunma
 // aracı sınıfı olduğu için çekirdek kolu yalnız CoordTranslator ABI'siyle
 // örtüşür.
 #include "core/compat/coord_translator.h"

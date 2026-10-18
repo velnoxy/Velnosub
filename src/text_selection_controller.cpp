@@ -16,7 +16,7 @@
 
 #include "text_selection_controller.h"
 
-// Velsub (P2.2): wx SC intifa area zaten yalnız ctrl non-null iken gerekli;
+// velnosub (P2.2): wx SC intifa area zaten yalnız ctrl non-null iken gerekli;
 // AGI_CORE derlemesinde (mobil çekirdek) wx başlıkları koşturmaz, ctrl yok sayılır.
 #ifndef AGI_CORE
 #include <wx/stc/stc.h>
@@ -45,7 +45,7 @@ TextSelectionController::~TextSelectionController() {
 } while(false)
 
 #ifdef AGI_CORE
-// Velsub (P2.2): wx SC yok — yalnız alan güncelleyip sinyali duyurur.
+// velnosub (P2.2): wx SC yok — yalnız alan güncelleyip sinyali duyurur.
 #define SET(var, new_value, Setter) do { \
 	if (var != new_value) {              \
 		var = new_value;                 \

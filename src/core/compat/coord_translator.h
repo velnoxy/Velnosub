@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.4) — spline'ın UI koordinat çevirici bağı için ABI.
+// velnosub Faz 1 (P1.4) — spline'ın UI koordinat çevirici bağı için ABI.
 //
 // Spline (spline.h) VideoDisplay koordinat dönüşümlerini yalnızca iki işlem
 // için kullanır (ToScriptCoords / FromScriptCoords — spline.cpp:51,58).

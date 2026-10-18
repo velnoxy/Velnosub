@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.4) — yaşam döngüsü / çalışma zamanı köprüleri.
+// velnosub Faz 1 (P1.4) — yaşam döngüsü / çalışma zamanı köprüleri.
 //
 // libaegisub/background_runner.h wx'sizdir (ProgressSink std::string
 // tabanlıdır); çekirdek no-op koşucusunu ve main-thread yordamını sağlar.

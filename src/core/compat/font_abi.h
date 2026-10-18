@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.5) — metin ölçüm ABI'si (Caz§1.2 'font::Measure').
+// velnosub Faz 1 (P1.5) — metin ölçüm ABI'si (Caz§1.2 'font::Measure').
 //
 // auto4_base.cpp içindeki aegisub.text_extents ölçümü masaüstünde wx
 // (=wxMemoryDC/wxFont; Windows'ta GDI) ile sürdüğü YERDE kalır. Faz 1'de

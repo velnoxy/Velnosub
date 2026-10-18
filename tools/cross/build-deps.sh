@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Velsub Faz 2 — Android cross bağımlılık kurulumu (ICU + Boost)
+# velnosub Faz 2 — Android cross bağımlılık kurulumu (ICU + Boost)
 #
 # Çıktı: <WORK>/ndk-deps/<abi>/  (arm64-v8a | x86_64) — meson cross dosyaları
 # bu prefix'i pkg-config ile kullanır. ICU önce host'ta cross-üretim araçları
@@ -49,7 +49,7 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
         (cd "$SRC/icu-host-build" && CXXFLAGS="-std=c++17" "$SRC/icu/source/configure" --prefix="$SRC/icu-host" >/dev/null 2>&1 && make -j"$(nproc)" -s >/dev/null 2>&1 && make -s install >/dev/null 2>&1)
     fi
 
-# PIC zorunlu: velsub-core.so statik arşivleri shared'a taşır
+# PIC zorunlu: velnosub-core.so statik arşivleri shared'a taşır
     mkdir -p "$SRC/icu-cross-$ABI_DIR"
     (cd "$SRC/icu-cross-$ABI_DIR" && \
         CC="$TRIP$API-clang" CXX="$TRIP$API-clang++" \
@@ -69,8 +69,8 @@ fi
 # ---------- Boost ----------
 # Statik arşivler; cxxstd=17 çok önemli — core ile aynı dil modu (C++03 build
 # modunda static constexpr üyeler dış sembole düşer, core ile uyumsuz olur).
-# VELSUB_BOOST_FORCE=1 ile zorla yeniden derle.
-if [ ! -f "$PREFIX/lib/libboost_system.a" ] || [ "${VELSUB_BOOST_FORCE:-0}" = "1" ]; then
+# VELNOSUB_BOOST_FORCE=1 ile zorla yeniden derle.
+if [ ! -f "$PREFIX/lib/libboost_system.a" ] || [ "${VELNOSUB_BOOST_FORCE:-0}" = "1" ]; then
     DL "https://archives.boost.io/release/$BOOST_VER/source/boost_${BOOST_VER//./_}.tar.bz2" "$SRC/boost.tar.bz2"
     [ -d "$SRC/boost_${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
 

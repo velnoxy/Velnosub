@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.3) — compat ABI'nin çekirdek (headless) varsayımları.
+// velnosub Faz 1 (P1.3) — compat ABI'nin çekirdek (headless) varsayımları.
 
 #include "core/compat/ui_abi.h"
 

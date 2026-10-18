@@ -1,6 +1,6 @@
 // Aegisub Project http://www.aegisub.org/
 //
-// Velsub Faz 1 (P1.6) — aegisub-core CLI duman testi:
+// velnosub Faz 1 (P1.6) — aegisub-core CLI duman testi:
 // ASS aç → satır düzenle → kaydet → referansla karşılaştır.
 //
 // Test ikilisi yalnız libaegisub + aegisub-core bağlar (-DAGI_CORE); GUI/wx
@@ -59,13 +59,13 @@ protected:
 };
 
 TEST_F(CoreSmoke, LoadEditSaveRoundTrip) {
-	auto const in_path = temp_path("velsub-smoke-in.ass");
-	auto const out_path = temp_path("velsub-smoke-out.ass");
+	auto const in_path = temp_path("velnosub-smoke-in.ass");
+	auto const out_path = temp_path("velnosub-smoke-out.ass");
 
 	{
 		std::ofstream in(in_path.c_str());
 		in << "[Script Info]\n"
-		      "Title: Velsub Smoke\n"
+		      "Title: velnosub Smoke\n"
 		      "ScriptType: v4.00+\n"
 		      "PlayResX: 1920\n"
 		      "PlayResY: 1080\n"
@@ -91,8 +91,8 @@ TEST_F(CoreSmoke, LoadEditSaveRoundTrip) {
 	EXPECT_EQ(std::distance(file.Styles.begin(), file.Styles.end()), 1);
 
 	// 2) satır düzenle (çekirdek Commit overload'uyla)
-	file.Events.front().Text = "edited by velsub";
-	file.Commit("velsub smoke", AssFile::COMMIT_DIAG_TEXT);
+	file.Events.front().Text = "edited by velnosub";
+	file.Commit("velnosub smoke", AssFile::COMMIT_DIAG_TEXT);
 
 	// 3) kaydet
 	const SubtitleFormat *writer = SubtitleFormat::GetWriter(out_path);
@@ -104,9 +104,9 @@ TEST_F(CoreSmoke, LoadEditSaveRoundTrip) {
 		std::ifstream out(out_path.c_str());
 		std::string const content(std::istreambuf_iterator<char>{out},
 		                          std::istreambuf_iterator<char>{});
-		EXPECT_NE(content.find("edited by velsub"), std::string::npos);
+		EXPECT_NE(content.find("edited by velnosub"), std::string::npos);
 		EXPECT_NE(content.find(
-			"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,edited by velsub\n"),
+			"Dialogue: 0,0:00:01.00,0:00:02.00,Default,,0,0,0,,edited by velnosub\n"),
 			std::string::npos);
 	}
 
@@ -116,7 +116,7 @@ TEST_F(CoreSmoke, LoadEditSaveRoundTrip) {
 	ASSERT_NE(reader2, nullptr);
 	reader2->ReadFile(&reloaded, out_path, agi::vfr::Framerate(), "utf-8");
 	EXPECT_EQ(reloaded.Events.size(), 2u);
-	EXPECT_EQ(reloaded.Events.front().Text, "edited by velsub");
+	EXPECT_EQ(reloaded.Events.front().Text, "edited by velnosub");
 	EXPECT_EQ(reloaded.Events.back().Text, "second line");
 	EXPECT_EQ(reloaded.Events.front().Start.GetAssFormatted(), "0:00:01.00");
 	EXPECT_EQ(reloaded.Events.back().Start.GetAssFormatted(), "0:00:02.00");

@@ -43,7 +43,7 @@
 #include <wx/intl.h>
 #include <wx/choicdlg.h>
 #else
-// Velsub Faz 1 (P1.4): seçim agi::compat'tan sorgulanır; ilerleme koşucusu
+// velnosub Faz 1 (P1.4): seçim agi::compat'tan sorgulanır; ilerleme koşucusu
 // argument (BackgroundRunner) zaten çekirdek ABI'si; UI metinleri ham UTF-8.
 #include "core/compat/runtime_abi.h"
 #include "core/compat/ui_abi.h"

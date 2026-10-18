@@ -27,8 +27,8 @@ else
     version_sh = find_program('tools/version.sh')
 endif
 version_inc = include_directories('.')
-# Velsub (P2.2): src başlık yolu proje-kapsamı tanımlı (tools/cross CLI dahil).
-velsub_src_inc = include_directories('src')
+# velnosub (P2.2): src başlık yolu proje-kapsamı tanımlı (tools/cross CLI dahil).
+velnosub_src_inc = include_directories('src')
 version_h = custom_target('git_version.h',
                           command: [version_sh, meson.current_build_dir(), meson.current_source_dir()],
                           build_by_default: true,
@@ -79,8 +79,8 @@ if host_machine.system() == 'darwin'
     add_project_arguments('-DGL_SILENCE_DEPRECATION', language: 'cpp')
     # meson neither supports objcpp_std nor inherits cpp_std https://github.com/mesonbuild/meson/issues/5495
     add_project_arguments('-std=c++11', language: 'objcpp')
-elif host_machine.system() != 'windows' and not get_option('velsub_mobile')
-    # Velsub Faz 2: fontconfig yalnız GUI listeleyicisi için gerekiyor
+elif host_machine.system() != 'windows' and not get_option('velnosub_mobile')
+    # velnosub Faz 2: fontconfig yalnız GUI listeleyicisi için gerekiyor
     # (font_file_lister_fontconfig.cpp); mobil .so/CLI kullanmaz.
     conf.set('WITH_FONTCONFIG', 1)
     deps += dependency('fontconfig')
@@ -128,7 +128,7 @@ endif
 
 deps += dependency('zlib')
 
-# Velsub Faz 1: wx'den ÖNCEKI çekirdek bağımlılık seti (aegisub-core hedefi bunu kullanır;
+# velnosub Faz 1: wx'den ÖNCEKI çekirdek bağımlılık seti (aegisub-core hedefi bunu kullanır;
 # icu/ffms2 gibi ilaveler src/core/meson.build içinde eklenir)
 deps_core = deps
 
@@ -136,9 +136,9 @@ wx_minver = '>=' + get_option('wx_version')
 if host_machine.system() == 'darwin'
     wx_minver = '>=3.1.0'
 endif
-# Velsub Faz 2: mobil kolda wx yok — ne bağımlılık araması ne vendor
+# velnosub Faz 2: mobil kolda wx yok — ne bağımlılık araması ne vendor
 # alt-projesi çalışır; GUI hedefi aşağıda kapatılır.
-if not get_option('velsub_mobile')
+if not get_option('velnosub_mobile')
     wx_dep = dependency('wxWidgets', version: wx_minver,
                         required: false,
                         modules: ['std', 'stc', 'gl'])
@@ -211,7 +211,7 @@ if not get_option('velsub_mobile')
         endif
     endif
 endif
-endif  # not velsub_mobile
+endif  # not velnosub_mobile
 
 deps += dependency('icu-uc', version: '>=4.8.1.1')
 deps += dependency('icu-i18n', version: '>=4.8.1.1')
@@ -366,11 +366,11 @@ endif
 conf_platform = configuration_data()
 conf_platform.set('DEFAULT_PLAYER_AUDIO', def_audio)
 
-# Velsub Faz 2: mobil kol LuaJIT kullanmaz (automation Faz 5'te cihazda
+# velnosub Faz 2: mobil kol LuaJIT kullanmaz (automation Faz 5'te cihazda
 # yeniden devreye girer); vendor luajit meson'u Android hedefini
 # 'Unsupported' sayar. Masaüstü kolu birebir korunur.
 luajit_inc = []
-if not get_option('velsub_mobile')
+if not get_option('velnosub_mobile')
     luajit = dependency('luajit', version: '>=2.0.0', required: get_option('system_luajit'))
     if luajit.found() and luajit.type_name() != 'internal'
         luajit_test = cc.run('''#include <lauxlib.h>
@@ -404,15 +404,15 @@ int main(void)
         luajit_inc = include_directories(luajit.get_variable('includedir'))
     endif
 endif
-# Velsub Faz 2: mobil kol LuaJIT kullanmaz (automation Faz 5'te cihaz kenarında
+# velnosub Faz 2: mobil kol LuaJIT kullanmaz (automation Faz 5'te cihaz kenarında
 # yeniden devreye alır) — vendor LUajit meson'u Android'i 'Unsupported' saydığı
 # için bu kol devre dışı; GUI hedefleri masaüstünde birebir korunur.
-if not get_option('velsub_mobile')
+if not get_option('velnosub_mobile')
     subdir('vendor/luabins/src')
 endif
 
-# Velsub Faz 2: mobil kol GL kullanmaz (GUI yok) — masaüstünde değişmez.
-if not get_option('velsub_mobile')
+# velnosub Faz 2: mobil kol GL kullanmaz (GUI yok) — masaüstünde değişmez.
+if not get_option('velnosub_mobile')
     dep_gl = dependency('gl', required: false)
     if not dep_gl.found()
         if host_machine.system() == 'windows'
@@ -451,30 +451,30 @@ if not meson.is_cross_build()
     subdir('tests')
 endif
 
-### Velsub Faz 2: Android/mobil çekirdek paylaşılan kitaplığı — libaegisub
-# ve aegisub-core tek .so'da birleştirilir (-Dvelsub_mobile=true + cross file).
+### velnosub Faz 2: Android/mobil çekirdek paylaşılan kitaplığı — libaegisub
+# ve aegisub-core tek .so'da birleştirilir (-Dvelnosub_mobile=true + cross file).
 # GUI hedefleri bu kolun derlemesinden etkilenmez.
-if get_option('velsub_mobile')
+if get_option('velnosub_mobile')
     # link_whole statik arşivlerin kendisine bağımlılıkları otomatik taşınmaz;
     # ayrıca meson boost özel-yordamı cross'ta headers-only çözümleyebiliyor
     # ('final compile args' ['-I', '-DBOOST_ALL_NO_LIB'] — lib yok). Android
     # cross'ta .so linki boost dosyalarını find_library ile açıkça alır;
     # host'ta (sanitey) boost_dep masaüstünün tamlığını sürer.
-    velsub_boost_libs = []
+    velnosub_boost_libs = []
     if meson.is_cross_build()
-        velsub_boost_dir = meson.get_external_property('boost_librarydir')
+        velnosub_boost_dir = meson.get_external_property('boost_librarydir')
         foreach aseg : ['system', 'atomic', 'chrono', 'filesystem', 'locale', 'regex', 'thread']
-            velsub_boost_libs += cxx.find_library('boost_' + aseg,
+            velnosub_boost_libs += cxx.find_library('boost_' + aseg,
                 static: true, required: true,
-                dirs: [velsub_boost_dir])
+                dirs: [velnosub_boost_dir])
         endforeach
     else
-        velsub_boost_libs = [boost_dep]
+        velnosub_boost_libs = [boost_dep]
     endif
-    velsub_core_so = shared_library('velsub-core',
+    velnosub_core_so = shared_library('velnosub-core',
         link_whole: [libaegisub, aegisub_core],
         dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
-                       dependency('icu-i18n', version: '>= 4.8.1.1')] + velsub_boost_libs,
+                       dependency('icu-i18n', version: '>= 4.8.1.1')] + velnosub_boost_libs,
         install: true)
 
     # P2.2: ASS aç → düzenle → kaydet CLI dumanı (cihazda koşar).
@@ -492,9 +492,9 @@ if host_machine.system() == 'windows'
     link_depends += manifest_file
 endif
 
-# Velsub Faz 2: mobil kolda GUI hedefi yok (wx bağımsız — çekirdek kitaplığı
+# velnosub Faz 2: mobil kolda GUI hedefi yok (wx bağımsız — çekirdek kitaplığı
 # ve CLI yalnız). Masaüstünde birebir davranış korunur.
-if not get_option('velsub_mobile')
+if not get_option('velnosub_mobile')
 aegisub = executable('aegisub', aegisub_src, version_h, acconf, resrc,
                      link_with: [libresrc, libluabins, libaegisub],
                      link_args: link_args,

@@ -22,7 +22,7 @@
 #include "ass_style.h"
 #include "ass_style_storage.h"
 #ifndef AGI_CORE
-// Velsub Faz 1 (P1.6): GetEffectiveLayoutResolution'un Context/VideoProvider
+// velnosub Faz 1 (P1.6): GetEffectiveLayoutResolution'un Context/VideoProvider
 // bağı — bu üç include GUI kolu içindir.
 #include "async_video_provider.h"
 #include "project.h"
@@ -195,7 +195,7 @@ AssStyle *AssFile::GetStyle(std::string const& name) {
 }
 
 #ifndef AGI_CORE
-// Velsub Faz 1 (P1.6): masaüstü Commit (wxString) — çekirdekte bu kol
+// velnosub Faz 1 (P1.6): masaüstü Commit (wxString) — çekirdekte bu kol
 // derlenmez; çekirdek std::string overload'u src/core/commit_compat.cpp'tedir.
 int AssFile::Commit(wxString const& desc, int type, int amend_id, AssDialogue *single_line) {
 	if (type == COMMIT_NEW || (type & COMMIT_DIAG_ADDREM) || (type & COMMIT_ORDER)) {

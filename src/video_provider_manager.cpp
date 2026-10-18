@@ -31,7 +31,7 @@
 #include <wx/choicdlg.h>
 #include <wx/intl.h>
 #else
-// Velsub Faz 1 (P1.3): çekirdekte provider seçimi agi::compat'tan sorgulanır.
+// velnosub Faz 1 (P1.3): çekirdekte provider seçimi agi::compat'tan sorgulanır.
 #include "core/compat/ui_abi.h"
 #endif
 

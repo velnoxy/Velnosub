@@ -54,7 +54,7 @@
 #include <wx/intl.h>
 #include <wx/thread.h>
 #else
-// Velsub Faz 1 (P1.4): thread kontrolü agi::compat ABI'siyle; metin ham UTF-8.
+// velnosub Faz 1 (P1.4): thread kontrolü agi::compat ABI'siyle; metin ham UTF-8.
 #include "core/compat/runtime_abi.h"
 #endif
 

@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.4) — köprülerin headless çekirdek varsayımları.
+// velnosub Faz 1 (P1.4) — köprülerin headless çekirdek varsayımları.
 
 #include "core/compat/runtime_abi.h"
 

@@ -42,7 +42,7 @@
 #include "MatroskaParser.h"
 #include "options.h"
 #else
-// Velsub Faz 1 (P1.4): çekirdekte seçim agi::compat'tan, ilerleme no-op
+// velnosub Faz 1 (P1.4): çekirdekte seçim agi::compat'tan, ilerleme no-op
 // koşucuyla köpürür; DialogProgress GUI kolu için kalır.
 #include "core/compat/runtime_abi.h"
 #include "core/compat/ui_abi.h"

@@ -1,4 +1,4 @@
-// Velsub Faz 1 — aegisub-core tarafındaki float_to_string tanımı.
+// velnosub Faz 1 — aegisub-core tarafındaki float_to_string tanımı.
 // (Masaüstü tanımı src/utils.cpp içinde kalır; iki hedef kendi kopyasını
 // derler, çakışmaz. P1.6'da masaüstü çekirdeğe bağlanınca tekilleşir.)
 

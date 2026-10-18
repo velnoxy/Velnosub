@@ -1,4 +1,4 @@
-// Copyright (c) 2026, Velsub Project. (BSD/MIT — Aegisub türevi)
+// Copyright (c) 2026, velnosub Project. (BSD/MIT — Aegisub türevi)
 //
 // Permission to use, copy, modify, and distribute this software for any
 // purpose with or without fee is hereby granted, provided that the above
@@ -12,9 +12,9 @@
 // ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 // OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 //
-// Velsub Faz 2 (P2.2): config::opt global tanımını GUI kolundaki main.cpp,
+// velnosub Faz 2 (P2.2): config::opt global tanımını GUI kolundaki main.cpp,
 // mobil kol için de bu TU sağlar; masaüstü ikilisini etkilemez. Bu TU yalnız
-// -Dvelsub_mobile açıldığında core listesine eklenir.
+// -Dvelnosub_mobile açıldığında core listesine eklenir.
 #include "options.h"
 
 #include <libaegisub/path.h>

@@ -269,7 +269,7 @@ foreach opt: opt_src
     endif
 endforeach
 
-# Velsub Faz 1: wx'siz çekirdek hedefi (aegisub-core).
+# velnosub Faz 1: wx'siz çekirdek hedefi (aegisub-core).
 # files() görece yollar buradan çözümlendiği için kaynak listesi bu dosyada tutulur;
 # hedef tanımı src/core/meson.build içinde. Kural: bu listedeki hiçbir dosya
 # `#include <wx/…>` kullanamaz.
@@ -333,10 +333,10 @@ aegisub_core_src = files(
     'version.cpp',
 )
 
-# Velsub Faz 2 (P2.2): core'un referans verdiği wx'siz tanım TU'ları mobil
+# velnosub Faz 2 (P2.2): core'un referans verdiği wx'siz tanım TU'ları mobil
 # kolda core'a katılır (link_whole'da undefined kalmasın). Masaüstünde GUI
 # listesi sürer; core.a birebir aynı.
-if get_option('velsub_mobile')
+if get_option('velnosub_mobile')
     aegisub_core_src += files(
         'selection_controller.cpp',
         'text_selection_controller.cpp',

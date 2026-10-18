@@ -42,9 +42,9 @@ libaegisub_src = [
     'common/cajun/writer.cpp',
 ]
 
-# Velsub Faz 2: Lua bağımlı birimler yalnız GUI kolu (luajit_inc REQUIRED);
+# velnosub Faz 2: Lua bağımlı birimler yalnız GUI kolu (luajit_inc REQUIRED);
 # Faz 5'te LuaJIT cihaz kenarında devreye girdiğinde geri gelirler.
-if not get_option('velsub_mobile')
+if not get_option('velnosub_mobile')
     libaegisub_src += [
         'lua/modules.cpp',
         'lua/script_reader.cpp',

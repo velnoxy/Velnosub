@@ -1,4 +1,4 @@
-// Velsub Faz 1 — aegisub-core için wx'siz AssFile::Commit iliği.
+// velnosub Faz 1 — aegisub-core için wx'siz AssFile::Commit iliği.
 //
 // Masaüstündeki AssFile::Commit(wxString const&, ...) gövdesiyle (ass_file.cpp)
 // davranış uyumludur; tek fark PushState'tir: undo yığını arabirimi UI

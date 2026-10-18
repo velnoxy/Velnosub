@@ -35,7 +35,7 @@
 #include <cstdint>
 #include <string>
 
-// Velsub (P2.2): sınıflandırma — gui bağımlı yüzey (wx) korumada, wx'siz
+// velnosub (P2.2): sınıflandırma — gui bağımlı yüzey (wx) korumada, wx'siz
 // yardımcılar mobil çekirdeğe açık.
 #ifndef AGI_CORE
 #include <wx/bitmap.h>

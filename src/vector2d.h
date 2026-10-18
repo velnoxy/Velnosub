@@ -24,7 +24,7 @@
 #include <cmath>
 #include <string>
 
-// Velsub Faz 1: aegisub-core derlemesinde wx yoktur (AGI_CORE tanımlı);
+// velnosub Faz 1: aegisub-core derlemesinde wx yoktur (AGI_CORE tanımlı);
 // wxPoint köprüsü yalnızca UI tarafında mevcuttur.
 #ifndef AGI_CORE
 #include <wx/gdicmn.h>

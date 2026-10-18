@@ -30,5 +30,5 @@ option('update_url', type: 'string', value: '/trunk', description: 'Base path to
 option('build_osx_bundle', type: 'boolean', value: 'false', description: 'Package Aegisub.app on OSX')
 option('build_appimage', type: 'boolean', value: 'false', description: 'Prepare for AppImage packaging')
 
-# Velsub Faz 2: Android/mobil çekirdek paylaşılan kitaplığı hedefi
-option('velsub_mobile', type: 'boolean', value: false, description: 'Build libaegisub-core.so (mobile host lib)')
+# velnosub Faz 2: Android/mobil çekirdek paylaşılan kitaplığı hedefi
+option('velnosub_mobile', type: 'boolean', value: false, description: 'Build libaegisub-core.so (mobile host lib)')

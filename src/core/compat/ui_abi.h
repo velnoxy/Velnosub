@@ -1,4 +1,4 @@
-// Velsub Faz 1 (P1.3) — çekirdeğin UI'ya sorduğu dört sorunun ABI'si.
+// velnosub Faz 1 (P1.3) — çekirdeğin UI'ya sorduğu dört sorunun ABI'si.
 //
 // Çekirdek hedefi (aegisub-core) wx'sizdir: bu ABI'lerin çekirdek
 // varsayımları headless'tır (çıktı yoktur, iptal/no-op dönerler).

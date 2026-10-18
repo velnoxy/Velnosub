@@ -205,7 +205,7 @@ public:
 	/// @return Unique identifier for the new undo group
 	int Commit(wxString const& desc, int type, int commitId = -1, AssDialogue *single_line = nullptr);
 #ifdef AGI_CORE
-	// Velsub Faz 1: yalnız çekirdek derlemesinde görünür. Masaüstünde bu
+	// velnosub Faz 1: yalnız çekirdek derlemesinde görünür. Masaüstünde bu
 	// overload'u göstermek `Commit("", …)` literallerinde iki adaylı
 	// belirsizlik yaratır; o kolda wxString yolu kullanılır. Core açıklaması
 	// UTF-8'dir; çeviriyi UI yapar (tanım: src/core/commit_compat.cpp).

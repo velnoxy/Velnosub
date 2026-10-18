@@ -23,7 +23,7 @@
 #include "text_selection_controller.h"
 
 #ifndef AGI_CORE
-// Velsub Faz 1 (P1.3): masaüstü wx i18n'li kalır (fmt_tl/_).
+// velnosub Faz 1 (P1.3): masaüstü wx i18n'li kalır (fmt_tl/_).
 #include "format.h"
 #else
 #include "core/compat/ui_abi.h"

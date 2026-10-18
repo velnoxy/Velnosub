@@ -1,4 +1,4 @@
-# Velsub — aegisub-core (Faz 1)
+# velnosub — aegisub-core (Faz 1)
 #
 # Kaynak listesi (aegisub_core_src) src/meson.build içinde tanımlı; burada yalnızca
 # hedef tanımlanır. wx'siz derlenir: bu hedefteki hiçbir dosya `#include <wx/…>`
