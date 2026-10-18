@@ -19,7 +19,7 @@
 #include "ass_dialogue.h"
 #include "ass_file.h"
 #include "ass_style.h"
-#include "utils.h"
+#include "core/math_util.h"
 
 #include <libaegisub/exception.h>
 #include <libaegisub/of_type_adaptor.h>
@@ -30,7 +30,6 @@
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
 #include <cmath>
-#include <wx/intl.h>
 
 enum {
 	LEFT = 0,
@@ -286,5 +285,10 @@ void ResampleResolution(AssFile *ass, ResampleSettings settings) {
 	if (resample_colors)
 		ass->SetScriptInfo("YCbCr Matrix", MatrixToString(settings.dest_matrix));
 
+#ifdef AGI_CORE
+	// Çekirdek: açıklama UTF-8 verilir, çeviriyi UI yapar.
+	ass->Commit("resolution resampling", AssFile::COMMIT_SCRIPTINFO | AssFile::COMMIT_DIAG_FULL);
+#else
 	ass->Commit(_("resolution resampling"), AssFile::COMMIT_SCRIPTINFO | AssFile::COMMIT_DIAG_FULL);
+#endif
 }

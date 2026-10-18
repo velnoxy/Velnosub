@@ -124,6 +124,10 @@ endif
 
 deps += dependency('zlib')
 
+# Velsub Faz 1: wx'den ÖNCEKI çekirdek bağımlılık seti (aegisub-core hedefi bunu kullanır;
+# icu/ffms2 gibi ilaveler src/core/meson.build içinde eklenir)
+deps_core = deps
+
 wx_minver = '>=' + get_option('wx_version')
 if host_machine.system() == 'darwin'
     wx_minver = '>=3.1.0'

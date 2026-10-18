@@ -33,7 +33,7 @@
 
 #include "ass_dialogue.h"
 #include "subtitle_format.h"
-#include "utils.h"
+#include "core/math_util.h"
 
 #include <libaegisub/of_type_adaptor.h>
 #include <libaegisub/split.h>

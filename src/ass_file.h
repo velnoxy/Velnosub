@@ -37,6 +37,7 @@
 #include <boost/intrusive/list.hpp>
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 class AssAttachment;
@@ -200,6 +201,13 @@ public:
 	/// @param single_line Line which was changed, if only one line was
 	/// @return Unique identifier for the new undo group
 	int Commit(wxString const& desc, int type, int commitId = -1, AssDialogue *single_line = nullptr);
+#ifdef AGI_CORE
+	// Velsub Faz 1: yalnız çekirdek derlemesinde görünür. Masaüstünde bu
+	// overload'u göstermek `Commit("", …)` literallerinde iki adaylı
+	// belirsizlik yaratır; o kolda wxString yolu kullanılır. Core açıklaması
+	// UTF-8'dir; çeviriyi UI yapar (tanım: src/core/commit_compat.cpp).
+	int Commit(std::string const& desc_utf8, int type, int commitId = -1, AssDialogue *single_line = nullptr);
+#endif
 
 	/// Comparison function for use when sorting
 	typedef bool (*CompFunc)(AssDialogue const& lft, AssDialogue const& rgt);

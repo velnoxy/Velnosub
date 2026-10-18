@@ -85,8 +85,7 @@ std::string float_to_string(double val, int precision) {
 	return s;
 }
 
-int SmallestPowerOf2(int x) {
-	x--;
+int SmallestPowerOf2(int x) {	x--;
 	x |= (x >> 1);
 	x |= (x >> 2);
 	x |= (x >> 4);

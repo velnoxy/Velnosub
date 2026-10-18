@@ -30,7 +30,7 @@
 
 #include "ass_dialogue.h"
 
-#include "utils.h"
+#include "core/math_util.h"
 
 #include <libaegisub/color.h>
 #include <libaegisub/exception.h>

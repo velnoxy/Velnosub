@@ -30,6 +30,7 @@
 #pragma once
 
 #include <libaegisub/fs_fwd.h>
+#include "core/math_util.h"
 
 #include <cstdint>
 #include <string>
@@ -43,8 +44,6 @@ class wxStyledTextCtrl;
 class wxWindow;
 
 wxString PrettySize(int bytes);
-
-std::string float_to_string(double val, int precision = 3);
 
 /// @brief Get the smallest power of two that is greater or equal to x
 ///
@@ -75,22 +74,11 @@ bool ForwardMouseWheelEvent(wxWindow *source, wxMouseEvent &evt);
 /// @param max_files Maximum number of files
 void CleanCache(agi::fs::path const& directory, std::string const& file_type, uint64_t max_size, uint64_t max_files = -1);
 
-/// @brief Templated abs() function
-template <typename T> T tabs(T x) { return x < 0 ? -x : x; }
-
-/// Get the middle value of a, b, and c (i.e. clamp b to [a,c])
-/// @precondition a <= c
-template<typename T> inline T mid(T a, T b, T c) {
-	return a > b ? a : (b > c ? c : b);
-}
-
 /// Get the text contents of the clipboard, or empty string on failure
 std::string GetClipboard();
 /// Try to set the clipboard to the given string
 void SetClipboard(std::string const& new_value);
 void SetClipboard(wxBitmap const& new_value);
-
-#define countof(array) (sizeof(array) / sizeof(array[0]))
 
 wxString FontFace(std::string opt_prefix);
 

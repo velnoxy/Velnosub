@@ -268,3 +268,49 @@ foreach opt: opt_src
         aegisub_src += files(opt[1])
     endif
 endforeach
+
+# Velsub Faz 1: wx'siz çekirdek hedefi (aegisub-core).
+# files() görece yollar buradan çözümlendiği için kaynak listesi bu dosyada tutulur;
+# hedef tanımı src/core/meson.build içinde. Kural: bu listedeki hiçbir dosya
+# `#include <wx/…>` kullanamaz.
+
+aegisub_core_src = files(
+    # ASS modeli
+    'ass_attachment.cpp',
+    'ass_dialogue.cpp',
+    'ass_entry.cpp',
+    'ass_export_filter.cpp',
+    'ass_karaoke.cpp',
+    'ass_override.cpp',
+    'ass_parser.cpp',
+    'ass_style_storage.cpp',
+
+    # yardımcılar
+    'string_codec.cpp',
+    'text_file_reader.cpp',
+    'text_file_writer.cpp',
+    'colorspace.cpp',
+    'fft.cpp',
+    'vector2d.cpp',
+    'vector3d.cpp',
+    'spline_curve.cpp',
+    'thesaurus.cpp',
+    'spellchecker.cpp',
+
+    # format I/O (mkv, ebu3264, ttxt ileride: ChoiceSelector/wxXML bağımlılıklarından sonra)
+    'subtitle_format_ass.cpp',
+    'subtitle_format_encore.cpp',
+    'subtitle_format_microdvd.cpp',
+    'subtitle_format_srt.cpp',
+    'subtitle_format_ssa.cpp',
+    'subtitle_format_transtation.cpp',
+    'subtitle_format_txt.cpp',
+
+    # diğeri
+    'resolution_resampler.cpp',
+    'spellchecker_hunspell.cpp',
+    'core/math_util.cpp',
+    'core/commit_compat.cpp',
+)
+
+subdir('core')
