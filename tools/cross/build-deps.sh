@@ -9,7 +9,6 @@
 #
 # Kullanım:
 #   NDK_ROOT=/root/velsub/ndk/android-ndk-r29 tools/cross/build-deps.sh arm64 x86_64
-mkdir -p "$WORK"
 set -euo pipefail
 
 DEPS_ROOT=${DEPS_ROOT:-/root/velsub/ndk-deps}
@@ -20,8 +19,9 @@ BOOST_VER=1.84.0
 SRC=$WORK/src
 mkdir -p "$SRC" "$DEPS_ROOT"
 
-NDK_ROOT=${NDK_ROOT:?NDK_ROOT is required (e.g. /root/velsub/ndk/android-ndk-r29)}
-TOOLBIN=$(ls -d "$NDK_ROOT"/toolchains/llvm/prebuilt/linux-*/bin | head -1)
+NDK_ROOT=${NDK_ROOT:?NDK_ROOT is required (e.g. /root/velsub/ndk/r29)}
+TOOLBIN=$(echo "$NDK_ROOT"/toolchains/llvm/prebuilt/*/bin | head -1)
+[ -d "$TOOLBIN" ] || { echo "NDK toolchain bin dir not found under $NDK_ROOT"; exit 1; }
 export PATH="$TOOLBIN:$PATH"
 
 DL() { # url out
@@ -36,28 +36,29 @@ esac
 
 PREFIX=$DEPS_ROOT/$ABI_DIR
 mkdir -p "$PREFIX"
+[ -x "$TOOLBIN/$TRIP$API-clang++" ] || { echo "missing $TOOLBIN/$TRIP$API-clang++"; exit 1; }
 
 # ---------- ICU ----------
 if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
-    DL "https://github.com/unicode-org/icu/releases/download/release-$(echo "$ICU_VER" | tr -d '.')-1/icu4c-${ICU_VER}-1-src.tgz" "$SRC/icu4c-src.tgz"
-    [ -d "$SRC/icu4c" ] || tar -xzf "$SRC/icu4c-src.tgz" -C "$SRC"
+    DL "https://github.com/unicode-org/icu/releases/download/release-$(echo "$ICU_VER" | tr -d '.')-1/icu4c-${ICU_VER}_1-src.tgz" "$SRC/icu4c-src.tgz"
+    [ -d "$SRC/icu" ] || tar -xzf "$SRC/icu4c-src.tgz" -C "$SRC"
 
     # host (ana makine) derlemesi — cross araçları (genrb vb.) için gereklidir
-    if [ ! -x "$SRC/icu-host/bin/genrb" ]; then
+    if [ ! -x "$SRC/icu-host-build/bin/genrb" ] && [ ! -x "$SRC/icu-host-build/stubdata/genrb" ]; then
         mkdir -p "$SRC/icu-host-build"
-        (cd "$SRC/icu-host-build" && CXXFLAGS="-std=c++17" ../icu4c/source/configure --enable-static --disable-shared --prefix="$SRC/icu-host" >/dev/null && make -j"$(nproc)" -s install >/dev/null)
+        (cd "$SRC/icu-host-build" && CXXFLAGS="-std=c++17" "$SRC/icu/source/configure" --prefix="$SRC/icu-host" >/dev/null 2>&1 && make -j"$(nproc)" -s >/dev/null 2>&1 && make -s install >/dev/null 2>&1)
     fi
 
     mkdir -p "$SRC/icu-cross-$ABI_DIR"
     (cd "$SRC/icu-cross-$ABI_DIR" && \
-        ../icu4c/source/configure \
+        "$SRC/icu/source/configure" \
             --host="$TRIP" \
             --with-cross-build="$SRC/icu-host-build" \
             --prefix="$PREFIX" \
             --with-data-packaging=static \
             --disable-shared --enable-static \
             --disable-tests --disable-samples --disable-tools --disable-extras \
-            CFLAGS="-Os" CXXFLAGS="-Os -std=c++17" LDFLAGS="-static" \
+            CFLAGS="-Os" CXXFLAGS="-Os -std=c++17" \
         >/dev/null && \
         make -j"$(nproc)" -s >/dev/null && make -s install >/dev/null)
 fi
@@ -68,12 +69,16 @@ if [ ! -d "$PREFIX/include/boost" ]; then
     [ -d "$SRC/boost-${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
 
     pushd "$SRC/boost-${BOOST_VER//./_}" >/dev/null
+    # b2 release tar'ın içi x86_64 önceden derlenmiş gelir; aarch64 host'ta
+    # bootstrap.sh ile yeniden derlenir (idempotent).
+    [ -x ./b2 ] || ./bootstrap.sh --with-toolset=gcc >/dev/null
     cat > user-config-android.jam <<EOF
 using clang : android : $TRIP$API-clang++ ;
 EOF
     ./b2 --user-config=user-config-android.jam toolset=clang-android \
         target-os=android link=static threading=multi \
-        cxxflags="-D__ANDROID_API__=$API -Os" \
+        cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os" \
+        linkflags="-L$PREFIX/lib" \
         --without-python --without-mpi \
         --with-filesystem --with-regex --with-locale \
         --prefix="$PREFIX" install

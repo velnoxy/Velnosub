@@ -19,11 +19,12 @@ pkg-config = 'pkg-config'
 
 # Paketlenmiş bağımlılıkların .pc dizini (tools/cross/build-deps.sh üretir)
 [built-in options]
-prefix = '/root/velsub/ndk-deps'
+prefix = '/root/velsub/ndk-deps/arm64-v8a'
 c_args = ['-D__ANDROID_API__=29']
 cpp_args = ['-D__ANDROID_API__=29']
 c_link_args = []
 cpp_link_args = []
 
 [properties]
+pkg_config_libdir = ['/root/velsub/ndk-deps/arm64-v8a/lib/pkgconfig']
 sys_root = ''

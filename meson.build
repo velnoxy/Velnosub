@@ -442,6 +442,9 @@ if get_option('velsub_mobile')
         dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
                        dependency('icu-i18n', version: '>= 4.8.1.1')],
         install: true)
+
+    # P2.2: ASS aç → düzenle → kaydet CLI dumanı (cihazda koşar).
+    subdir('tools/cross')
 endif
 
 aegisub_cpp_pch = ['src/include/agi_pre.h']

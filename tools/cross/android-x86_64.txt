@@ -17,9 +17,10 @@ ranlib = 'llvm-ranlib'
 pkg-config = 'pkg-config'
 
 [built-in options]
-prefix = '/root/velsub/ndk-deps'
+prefix = '/root/velsub/ndk-deps/x86_64'
 c_args = ['-D__ANDROID_API__=29']
 cpp_args = ['-D__ANDROID_API__=29']
 
 [properties]
+pkg_config_libdir = ['/root/velsub/ndk-deps/x86_64/lib/pkgconfig']
 sys_root = ''
