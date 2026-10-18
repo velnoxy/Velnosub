@@ -333,4 +333,18 @@ aegisub_core_src = files(
     'version.cpp',
 )
 
+# Velsub Faz 2 (P2.2): core'un referans verdiği wx'siz tanım TU'ları mobil
+# kolda core'a katılır (link_whole'da undefined kalmasın). Masaüstünde GUI
+# listesi sürer; core.a birebir aynı.
+if get_option('velsub_mobile')
+    aegisub_core_src += files(
+        'selection_controller.cpp',
+        'text_selection_controller.cpp',
+        'video_provider_cache.cpp',
+        'video_provider_dummy.cpp',
+        'video_provider_yuv4mpeg.cpp',
+        'core/options_globals.cpp',
+    )
+endif
+
 subdir('core')

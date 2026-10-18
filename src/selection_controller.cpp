@@ -19,7 +19,11 @@
 #include "ass_dialogue.h"
 #include "ass_file.h"
 #include "include/aegisub/context.h"
+// Velsub (P2.2): subs_controller.h wx/wxiyera taşır; getset wx'siz çekirdek
+// derlemesine subs_timer koşuluyla girmez.
+#ifndef AGI_CORE
 #include "subs_controller.h"
+#endif
 
 #include <algorithm>
 

@@ -16,16 +16,24 @@
 
 #include "text_selection_controller.h"
 
+// Velsub (P2.2): wx SC intifa area zaten yalnız ctrl non-null iken gerekli;
+// AGI_CORE derlemesinde (mobil çekirdek) wx başlıkları koşturmaz, ctrl yok sayılır.
+#ifndef AGI_CORE
 #include <wx/stc/stc.h>
+#endif
 
 void TextSelectionController::SetControl(wxStyledTextCtrl *ctrl) {
 	this->ctrl = ctrl;
+#ifndef AGI_CORE
 	if (ctrl)
 		ctrl->Bind(wxEVT_STC_UPDATEUI, &TextSelectionController::UpdateUI, this);
+#endif
 }
 
 TextSelectionController::~TextSelectionController() {
+#ifndef AGI_CORE
 	if (ctrl) ctrl->Unbind(wxEVT_STC_UPDATEUI, &TextSelectionController::UpdateUI, this);
+#endif
 }
 
 #define GET(var, new_value) do { \
@@ -36,14 +44,24 @@ TextSelectionController::~TextSelectionController() {
 	}                         \
 } while(false)
 
+#ifdef AGI_CORE
+// Velsub (P2.2): wx SC yok — yalnız alan güncelleyip sinyali duyurur.
+#define SET(var, new_value, Setter) do { \
+	if (var != new_value) {              \
+		var = new_value;                 \
+	}                                    \
+} while (false)
+#else
 #define SET(var, new_value, Setter) do { \
 	if (var != new_value) {              \
 		var = new_value;                 \
 		if (ctrl) ctrl->Setter(var);     \
 	}                                    \
 } while (false)
+#endif
 
 void TextSelectionController::UpdateUI(wxStyledTextEvent &evt) {
+#ifndef AGI_CORE
 	if (changing) return;
 
 	bool changed = false;
@@ -57,6 +75,7 @@ void TextSelectionController::UpdateUI(wxStyledTextEvent &evt) {
 		GET(selection_end, insertion_point);
 	}
 	if (changed) AnnounceSelectionChanged();
+#endif
 }
 
 void TextSelectionController::SetInsertionPoint(int position) {

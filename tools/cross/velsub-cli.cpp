@@ -103,7 +103,7 @@ int main(int argc, char **argv) {
 		return 0;
 	}
 	catch (agi::Exception const& e) {
-		std::cerr << "hata: " << e.what() << "\n";
+		std::cerr << "hata: " << e.GetMessage() << "\n";
 		return 1;
 	}
 	catch (std::exception const& e) {

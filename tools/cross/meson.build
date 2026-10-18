@@ -3,6 +3,7 @@
 
 velsub_cli = executable('velsub-cli', 'velsub-cli.cpp',
     link_with: velsub_core_so,
-    include_directories: [libaegisub_inc, include_directories('..')],
+    include_directories: [libaegisub_inc, deps_inc, version_inc, velsub_src_inc],
+    dependencies: [boost_dep],
     cpp_args: ['-DAGI_CORE'],
     install: true)

@@ -27,6 +27,8 @@ else
     version_sh = find_program('tools/version.sh')
 endif
 version_inc = include_directories('.')
+# Velsub (P2.2): src başlık yolu proje-kapsamı tanımlı (tools/cross CLI dahil).
+velsub_src_inc = include_directories('src')
 version_h = custom_target('git_version.h',
                           command: [version_sh, meson.current_build_dir(), meson.current_source_dir()],
                           build_by_default: true,
@@ -455,14 +457,20 @@ endif
 if get_option('velsub_mobile')
     # link_whole statik arşivlerin kendisine bağımlılıkları otomatik taşınmaz;
     # ayrıca meson boost özel-yordamı cross'ta headers-only çözümleyebiliyor
-    # ('final compile args' ['-I', '-DBOOST_ALL_NO_LIB'] — lib yok). Bu yüzden
-    # .so linki icu'yu pc'den, boost dosyalarını find_library ile açıkça alır.
+    # ('final compile args' ['-I', '-DBOOST_ALL_NO_LIB'] — lib yok). Android
+    # cross'ta .so linki boost dosyalarını find_library ile açıkça alır;
+    # host'ta (sanitey) boost_dep masaüstünün tamlığını sürer.
     velsub_boost_libs = []
-    foreach aseg : ['system', 'atomic', 'chrono', 'filesystem', 'locale', 'regex', 'thread']
-        velsub_boost_libs += cxx.find_library('boost_' + aseg,
-            static: true, required: true,
-            dirs: [meson.get_cross_property('boost_librarydir')])
-    endforeach
+    if meson.is_cross_build()
+        velsub_boost_dir = meson.get_external_property('boost_librarydir')
+        foreach aseg : ['system', 'atomic', 'chrono', 'filesystem', 'locale', 'regex', 'thread']
+            velsub_boost_libs += cxx.find_library('boost_' + aseg,
+                static: true, required: true,
+                dirs: [velsub_boost_dir])
+        endforeach
+    else
+        velsub_boost_libs = [boost_dep]
+    endif
     velsub_core_so = shared_library('velsub-core',
         link_whole: [libaegisub, aegisub_core],
         dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),

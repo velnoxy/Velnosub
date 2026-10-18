@@ -35,6 +35,9 @@
 #include <cstdint>
 #include <string>
 
+// Velsub (P2.2): sınıflandırma — gui bağımlı yüzey (wx) korumada, wx'siz
+// yardımcılar mobil çekirdeğe açık.
+#ifndef AGI_CORE
 #include <wx/bitmap.h>
 #include <wx/string.h>
 
@@ -44,12 +47,14 @@ class wxStyledTextCtrl;
 class wxWindow;
 
 wxString PrettySize(int bytes);
+#endif
 
 /// @brief Get the smallest power of two that is greater or equal to x
 ///
 /// Algorithm from http://bob.allegronetwork.com/prog/tricks.html
 int SmallestPowerOf2(int x);
 
+#ifndef AGI_CORE
 /// @brief Launch a new copy of Aegisub.
 ///
 /// Contrary to what the name suggests, this does not close the currently
@@ -66,6 +71,7 @@ void SetFloatOnParent(wxWindow *window);
 /// @param evt The event
 /// @return Should the calling code process the event?
 bool ForwardMouseWheelEvent(wxWindow *source, wxMouseEvent &evt);
+#endif
 
 /// Clean up the given cache directory, limiting the size to max_size
 /// @param directory Directory to clean
@@ -74,10 +80,13 @@ bool ForwardMouseWheelEvent(wxWindow *source, wxMouseEvent &evt);
 /// @param max_files Maximum number of files
 void CleanCache(agi::fs::path const& directory, std::string const& file_type, uint64_t max_size, uint64_t max_files = -1);
 
+#ifndef AGI_CORE
 /// Get the text contents of the clipboard, or empty string on failure
 std::string GetClipboard();
+#endif
 /// Try to set the clipboard to the given string
 void SetClipboard(std::string const& new_value);
+#ifndef AGI_CORE
 void SetClipboard(wxBitmap const& new_value);
 
 wxString FontFace(std::string opt_prefix);
@@ -104,3 +113,4 @@ namespace ime {
 	bool process_key_event(wxStyledTextCtrl *ctrl, wxKeyEvent &);
 }
 }
+#endif
