@@ -471,6 +471,8 @@ if get_option('velnosub_mobile')
     else
         velnosub_boost_libs = [boost_dep]
     endif
+    velnosub_libass_dep = dependency('libass', version: '>=0.9.7',
+                                     fallback: ['libass', 'libass_dep'])
     velnosub_core_so = shared_library('velnosub-core',
         link_whole: [libaegisub, aegisub_core],
         dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
