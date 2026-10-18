@@ -67,7 +67,9 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
 fi
 
 # ---------- Boost ----------
-if [ ! -d "$PREFIX/include/boost" ]; then
+# Tüm başlıklar + thread/chrono/locale/regex/filesystem statik arşivler:
+# arşiv var mı (pc da o var) yeter; başlıklar b2 install ile her koşuda güncel.
+if [ ! -f "$PREFIX/lib/libboost_filesystem.a" ]; then
     DL "https://archives.boost.io/release/$BOOST_VER/source/boost_${BOOST_VER//./_}.tar.bz2" "$SRC/boost.tar.bz2"
     [ -d "$SRC/boost_${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
 
