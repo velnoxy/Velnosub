@@ -40,15 +40,21 @@ libaegisub_src = [
     'common/cajun/elements.cpp',
     'common/cajun/reader.cpp',
     'common/cajun/writer.cpp',
-
-    'lua/modules.cpp',
-    'lua/script_reader.cpp',
-    'lua/utils.cpp',
-    'lua/modules/lfs.cpp',
-    'lua/modules/re.cpp',
-    'lua/modules/unicode.cpp',
-    'lua/modules/lpeg.c',
 ]
+
+# Velsub Faz 2: Lua bağımlı birimler yalnız GUI kolu (luajit_inc REQUIRED);
+# Faz 5'te LuaJIT cihaz kenarında devreye girdiğinde geri gelirler.
+if not get_option('velsub_mobile')
+    libaegisub_src += [
+        'lua/modules.cpp',
+        'lua/script_reader.cpp',
+        'lua/utils.cpp',
+        'lua/modules/lfs.cpp',
+        'lua/modules/re.cpp',
+        'lua/modules/unicode.cpp',
+        'lua/modules/lpeg.c',
+    ]
+endif
 
 if host_machine.system() == 'darwin'
     libaegisub_src += [
