@@ -312,6 +312,7 @@ aegisub_core_src = files(
     'spellchecker_hunspell.cpp',
     'core/math_util.cpp',
     'core/commit_compat.cpp',
+    'core/compat/ui_abi.cpp',
 )
 
 subdir('core')
