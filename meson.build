@@ -453,12 +453,20 @@ endif
 # ve aegisub-core tek .so'da birleştirilir (-Dvelsub_mobile=true + cross file).
 # GUI hedefleri bu kolun derlemesinden etkilenmez.
 if get_option('velsub_mobile')
-    # link_whole statik arşivlerin kendisine bağımlılıkları otomatik taşınmaz:
-    # .so linkinde icu + boost ekstra liste (P2.2: lld undefined asla olmasın)
+    # link_whole statik arşivlerin kendisine bağımlılıkları otomatik taşınmaz;
+    # ayrıca meson boost özel-yordamı cross'ta headers-only çözümleyebiliyor
+    # ('final compile args' ['-I', '-DBOOST_ALL_NO_LIB'] — lib yok). Bu yüzden
+    # .so linki icu'yu pc'den, boost dosyalarını find_library ile açıkça alır.
+    velsub_boost_libs = []
+    foreach aseg : ['system', 'atomic', 'chrono', 'filesystem', 'locale', 'regex', 'thread']
+        velsub_boost_libs += cxx.find_library('boost_' + aseg,
+            static: true, required: true,
+            dirs: [meson.get_cross_property('boost_librarydir')])
+    endforeach
     velsub_core_so = shared_library('velsub-core',
         link_whole: [libaegisub, aegisub_core],
         dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
-                       dependency('icu-i18n', version: '>= 4.8.1.1')] + boost_dep,
+                       dependency('icu-i18n', version: '>= 4.8.1.1')] + velsub_boost_libs,
         install: true)
 
     # P2.2: ASS aç → düzenle → kaydet CLI dumanı (cihazda koşar).

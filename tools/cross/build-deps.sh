@@ -69,7 +69,7 @@ fi
 # ---------- Boost ----------
 # Tüm başlıklar + thread/chrono/locale/regex/filesystem statik arşivler:
 # arşiv var mı (pc da o var) yeter; başlıklar b2 install ile her koşuda güncel.
-if [ ! -f "$PREFIX/lib/libboost_filesystem.a" ]; then
+if [ ! -f "$PREFIX/lib/libboost_system.a" ]; then
     DL "https://archives.boost.io/release/$BOOST_VER/source/boost_${BOOST_VER//./_}.tar.bz2" "$SRC/boost.tar.bz2"
     [ -d "$SRC/boost_${BOOST_VER//./_}" ] || tar -xjf "$SRC/boost.tar.bz2" -C "$SRC"
 
@@ -85,7 +85,7 @@ EOF
         target-os=android link=static threading=multi \
         cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os -fPIC" \
         linkflags="-L$PREFIX/lib" \
-        --with-filesystem --with-regex --with-locale --with-chrono --with-thread \
+        --with-system --with-filesystem --with-regex --with-locale --with-chrono --with-thread \
         --prefix="$PREFIX" install
     popd >/dev/null
 
@@ -107,7 +107,7 @@ Name: boost
 Description: Boost C++ Libraries (Android cross, static build)
 Version: $BOOST_VER
 Cflags: -I\${includedir}
-Libs: -L\${libdir} -lboost_filesystem -lboost_regex -lboost_locale -lboost_atomic -lboost_chrono -lboost_thread
+Libs: -L\${libdir} -lboost_system -lboost_filesystem -lboost_regex -lboost_locale -lboost_atomic -lboost_chrono -lboost_thread
 EOF
 fi
 
