@@ -86,6 +86,11 @@ EOF
         --prefix="$PREFIX" install
     popd >/dev/null
 
+    # Boost 1.84 GIL başlıkları clang 22 strict TE rule'unda kırılıyor
+    # ('-Wmissing-template-arg-list-after-template-kw'); GIL master'daki
+    # düzeltme: fonksiyon şablon çağrısındaki gereksiz `template` düşer.
+    sed -i 's/::template apply(/::apply(/g' "$PREFIX/include/boost/gil/algorithm.hpp"
+
     # b2 .pc üretmez; meson'un boost özel-yordamı pkg-config ile bulsun:
     # yoksa 'potential boost root' taraması HOST /usr/include bozabilecek.
     cat > "$PREFIX/lib/pkgconfig/boost.pc" <<EOF
