@@ -409,27 +409,26 @@ if not get_option('velsub_mobile')
     subdir('vendor/luabins/src')
 endif
 
-dep_gl = dependency('gl', required: false)
-if not dep_gl.found()
-    if host_machine.system() == 'windows'
-        dep_gl = cc.find_library('opengl32', required: false)
-    else
-        dep_gl = cc.find_library('GL', required: false)
+# Velsub Faz 2: mobil kol GL kullanmaz (GUI yok) — masaüstünde değişmez.
+if not get_option('velsub_mobile')
+    dep_gl = dependency('gl', required: false)
+    if not dep_gl.found()
+        if host_machine.system() == 'windows'
+            dep_gl = cc.find_library('opengl32', required: false)
+        else
+            dep_gl = cc.find_library('GL', required: false)
+        endif
+
+        if not cc.has_header('GL/gl.h')
+            dep_gl = dependency('', required: false)
+        endif
+    endif
+    if not dep_gl.found()
+        error('OpenGL implementation not found')
     endif
 
-    if not cc.has_header('GL/gl.h')
-        dep_gl = dependency('', required: false)
-    endif
+    deps += dep_gl
 endif
-if host_machine.system() == 'darwin'
-    conf.set('HAVE_OPENGL_GL_H', 1)
-endif
-
-if not dep_gl.found()
-    error('OpenGL implementation not found')
-endif
-
-deps += dep_gl
 
 if not get_option('csri').disabled() and host_machine.system() == 'windows'
     conf.set('WITH_CSRI', 1)
