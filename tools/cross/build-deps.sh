@@ -79,10 +79,11 @@ if [ ! -d "$PREFIX/include/boost" ]; then
 using clang : android : $TRIP$API-clang++ ;
 EOF
     ./b2 --user-config=user-config-android.jam toolset=clang-android \
+        -j1 \
         target-os=android link=static threading=multi \
         cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os -fPIC" \
         linkflags="-L$PREFIX/lib" \
-        --with-filesystem --with-regex --with-locale \
+        --with-filesystem --with-regex --with-locale --with-chrono --with-thread \
         --prefix="$PREFIX" install
     popd >/dev/null
 
@@ -92,7 +93,8 @@ EOF
     sed -i 's/::template apply(/::apply(/g' "$PREFIX/include/boost/gil/algorithm.hpp"
 
     # b2 .pc üretmez; meson'un boost özel-yordamı pkg-config ile bulsun:
-    # yoksa 'potential boost root' taraması HOST /usr/include bozabilecek.
+    # modül listesi root mesonda chrono/filesystem/thread/locale/regex+system
+    # hepsi kurulu olmalı, aksi halde meson libleri düşürür.
     cat > "$PREFIX/lib/pkgconfig/boost.pc" <<EOF
 prefix=$PREFIX
 exec_prefix=\${prefix}
@@ -103,7 +105,7 @@ Name: boost
 Description: Boost C++ Libraries (Android cross, static build)
 Version: $BOOST_VER
 Cflags: -I\${includedir}
-Libs: -L\${libdir} -lboost_filesystem -lboost_regex -lboost_locale -lboost_atomic
+Libs: -L\${libdir} -lboost_filesystem -lboost_regex -lboost_locale -lboost_atomic -lboost_chrono -lboost_thread
 EOF
 fi
 

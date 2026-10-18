@@ -453,10 +453,12 @@ endif
 # ve aegisub-core tek .so'da birleştirilir (-Dvelsub_mobile=true + cross file).
 # GUI hedefleri bu kolun derlemesinden etkilenmez.
 if get_option('velsub_mobile')
+    # link_whole statik arşivlerin kendisine bağımlılıkları otomatik taşınmaz:
+    # .so linkinde icu + boost ekstra liste (P2.2: lld undefined asla olmasın)
     velsub_core_so = shared_library('velsub-core',
         link_whole: [libaegisub, aegisub_core],
         dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
-                       dependency('icu-i18n', version: '>= 4.8.1.1')],
+                       dependency('icu-i18n', version: '>= 4.8.1.1')] + boost_dep,
         install: true)
 
     # P2.2: ASS aç → düzenle → kaydet CLI dumanı (cihazda koşar).
