@@ -69,7 +69,7 @@ runner = executable(
     cpp_args : extra_args,
     link_with : all_test_dep_libs,
 )    
-test('gtest main', runner)
+test('gtest main', runner, protocol: 'gtest')
 
 
 # setup test env
