@@ -10,8 +10,10 @@
 // Marker şeridi: [AU0] LuaJIT kuruldu, [AU1] aegisub tablo kayıtlı,
 // [AU2] script koştu, [AU3] tamam, [AUE] hata.
 
+#include <lua.hpp>
 #include <lualib.h>
 #include <lauxlib.h>
+#include <luajit.h>
 
 #include <cstring>
 #include <iostream>
