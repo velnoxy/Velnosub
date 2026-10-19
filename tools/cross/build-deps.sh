@@ -79,10 +79,13 @@ if [ ! -f "$PREFIX/lib/libboost_system.a" ] || [ "${VELNOSUB_BOOST_FORCE:-0}" = 
     # bootstrap.sh ile yeniden derlenir (idempotent).
     [ -x ./b2 ] || ./bootstrap.sh --with-toolset=gcc >/dev/null
     cat > user-config-android.jam <<EOF
-using clang : android : $TRIP$API-clang++ ;
+using clang : android_$ABOLU : $TRIP$API-clang++ ;
 EOF
-    ./b2 --user-config=user-config-android.jam toolset=clang-android \
-        -j1 \
+    # ABI-bazlı toolset kimliği ZORUNLU: aynı kaynak ağacında tek toolset adı
+    # kalırsa b2 öteki ABI'nin bin.v2 önbelleğini kullanır (x86 kovasına
+    # AArch64 .a sızması — masa6'da görüldü).
+    ./b2 --user-config=user-config-android.jam toolset=clang-android_$ABOLU \
+        -j${JOBS:-1} \
         cxxstd=17 \
         target-os=android link=static threading=multi \
         cxxflags="-I$PREFIX/include -D__ANDROID_API__=$API -Os -fPIC" \
