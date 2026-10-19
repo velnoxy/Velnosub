@@ -39,8 +39,26 @@ meson setup build-android-arm64 \
   -Dfftw3=disabled -Dhunspell=disabled \
   -Dlibass:require-system-font-provider=false -Dlibass:fontconfig=disabled \
   --cross-file tools/cross/android-arm64.txt
-ninja -C build-android-arm64 libvelnosub-core.so tools/cross/velnosub-cli
+ninja -C build-android-arm64 libvelnosub-core.so \
+  tools/cross/velnosub-cli tools/cross/velnosub-ass-render
 ```
+
+Koşum (host'ta da aynı biçim; cihazda paylaşılan kütüphaneler `lib/` klasöründe
+ve `LD_LIBRARY_PATH` işaretli; reçete velnosub-docs'ta faz2-device-test):
+
+```sh
+VELNOSUB_CONFIG_JSON=src/libresrc/default_config.json \
+  build-android-arm64/tools/cross/velnosub-cli in.ass out.ass --edit-first "okuma-testi"
+build-android-arm64/tools/cross/velnosub-ass-render in.ass out.ppm \
+  --font DejaVuSans.ttf --defaultfont DejaVuSans.ttf --t 1 --w 640 --h 360
+```
+
+Notlar:
+
+- `build-deps.sh` GNU make iş parçacığını `JOBS` ortam değişkeniyle ayarlar
+  (ögel `JOBS=1` gibi proot konaklarında derlemeyi teke düşürmek için).
+- libass 0.17'de `ass_add_font`'ın ad parametresi font seçim anahtarı değildir;
+  ASS stilinin istediği family eşleşmezse `--defaultfont` yolu dosyadan çözer.
 
 ## Lisans ve atıf
 
