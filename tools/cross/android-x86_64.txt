@@ -23,4 +23,10 @@ cpp_args = ['-D__ANDROID_API__=29']
 
 [properties]
 pkg_config_libdir = ['/root/velsub/ndk-deps/x86_64/lib/pkgconfig']
+# meson boost özel-bağımlılığı: sistem-boost aramasını tamamen kapat
+# (/usr/include zehri) — paketlenmiş kurulum dizinlerine sabitlenir
+# (arm64 künyesindeki `boost_librarydir` zorunluluğunun x86_64 karşılığı)
+boost_includedir = '/root/velsub/ndk-deps/x86_64/include'
+boost_librarydir = '/root/velsub/ndk-deps/x86_64/lib'
+sys_root = ''
 sys_root = ''
