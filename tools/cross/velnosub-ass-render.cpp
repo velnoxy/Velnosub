@@ -164,7 +164,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	ASS_Track *track = ass_new_track(lib);
-	ass_process(track, script.data(), static_cast<int>(script.size()));
+	ass_process_data(track, script.data(), static_cast<int>(script.size()));
 	log_msg(std::string("[AR1] ASS yüklendi (olaylar: ") +
 	        std::to_string(track->n_events) + ")");
 	if (track->n_events <= 0) {

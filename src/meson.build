@@ -1,4 +1,6 @@
-subdir('libresrc')
+if not get_option('velnosub_mobile')
+    subdir('libresrc')
+endif
 
 aegisub_src = files(
     'MatroskaParser.c',
