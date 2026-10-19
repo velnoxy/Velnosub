@@ -52,3 +52,15 @@ velnosub_abi = shared_library('velnosub-abi', 'velnosub-abi.cpp',
     dependencies: [boost_dep],
     cpp_args: ['-DAGI_CORE'],
     install: true)
+
+# P3.1: video dumanı. build-ffmpeg.sh çıktısındaki .pc'ler (pkg_config_libdir
+# hattıyla) bulunursa hedef tanımlanır; yoksa bilinçli atlanır.
+ffmpeg_probe_deps = dependency('libavformat', required: false)
+if ffmpeg_probe_deps.found()
+    velnosub_video_probe = executable('velnosub-video-probe', 'velnosub-video-probe.cpp',
+        include_directories: [deps_inc, version_inc],
+        dependencies: [ffmpeg_probe_deps,
+                       dependency('libavcodec', required: true),
+                       dependency('libavutil', required: true)],
+        install: true)
+endif
