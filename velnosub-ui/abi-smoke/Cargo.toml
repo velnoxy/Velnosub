@@ -1,0 +1,6 @@
+[package]
+name = "velnosub-abi-smoke"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]

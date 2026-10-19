@@ -27,3 +27,12 @@ if luajit_dep.found()
         cpp_args: ['-DAGI_CORE'],
         install: true)
 endif
+
+# P4.1: C ABI şeridi — Rust/egui (velnosub-ui) tarafının bağlanacağı
+# extern "C" yüzey; akış P2.2 CLI'ın koşuma geçmiş tek kanalıdır.
+velnosub_abi = shared_library('velnosub-abi', 'velnosub-abi.cpp',
+    link_with: velnosub_core_so,
+    include_directories: [libaegisub_inc, deps_inc, version_inc, velnosub_src_inc],
+    dependencies: [boost_dep],
+    cpp_args: ['-DAGI_CORE'],
+    install: true)
