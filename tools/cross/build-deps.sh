@@ -46,7 +46,7 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
     # host (ana makine) derlemesi — cross araçları (genrb vb.) için gereklidir
     if [ ! -x "$SRC/icu-host-build/bin/genrb" ] && [ ! -x "$SRC/icu-host-build/stubdata/genrb" ]; then
         mkdir -p "$SRC/icu-host-build"
-        (cd "$SRC/icu-host-build" && CXXFLAGS="-std=c++17" "$SRC/icu/source/configure" --prefix="$SRC/icu-host" >/dev/null 2>&1 && make -j"$(nproc)" -s >/dev/null 2>&1 && make -s install >/dev/null 2>&1)
+        (cd "$SRC/icu-host-build" && CXXFLAGS="-std=c++17" "$SRC/icu/source/configure" --prefix="$SRC/icu-host" >/dev/null 2>&1 && make -j"${JOBS:-$(nproc)}" -s >/dev/null 2>&1 && make -s install >/dev/null 2>&1)
     fi
 
 # PIC zorunlu: velnosub-core.so statik arşivleri shared'a taşır
@@ -63,7 +63,7 @@ if [ ! -f "$PREFIX/lib/libicuuc.a" ] && [ ! -f "$PREFIX/lib/libicuuc.so" ]; then
             --disable-tests --disable-samples --disable-tools --disable-extras \
             CFLAGS="-Os -fPIC" CXXFLAGS="-Os -std=c++17 -fPIC" \
         >/dev/null && \
-        make -j"$(nproc)" -s >/dev/null && make -s install >/dev/null)
+        make -j"${JOBS:-$(nproc)}" -s >/dev/null && make -s install >/dev/null)
 fi
 
 # ---------- Boost ----------
