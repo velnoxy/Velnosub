@@ -15,3 +15,15 @@ velnosub_ass_render = executable('velnosub-ass-render', 'velnosub-ass-render.cpp
     dependencies: [boost_dep, velnosub_libass_dep],
     cpp_args: ['-DAGI_CORE'],
     install: true)
+
+# P5.0: LuaJIT zemin dumanı. luajit.pc (build-luajit.sh) bulunursa hedef
+# tanımlanır; bulunmazsa bilinçli olarak atlanır (desktop'a sızma yok).
+luajit_dep = dependency('luajit', required: false)
+if luajit_dep.found()
+    velnosub_automation = executable('velnosub-automation', 'velnosub-automation.cpp',
+        link_with: velnosub_core_so,
+        include_directories: [libaegisub_inc, deps_inc, version_inc, velnosub_src_inc],
+        dependencies: [boost_dep, luajit_dep],
+        cpp_args: ['-DAGI_CORE'],
+        install: true)
+endif
