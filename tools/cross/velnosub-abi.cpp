@@ -61,6 +61,11 @@ int velnosub_abi_init(const char *config_json_path) {
 		agi::log::log = new agi::log::LogSink;
 		std::string const cfg_text = read_all(
 			config_json_path && *config_json_path ? config_json_path : "default_config.json");
+		if (cfg_text.empty()) {
+			set_err("config boş (yol cihazda geçersiz?): " +
+			        std::string(config_json_path ? config_json_path : "default_config.json"));
+			return -1;
+		}
 		config::opt = new agi::Options(
 			"", {cfg_text.data(), cfg_text.size()}, agi::Options::FLUSH_SKIP);
 		g_ready = true;
