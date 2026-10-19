@@ -46,7 +46,7 @@ host)
     # Bütün repo kopyalanır (src ../dynasm'e kızıl referans verir)
     cp -r "$LUASRC/." "$BUILD/"
     (cd "$BUILD/src" && make -j"$JOBS" -s BUILDMODE=static >/dev/null)
-    (cd "$BUILD/src" && make -s install PREFIX="$PREFIX" >/dev/null)
+    (cd "$BUILD" && make -s install PREFIX="$PREFIX" >/dev/null)
     LN=$(ls "$PREFIX/lib"/libluajit*.a | head -1 | xargs basename | sed 's/^lib//; s/\.a$//')
     install_pc "$PREFIX/lib" "$LN" "$PREFIX"
     echo "luajit host hazır: $PREFIX (lib: $LN)"
@@ -73,7 +73,7 @@ arm64|x86_64)
         TARGET_STRIP="llvm-strip" \
         TARGET_CFLAGS="-D__ANDROID_API__=$API" >/dev/null)
     PREFIX=$DEPS_ROOT/$ABI_DIR
-    (cd "$BUILD/src" && make -s install PREFIX="$PREFIX" >/dev/null)
+    (cd "$BUILD" && make -s install PREFIX="$PREFIX" >/dev/null)
     LN=$(ls "$PREFIX/lib"/libluajit*.a | head -1 | xargs basename | sed 's/^lib//; s/\.a$//')
     install_pc "$PREFIX/lib" "$LN" "$PREFIX"
     echo "luajit $mode hazır: $PREFIX (lib: $LN)"
