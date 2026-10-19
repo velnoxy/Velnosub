@@ -155,7 +155,7 @@ int main(int argc, char **argv) {
 		ass_add_font(lib, a.family.data(), fdata.data(),
 		             static_cast<int>(fdata.size()));
 	}
-	log_msg("[AR0] libass kütühtanesi kuruldu");
+	log_msg("[AR0] libass kütüphanesi kuruldu");
 
 	std::vector<char> script;
 	if (!read_file(a.in_path, script)) {
@@ -193,9 +193,11 @@ int main(int argc, char **argv) {
 	ass_free_track(track);
 	ass_renderer_done(renderer);
 
-	bool ok = glyphs > 0 && write_ppm(a.out_path, buf, a.w, a.h);
+	bool written = write_ppm(a.out_path, buf, a.w, a.h);
 	ass_library_done(lib);
-	if (!ok) { log_msg("[ARE] PPM yazılamadı"); return 1; }
+	if (!written) { log_msg("[ARE] PPM yazılamadı"); return 1; }
 	log_msg(std::string("[AR3] PPM yazıldı (") + a.out_path + ")");
+	if (glyphs == 0)
+		log_msg("[ARW] glyph pikseli 0: font eşleşmesi veya boş kare kontrol edin");
 	return 0;
 }
