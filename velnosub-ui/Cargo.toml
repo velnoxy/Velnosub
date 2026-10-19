@@ -1,0 +1,10 @@
+[package]
+name = "velnosub-ui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
+
+[profile.release]
+debug = false
