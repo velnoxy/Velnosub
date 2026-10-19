@@ -22,6 +22,9 @@
 #include <libaegisub/vfr.h>
 
 #include <cstring>
+#include <fstream>
+#include <iostream>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <new>
