@@ -30,6 +30,7 @@ struct Args {
 	std::string in_path;
 	std::string out_path;
 	std::string font_path;
+	std::string default_font_path;
 	std::string family = "Default";
 	double t = 1.0;
 	int w = 640;
@@ -131,6 +132,7 @@ int main(int argc, char **argv) {
 			return true;
 		};
 		if (opt == "--font") { if (!val(a.font_path)) return 2; }
+		else if (opt == "--defaultfont") { if (!val(a.default_font_path)) return 2; }
 		else if (opt == "--t") { if (i + 1 < argc) a.t = atof(argv[++i]); }
 		else if (opt == "--w") { if (i + 1 < argc) a.w = atoi(argv[++i]); }
 		else if (opt == "--h") { if (i + 1 < argc) a.h = atoi(argv[++i]); }
@@ -182,7 +184,12 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	ass_set_frame_size(renderer, a.w, a.h);
-	ass_set_fonts(renderer, nullptr, nullptr, ASS_FONTPROVIDER_NONE, nullptr, 1);
+	// Mobil yol: sistem font sağlayıcısı YOK. ass_add_font blobları embed
+	// provider'a girer; --defaultfont verilirse "family bulunamadı" fallback'i
+	// bu dosyadan çözer (cihazda aynı düzendir).
+	ass_set_fonts(renderer, a.default_font_path.empty() ? nullptr
+	                       : a.default_font_path.c_str(),
+	              nullptr, ASS_FONTPROVIDER_NONE, nullptr, 1);
 
 	int change = 0;
 	ASS_Image *imgs = ass_render_frame(renderer, track, a.t * 1000.0, &change);
