@@ -29,4 +29,3 @@ pkg_config_libdir = ['/root/velsub/ndk-deps/x86_64/lib/pkgconfig']
 boost_includedir = '/root/velsub/ndk-deps/x86_64/include'
 boost_librarydir = '/root/velsub/ndk-deps/x86_64/lib'
 sys_root = ''
-sys_root = ''
