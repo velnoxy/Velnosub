@@ -64,3 +64,16 @@ if ffmpeg_probe_deps.found()
                        dependency('libavutil', required: true)],
         install: true)
 endif
+
+# P3.3: ses dumanı. libavformat + libswresample kapısı; bunların pc'leri
+# build-deps/build-ffmpeg çıkışı bulunamıyorsa hedef bilinçli atlanır.
+audio_probe_deps = dependency('libavformat', required: false)
+audio_swr_deps = dependency('libswresample', required: false)
+if audio_probe_deps.found() and audio_swr_deps.found()
+    velnosub_audio_probe = executable('velnosub-audio-probe', 'velnosub-audio-probe.cpp',
+        include_directories: [deps_inc, version_inc],
+        dependencies: [audio_probe_deps, audio_swr_deps,
+                       dependency('libavcodec', required: true),
+                       dependency('libavutil', required: true)],
+        install: true)
+endif
