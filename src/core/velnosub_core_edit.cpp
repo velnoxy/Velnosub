@@ -67,3 +67,17 @@ extern "C" int velnosub_core_delete_line(AssFile &file, int idx) {
 	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_ADDREM);
 	return 0;
 }
+
+// P5.2 dilim: ms zaman yazımı — auto4 satır alanları start_time/end_time
+// ms tamsayısıdır; shim buradan yazar. Time nesneleri flyweight DEĞİL;
+// yine de mutasyon tek kolda (bu TU) kalır.
+extern "C" int velnosub_core_set_line_times(AssFile &file, int idx,
+                                            long long ms_bas, long long ms_son) {
+	if (idx < 0 || idx >= static_cast<int>(file.Events.size()))
+		return -1;
+	auto &d = *std::next(file.Events.begin(), idx);
+	d.Start = agi::Time(static_cast<int>(ms_bas));
+	d.End = agi::Time(static_cast<int>(ms_son));
+	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_TIME);
+	return 0;
+}

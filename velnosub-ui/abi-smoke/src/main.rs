@@ -36,6 +36,10 @@ extern "C" {
 		son: *const c_char, stil: *const c_char,
 	) -> c_int;
 	fn velnosub_abi_line_delete(h: c_int, idx: c_int) -> c_int;
+	// P5.2 dilim: ms zaman yazımı (start_time/end_time tamsayı yolu)
+	fn velnosub_abi_line_times_set(
+		h: c_int, idx: c_int, ms_bas: i64, ms_son: i64,
+	) -> c_int;
 	fn velnosub_abi_render_open(
 		h: c_int, gen: c_int, yuk: c_int, yol_font: *const c_char,
 		aile_font: *const c_char,
@@ -547,6 +551,80 @@ fn main() -> ExitCode {
 			return cik(h);
 		}
 		println!("[AB9] render şartı kapandı — şerit tamam");
+	}
+
+	// P5.2 dilim: ms zaman yazımı/okuma geri döngüsü — upstream auto4
+	// satır alanları ms tamsayı; ABI line_times_set + ASS dizge teyit
+	{
+		let eski = line_times(h, 0);
+		if eski.starts_with("(hata") {
+			eprintln!("[ABE] ab10 eski zaman: {eski}");
+			return cik(h);
+		}
+		let rc = unsafe { velnosub_abi_line_times_set(h, 0, 1234, 5678) };
+		if rc != 0 {
+			eprintln!("[ABE] ab10 set: {}", last_error());
+			return cik(h);
+		}
+		let taze = line_times(h, 0);
+		if taze != "0:00:01.23 / 0:00:05.68" {
+			eprintln!("[ABE] ab10 taze zaman beklenmedik: {taze}");
+			return cik(h);
+		}
+		println!("[AB10] zaman yazıldı: {taze}");
+		let adet = unsafe { velnosub_abi_event_count(h) };
+		let rc = unsafe { velnosub_abi_line_times_set(h, adet, 0, 1000) };
+		if rc == 0 {
+			eprintln!("[ABE] ab10 aralık dışı indeks beklenirdi");
+			return cik(h);
+		}
+		println!("[AB10] dışarıda indeks reddi birebir");
+		// eski hâle dön (sonraki şeritler orijinal durumu görsün)
+		let eski_ms = |z: &str| -> Result<i64, String> {
+			let (neg, govde) = match z.strip_prefix('-') {
+				Some(g) => (true, g),
+				None => (false, z),
+			};
+			let parca: Vec<&str> = govde.split(':').collect();
+			if parca.len() != 3 {
+				return Err(format!("zaman biçimi: {z}"));
+			}
+			let h0: i64 = parca[0].parse().map_err(|_| format!("saat: {z}"))?;
+			let m0: i64 = parca[1].parse().map_err(|_| format!("dakika: {z}"))?;
+			let kala: Vec<&str> = parca[2].split('.').collect();
+			let s0: i64 = kala[0].parse().map_err(|_| format!("saniye: {z}"))?;
+			let cc: i64 = kala
+				.get(1)
+				.and_then(|c| c.get(0..2).and_then(|d| d.parse().ok()))
+				.unwrap_or(0);
+			let ms = (h0 * 3600 + m0 * 60 + s0) * 1000 + cc * 10;
+			Ok(if neg { -ms } else { ms })
+		};
+		let yarilar: Vec<&str> = eski.split(" / ").collect();
+		let ms_bas = match eski_ms(yarilar[0]) {
+			Ok(m) => m,
+			Err(e) => {
+				eprintln!("[ABE] ab10 {e}");
+				return cik(h);
+			}
+		};
+		let ms_son = match yarilar.get(1).and_then(|y| eski_ms(y).ok()) {
+			Some(m) => m,
+			None => ms_bas,
+		};
+		let rc = unsafe {
+			velnosub_abi_line_times_set(h, 0, ms_bas, ms_son)
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab10 geri al: {}", last_error());
+			return cik(h);
+		}
+		let geri = line_times(h, 0);
+		if geri != eski {
+			eprintln!("[ABE] ab10 geri al uyuşmuyor: {geri} != {eski}");
+			return cik(h);
+		}
+		println!("[AB10] zaman geri alındı — şerit tamam");
 	}
 
 	// P4.5 stil şeridi: stil dizgesi + ad/boyut düzenleme + kalıcılık

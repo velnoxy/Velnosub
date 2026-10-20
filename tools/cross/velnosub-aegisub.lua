@@ -77,14 +77,46 @@ local function tam_sayi(v)
 	return n
 end
 
--- ---- satır tablosu: text + start_time/end_time (P5.1 sınırı: zamanlar
--- ASS biçimli dizge; gerçek zaman nesnesi P5.2 devam dilimi) -----------
+-- ---- satır tablosu: text + start_time/end_time ----------------------
+-- P5.2 dilim: zamanlar artık upstream auto4 biçiminde MS TAMSAYISI'dır
+-- (eski dizge P5.1 sınırıydı): okuma ASS dizgesinden ayrışır, yazımsı
+-- line_times_set ABI'sine ms olarak gider.
+-- ASS zaman dizgesi → ms ("0:00:01.23", negatif "-0:00:01.23")
+local function zaman_ms(z)
+	local neg, h, m, s, cc =
+		tostring(z):match("^%s*(-?)(%d+):(%d+):(%d+)%.(%d+)%s*$")
+	if not h then return nil end
+	local ms = (tonumber(h) * 3600 + tonumber(m) * 60 + tonumber(s)) * 1000
+		+ tonumber(cc:sub(1, 2)) * 10
+	if neg == "-" then ms = -ms end
+	return ms
+end
+-- ms → ASS zaman dizgesi ("h:mm:ss.cc"; negatif öneki "-")
+local function ms_zaman(ms)
+	if type(ms) ~= "number" then return tostring(ms) end
+	local v = math.floor(math.abs(ms) + 0.5)
+	local cc = v % 100
+	local t = math.floor(v / 100)
+	local s = t % 60
+	local m = math.floor(t / 60) % 60
+	local h = math.floor(t / 3600)
+	return ("%s%d:%02d:%02d.%02d")
+		:format(ms < 0 and "-" or "", h, m, s, cc)
+end
 local function satir_oku(h, i0)
 	local metin, e1 = oku(abi.velnosub_abi_line_text, h, i0)
 	if not metin then error(e1, 2) end
 	local zaman, e2 = oku(abi.velnosub_abi_line_times, h, i0)
 	if not zaman then error(e2, 2) end
 	local bas, son = zaman:match("^(.*) / (.*)$")
+	if not bas then
+		bas, son = zaman, zaman
+	end
+	local ms_bas = zaman_ms(bas)
+	local ms_son = zaman_ms(son)
+	if not ms_bas or not ms_son then
+		error(("zaman dizgesi ASS biçiminde değil: %s"):format(zaman), 2)
+	end
 	-- P5.3: aegisub satır alanları — class (ABI olay kolunda hep
 	-- "dialogue") + comment (Comment olayı bayrağı)
 	local meta = oku(abi.velnosub_abi_line_meta, h, i0)
@@ -92,8 +124,8 @@ local function satir_oku(h, i0)
 	local mhaneler = hata_ayikla(meta)
 	return {
 		text = metin,
-		start_time = bas or zaman,
-		end_time = son or "",
+		start_time = ms_bas,
+		end_time = ms_son,
 		class = mhaneler[1] or "dialogue",
 		comment = mhaneler[2] == "1",
 	}
@@ -119,10 +151,16 @@ local function subs_nesne(h)
 					if type(satir) ~= "table" or satir.text == nil then
 						error("insert_line: satır tablosu .text gerekli", 2)
 					end
+					-- P5.2 dilim: zaman alanları ms tamsayısı veya ASS
+					-- dizgesi olabilir; ABI ASS dizgesi ister → çevir
+					local bas = type(satir.start_time) == "number"
+						and ms_zaman(satir.start_time)
+						or tostring(satir.start_time or "")
+					local son = type(satir.end_time) == "number"
+						and ms_zaman(satir.end_time)
+						or tostring(satir.end_time or "")
 					if abi.velnosub_abi_line_insert(h, p0 - 1,
-					   tostring(satir.text),
-					   satir.start_time and tostring(satir.start_time) or "",
-					   satir.end_time and tostring(satir.end_time) or "",
+					   tostring(satir.text), bas, son,
 					   satir.style and tostring(satir.style) or "") ~= 0 then
 						error(hatasi("insert_line"), 2)
 					end
@@ -159,11 +197,47 @@ local function subs_nesne(h)
 		if type(satir) ~= "table" then
 			error("satır ataması tablo olmalı (" .. type(satir) .. ")", 2)
 		end
-		if satir.text == nil then
-			error("satır .text nil — edit_line reddetti", 2)
+		-- P5.2: alan yazımı — text flyweight vekiliyle, zamanlar ms
+		-- tamsayısıyla; verilmeyen alanlar mevcut değerinde kalır
+		if satir.text ~= nil then
+			if abi.velnosub_abi_edit_line(h, i0 - 1, tostring(satir.text)) ~= 0 then
+				error(hatasi("edit_line"), 2)
+			end
 		end
-		if abi.velnosub_abi_edit_line(h, i0 - 1, tostring(satir.text)) ~= 0 then
-			error(hatasi("edit_line"), 2)
+		if satir.start_time ~= nil or satir.end_time ~= nil then
+			local mevcut = oku(abi.velnosub_abi_line_times, h, i0 - 1)
+			if not mevcut then error(hatasi("line_times"), 2) end
+			local zb, zs = mevcut:match("^(.*) / (.*)$")
+			local ms_bas = zaman_ms(zb)
+			local ms_son = zaman_ms(zs)
+			if not ms_bas or not ms_son then
+				error(("zaman dizgesi ASS biçiminde değil: %s"):format(mevcut), 2)
+			end
+			if type(satir.start_time) == "number" then
+				ms_bas = math.floor(satir.start_time)
+			elseif type(satir.start_time) == "string" then
+				ms_bas = zaman_ms(satir.start_time)
+				if not ms_bas then
+					error(("start_time ASS biçiminde değil: %s")
+					      :format(tostring(satir.start_time)), 2)
+				end
+			elseif satir.start_time ~= nil then
+				error("start_time tip: ms sayısı veya ASS dizgesi", 2)
+			end
+			if type(satir.end_time) == "number" then
+				ms_son = math.floor(satir.end_time)
+			elseif type(satir.end_time) == "string" then
+				ms_son = zaman_ms(satir.end_time)
+				if not ms_son then
+					error(("end_time ASS biçiminde değil: %s")
+					      :format(tostring(satir.end_time)), 2)
+				end
+			elseif satir.end_time ~= nil then
+				error("end_time tip: ms sayısı veya ASS dizgesi", 2)
+			end
+			if abi.velnosub_abi_line_times_set(h, i0 - 1, ms_bas, ms_son) ~= 0 then
+				error(hatasi("line_times_set"), 2)
+			end
 		end
 	end
 	mt.__len = function()

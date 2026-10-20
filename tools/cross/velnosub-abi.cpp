@@ -59,6 +59,8 @@ extern "C" int velnosub_core_insert_line(AssFile &file, int idx, const char *met
                                          const char *bas_zaman, const char *son_zaman,
                                          const char *stil);
 extern "C" int velnosub_core_delete_line(AssFile &file, int idx);
+extern "C" int velnosub_core_set_line_times(AssFile &file, int idx,
+                                            long long ms_bas, long long ms_son);
 
 namespace {
 
@@ -304,6 +306,27 @@ int velnosub_abi_line_times(int h, int idx, char *buf, int buflen) {
 		std::memcpy(buf, t.data(), static_cast<size_t>(m));
 		buf[m] = '\0';
 		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+// P5.2 dilim: satır zaman yazımı (ms) — aegisub satır alanı yazısı
+// (start_time/end_time). idx 0-taban; ms_bas/ms_son tamsayı.
+int velnosub_abi_line_times_set(int h, int idx, long long ms_bas, long long ms_son) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		if (velnosub_core_set_line_times(c.file, idx, ms_bas, ms_son) != 0) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		return 0;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }
