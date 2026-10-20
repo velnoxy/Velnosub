@@ -1,10 +1,12 @@
 // Aegisub Project http://www.aegisub.org/
 //
-// velnosub Faz 4 (P4.1) — C ABI şeridi: Rust/egui (velnosub-ui) tarafının
+// velnosub Faz 4 (P4.1/P4.2) — C ABI şeridi: Rust/egui (velnosub-ui) tarafının
 // bağlanacağı extern "C" yüzey. Akış, koşuma geçmiş P2.2 CLI kanalının
 // fonksiyonlaştırılmış kopyasıdır: config hazırlığı tek kereliğine,
-// open/edit/save/reload işlevseldir. libvelnosub-abi.so libvelnosub-core.so'ya
-// bağlanır (Android'de libc++_shared zinciri CLI ile aynıdır).
+// açık/edit/save/reload işlevseldir. P4.2 ekleri: grid için satır
+// metin/zaman okuma + satır düzenleme (edit_first ile aynı Commit hattı).
+// libvelnosub-abi.so libvelnosub-core.so'ya bağlanır
+// (Android'de libc++_shared zinciri CLI ile aynıdır).
 //
 // Rust tarafı (P4.1): velnosub-ui/abi-smoke crate'i bu yüzeyi çağırır.
 
@@ -139,6 +141,67 @@ int velnosub_abi_reload_count(int h, const char *out_path) {
 		g_ctx.at(h)->reader->ReadFile(&reloaded, agi::fs::path(out_path),
 		                              agi::vfr::Framerate(), "utf-8");
 		return static_cast<int>(reloaded.Events.size());
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_line_text(int h, int idx, char *buf, int buflen) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		std::string const t = std::next(c.file.Events.begin(), idx)->Text;
+		int const n = static_cast<int>(t.size());
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, t.data(), static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n; // tam uzunluk; kısa tamponla işi tekrar çağırabilirsin
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_line_times(int h, int idx, char *buf, int buflen) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		AssDialogue const& d = *std::next(c.file.Events.begin(), idx);
+		std::string const t = d.Start.GetAssFormatted() + " / " + d.End.GetAssFormatted();
+		int const n = static_cast<int>(t.size());
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, t.data(), static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_edit_line(int h, int idx, const char *text) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!text) { set_err("boş metin"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		std::next(c.file.Events.begin(), idx)->Text = text;
+		c.file.Commit("velnosub abi", AssFile::COMMIT_DIAG_TEXT);
+		return 0;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }

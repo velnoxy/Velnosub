@@ -1,8 +1,17 @@
-// P4.1: bağlamanın nerede aranacağını ortamla söyle (varsayılan: host-check
-// dizinindeki mobil koldan libvelnosub-abi.so).
+// P4.1: bağlamanın nerede aranacağını ortamla söyle (varsayılan: hedefe göre
+// mobil koldan libvelnosub-abi.so, aksi hâlde host-check dizini).
 fn main() {
+	let target = std::env::var("TARGET").unwrap_or_default();
 	let dir = std::env::var("VELNOSUB_ABI_DIR").unwrap_or_else(|_| {
-		"/root/velsub/aegisub-upstream/build-host-check/tools/cross".into()
+		if target.contains("android") {
+			if target.contains("x86_64") {
+				"/root/velsub/aegisub-upstream/build-android-x86_64/tools/cross".into()
+			} else {
+				"/root/velsub/aegisub-upstream/build-android-arm64/tools/cross".into()
+			}
+		} else {
+			"/root/velsub/aegisub-upstream/build-host-check/tools/cross".into()
+		}
 	});
 	println!("cargo:rustc-link-lib=dylib=velnosub-abi");
 	println!("cargo:rustc-link-search=native={dir}");
