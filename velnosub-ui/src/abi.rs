@@ -28,6 +28,7 @@ extern "C" {
 	fn velnosub_abi_style_of(h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int) -> c_int;
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
 	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
+	fn velnosub_abi_style_write(h: c_int, idx: c_int, dizge: *const c_char) -> c_int;
 	fn velnosub_abi_save(h: c_int, out_path: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
@@ -266,6 +267,50 @@ fn style_of(h: c_int, idx: c_int) -> Result<String, String> {
 		}
 		len *= 2;
 	}
+}
+
+/// P4.5 devam: mevcut dizgeyi al, seçili hücreleri değiştir, ABI'ye yaz —
+/// ABI tüm alanları çözmeyen herhangi bir hücreyi reddeder (yarım durum yok)
+fn stil_yaz(
+	h: c_int,
+	idx: c_int,
+	degistir: impl FnOnce(&mut Vec<String>),
+) -> Result<(), String> {
+	let t = style_of(h, idx)?;
+	let mut hucre: Vec<String> = t.split('|').map(|s| s.to_string()).collect();
+	if hucre.len() != 13 {
+		return Err(format!("stil dizgesi 13 hücre değil: {}", hucre.len()));
+	}
+	degistir(&mut hucre);
+	let metin = hucre.join("|");
+	let c = CString::new(metin).map_err(|e| format!("dizge kodlanamadı: {e}"))?;
+	let rc = unsafe { velnosub_abi_style_write(h, idx, c.as_ptr()) };
+	if rc != 0 {
+		return Err(last_error());
+	}
+	Ok(())
+}
+
+/// ASS stil rengi "&HAABBGGRR" → egui Color32 (alpha tersinde)
+fn ass_to_color32(s: &str) -> Option<egui::Color32> {
+	let t = s.trim().trim_start_matches('&').trim_end_matches('&').trim();
+	let t = t.strip_prefix('H').or_else(|| t.strip_prefix('h'))?;
+	if t.len() < 8 {
+		return None;
+	}
+	let aa = u8::from_str_radix(&t[0..2], 16).ok()?;
+	let bb = u8::from_str_radix(&t[2..4], 16).ok()?;
+	let gg = u8::from_str_radix(&t[4..6], 16).ok()?;
+	let rr = u8::from_str_radix(&t[6..8], 16).ok()?;
+	Some(egui::Color32::from_rgba_unmultiplied(rr, gg, bb, 255 - aa))
+}
+
+/// egui Color32 → ASS stil dizgesi
+fn color32_to_ass(c: egui::Color32) -> String {
+	format!(
+		"&H{:02X}{:02X}{:02X}{:02X}",
+		255 - c.a(), c.b(), c.g(), c.r()
+	)
 }
 
 /// P4.2 uygulama durumu: tek açık tutamaç + satır önbelleği.
@@ -567,6 +612,7 @@ impl eframe::App for GridApp {
 					a.ses_durum = format!("durum {d} — {ad}");
 				}
 				ui.label(RichText::new(&a.ses_durum).weak());
+				ui.label(RichText::new(format!("{} kanal", a.ch)).weak());
 
 				// dalga formu: 512 kova → duvara dik çubuklar (min..max)
 				let genislik = ui.available_width();
@@ -621,11 +667,81 @@ impl eframe::App for GridApp {
 								}
 							}
 						}
+						// font kutusu: odak kaybında ABI yazma hattı
+						let mut font_dsk = r.font.clone();
+						let font_yanit = ui.add(
+							egui::TextEdit::singleline(&mut font_dsk).desired_width(96.0),
+						);
+						if font_yanit.lost_focus()
+							&& font_dsk != r.font
+							&& !font_dsk.trim().is_empty()
+						{
+							if let Some(h) = self.handle {
+								let yazi = font_dsk.trim().to_string();
+								let yazi_not = yazi.clone();
+								match stil_yaz(h, i as c_int, |hc| hc[1] = yazi) {
+									Ok(()) => {
+										self.note = format!(
+											"stil {}: font {}",
+											r.name, yazi_not
+										);
+										self.load_styles();
+									}
+									Err(e) => self.note = format!("stil font hatası: {e}"),
+								}
+							}
+						}
+						// ana renk: ASS <-> Color32 akışı (alpha tersi ABI'da)
+						let mut renk = ass_to_color32(&r.primary)
+							.unwrap_or(egui::Color32::WHITE);
+						if ui
+							.color_edit_button_srgba(&mut renk)
+							.changed()
+						{
+							let ass = color32_to_ass(renk);
+							if let Some(h) = self.handle {
+								match stil_yaz(h, i as c_int, |hc| hc[3] = ass.clone()) {
+									Ok(()) => {
+										self.note = format!("stil {}: ana renk {ass}", r.name);
+										self.load_styles();
+									}
+									Err(e) => self.note = format!("stil renk hatası: {e}"),
+								}
+							}
+						}
+						// hiza 1..9 açılır listesi
+						let eski_hiza = r.alignment;
+						let mut secim = r.alignment.clamp(1, 9);
+						egui::ComboBox::from_id_salt(format!("hiza{i}"))
+							.selected_text(format!("\u{5c}an{secim}"))
+							.width(56.0)
+							.show_ui(ui, |kut| {
+								for k in 0..9 {
+									kut.selectable_value(
+										&mut secim, k as i32 + 1,
+										format!("\u{5c}an{}", k + 1),
+									);
+								}
+							});
+						if secim != eski_hiza.clamp(1, 9) {
+							if let Some(h) = self.handle {
+								match stil_yaz(
+									h, i as c_int,
+									|hc| hc[8] = secim.to_string(),
+								) {
+									Ok(()) => {
+										self.note =
+											format!("stil {}: hiza \\an{secim}", r.name);
+										self.load_styles();
+									}
+									Err(e) => self.note = format!("stil hiza hatası: {e}"),
+								}
+							}
+						}
 						ui.label(RichText::new(format!(
-							"{} — {} · p{} s{} o{} k{} · bi{} hiza{} ken[{}] kod{} ölç[{}] {}",
+							"{} — {} · p{} s{} o{} k{} · bi{} ken[{}] kod{} ölç[{}] {}",
 							r.name, r.font, r.primary, r.secondary, r.outline,
-							r.shadow, r.flags, r.alignment, r.margins,
-							r.encoding, r.scale, r.edge
+							r.shadow, r.flags, r.margins, r.encoding, r.scale, r.edge
 						))
 						.weak());
 					});

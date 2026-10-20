@@ -374,6 +374,187 @@ int velnosub_abi_style_edit_name(int h, int idx, const char *name) {
 	return -1;
 }
 
+// ---- P4.5 devam: tam stil yazma (style_of dizgesinin geri döngüsü) -----
+
+// "&HAABBGGRR&" | "&HAABBGGRR" | "aabbggrr" → agi::Color (public alan dolu)
+static bool ass_renk_ayikla(std::string metin, agi::Color &renk) {
+	if (!metin.empty() && (metin.front() == '&')) metin.erase(0, 1);
+	if (!metin.empty() && (metin.back() == '&')) metin.pop_back();
+	if (!metin.empty() && (metin.front() == 'H' || metin.front() == 'h'))
+		metin.erase(0, 1);
+	if (metin.size() != 8) return false;
+	unsigned long deger;
+	try {
+		deger = std::stoul(metin, nullptr, 16);
+	} catch (std::exception const&) {
+		return false;
+	}
+	renk.a = (unsigned char)((deger >> 24) & 0xFF);
+	renk.b = (unsigned char)((deger >> 16) & 0xFF);
+	renk.g = (unsigned char)((deger >> 8) & 0xFF);
+	renk.r = (unsigned char)(deger & 0xFF);
+	return true;
+}
+
+// "0,0,0,0" → dört bool (kalın, italik, altçizgi, üstçizgi)
+static bool bi_coz(std::string const& metin, bool &b, bool &i, bool &u, bool &s) {
+	size_t p1 = metin.find(',');
+	if (p1 == std::string::npos) return false;
+	size_t p2 = metin.find(',', p1 + 1);
+	if (p2 == std::string::npos) return false;
+	size_t p3 = metin.find(',', p2 + 1);
+	if (p3 == std::string::npos) return false;
+	auto bir = [](std::string k) { return k == "1"; };
+	b = bir(metin.substr(0, p1));
+	i = bir(metin.substr(p1 + 1, p2 - p1 - 1));
+	u = bir(metin.substr(p2 + 1, p3 - p2 - 1));
+	s = bir(metin.substr(p3 + 1));
+	return true;
+}
+
+int velnosub_abi_style_write(int h, int idx, const char *dizge) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!dizge || !*dizge) { set_err("boş stil dizgesi"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Styles.size())) {
+			set_err("stil dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		std::string const metin(dizge);
+		std::vector<std::string> hucre;
+		size_t bas = 0;
+		while (true) {
+			size_t son = metin.find('|', bas);
+			hucre.push_back(metin.substr(
+				bas, son == std::string::npos ? std::string::npos : son - bas));
+			if (son == std::string::npos) break;
+			bas = son + 1;
+		}
+		if (hucre.size() != 13) {
+			set_err("stil dizgesi 13 hanede değil: " + std::to_string(hucre.size()));
+			return -1;
+		}
+		// TÜM alanlar çözülmeden hiçbir alan yazılmaz (yarım durum yok)
+		if (hucre[0].empty() || hucre[1].empty()) {
+			set_err("stil adı/font boş");
+			return -1;
+		}
+		double boyut;
+		try {
+			boyut = std::stod(hucre[2]);
+		} catch (std::exception const&) {
+			set_err("stil boyut sayısı değil: " + hucre[2]);
+			return -1;
+		}
+		if (boyut < 2.0 || boyut > 9999.0) {
+			set_err("stil boyutu dışında");
+			return -1;
+		}
+		agi::Color ana, ikincil, kontur, golge;
+		if (!ass_renk_ayikla(hucre[3], ana) || !ass_renk_ayikla(hucre[4], ikincil)
+		    || !ass_renk_ayikla(hucre[5], kontur) || !ass_renk_ayikla(hucre[6], golge)) {
+			set_err("renk dizgesi çözülemedi (ASS &HAABBGGRR)");
+			return -1;
+		}
+		bool kb, ki, ku, ks;
+		if (!bi_coz(hucre[7], kb, ki, ku, ks)) {
+			set_err("biçim baytları hatalı (kalın,italik,altçizgi,üstçizgi)");
+			return -1;
+		}
+		auto sayi_okuma = [](std::string const& metin, double &deger) {
+			try {
+				size_t ultani;
+				deger = std::stod(metin, &ultani);
+				return ultani == metin.size();
+			} catch (std::exception const&) {
+				return false;
+			}
+		};
+		double hiza_d, kb_d, kg_d, kd_d, kod_d, ox_d, oy_d, hr_d, ac_d, kst_d, kg2_d, gg_d;
+		std::vector<std::string> kenar, olcek; // hücre 9 / 11 parçaları
+		{
+			std::string &k = hucre[9];
+			size_t bas = 0;
+			while (true) {
+				size_t son = k.find(',', bas);
+				kenar.push_back(k.substr(
+					bas, son == std::string::npos ? std::string::npos : son - bas));
+				if (son == std::string::npos) break;
+				bas = son + 1;
+			}
+			std::string &m = hucre[11];
+			bas = 0;
+			while (true) {
+				size_t son = m.find(',', bas);
+				olcek.push_back(m.substr(
+					bas, son == std::string::npos ? std::string::npos : son - bas));
+				if (son == std::string::npos) break;
+				bas = son + 1;
+			}
+			std::string &u = hucre[12];
+			size_t v1 = u.find(','); size_t v2 = u.find(',', v1 + 1);
+			if (v1 == std::string::npos || v2 == std::string::npos) {
+				set_err("kenar stili üçlüsü hatalı");
+				return -1;
+			}
+			if (!sayi_okuma(hucre[8], hiza_d) || !sayi_okuma(kenar[0], kb_d)
+			    || !sayi_okuma(kenar[1], kg_d) || !sayi_okuma(kenar[2], kd_d)
+			    || !sayi_okuma(hucre[10], kod_d) || !sayi_okuma(olcek[0], ox_d)
+			    || !sayi_okuma(olcek[1], oy_d) || !sayi_okuma(olcek[2], hr_d)
+			    || !sayi_okuma(olcek[3], ac_d) || !sayi_okuma(u.substr(0, v1), kst_d)
+			    || !sayi_okuma(u.substr(v1 + 1, v2 - v1 - 1), kg2_d)
+			    || !sayi_okuma(u.substr(v2 + 1), gg_d)) {
+				set_err("sayısal alan çözülemedi");
+				return -1;
+			}
+		}
+		if (kenar.size() < 3 || olcek.size() < 4) {
+			set_err("kenar/ölçek hücreleri eksik");
+			return -1;
+		}
+		int hiza = (int)hiza_d, kod = (int)kod_d, kst = (int)kst_d;
+		if (hiza < 1 || hiza > 9) {
+			set_err("hiza 1..9 olmalı");
+			return -1;
+		}
+		if (kst != 1 && kst != 3) {
+			set_err("kenar stili 1 veya 3 olmalı");
+			return -1;
+		}
+		AssStyle &s = *std::next(c.file.Styles.begin(), idx);
+		s.name = hucre[0];
+		s.font = hucre[1];
+		s.fontsize = boyut;
+		s.primary = ana;
+		s.secondary = ikincil;
+		s.outline = kontur;
+		s.shadow = golge;
+		s.bold = kb;
+		s.italic = ki;
+		s.underline = ku;
+		s.strikeout = ks;
+		s.alignment = hiza;
+		s.Margin[0] = (int)kb_d;
+		s.Margin[1] = (int)kg_d;
+		s.Margin[2] = (int)kd_d;
+		s.encoding = kod;
+		s.scalex = ox_d;
+		s.scaley = oy_d;
+		s.spacing = hr_d;
+		s.angle = ac_d;
+		s.borderstyle = kst;
+		s.outline_w = kg2_d;
+		s.shadow_w = gg_d;
+		s.UpdateData();
+		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 // ---- P4.3 omurgası: video kolu (BGRA kare teslimi) -------------------
 
 int velnosub_abi_video_open(const char *path) {

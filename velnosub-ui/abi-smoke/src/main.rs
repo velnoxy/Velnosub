@@ -30,6 +30,7 @@ extern "C" {
 	fn velnosub_abi_style_of(h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int) -> c_int;
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
 	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
+	fn velnosub_abi_style_write(h: c_int, idx: c_int, dizge: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
 	fn velnosub_abi_video_open(path: *const c_char) -> c_int;
@@ -351,6 +352,42 @@ fn main() -> ExitCode {
 			}
 			println!("[AS3] stil 0 adı yazıldı (VelnoSub)");
 
+			// tam-yazma turu: font + ana renk değişikliği (13 hücre geri döngüsü)
+			let ince = match style_of(h, 0) {
+				Ok(t) => t,
+				Err(e) => {
+					eprintln!("[ABE] tam-yazma okuma: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			let mut hucre: Vec<String> = ince.split('|').map(|s| s.to_string()).collect();
+			if hucre.len() != 13 {
+				eprintln!("[ABE] dizge hücre sayısı: {}", hucre.len());
+				return ExitCode::FAILURE;
+			}
+			hucre[1] = "DejaVu Sans".into();
+			hucre[3] = "&H0000FFFF".into(); // sarı (BBGGRR; dizge kapanacak &siz döner)
+			let yazi = hucre.join("|");
+			let y_c = CString::new(yazi).unwrap();
+			let rc = unsafe { velnosub_abi_style_write(h, 0, y_c.as_ptr()) };
+			if rc != 0 {
+				eprintln!("[ABE] tam-yazma: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			let dogru = match style_of(h, 0) {
+				Ok(t) => t,
+				Err(e) => {
+					eprintln!("[ABE] tam-yazma teyit: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			let g: Vec<&str> = dogru.split('|').collect();
+			if g.get(1) != Some(&"DejaVu Sans") || g.get(3) != Some(&"&H0000FFFF") {
+				eprintln!("[ABE] tam-yazma doğrulaması: {dogru}");
+				return ExitCode::FAILURE;
+			}
+			println!("[AS4] tam-yazma: font {} + ana renk {} teyitli", g[1], g[3]);
+
 			let kay_c = CString::new(out_path.clone()).unwrap();
 			let rc = unsafe { velnosub_abi_save(h, kay_c.as_ptr()) };
 			if rc != 0 {
@@ -372,13 +409,15 @@ fn main() -> ExitCode {
 				}
 			};
 			let es: Vec<&str> = kalit.split('|').collect();
-			if es.first() != Some(&"VelnoSub") || es.get(2) != Some(&"24.000000") {
+			if es.first() != Some(&"VelnoSub") || es.get(2) != Some(&"24.000000")
+				|| es.get(1) != Some(&"DejaVu Sans") || es.get(3) != Some(&"&H0000FFFF")
+			{
 				eprintln!("[ABE] stil kalıcılığı: {kalit}");
 				return ExitCode::FAILURE;
 			}
-			println!("[AS4] kalıcılık teyidi: ad+boyut ikinci tutamaçta birebir");
+			println!("[AS5] kalıcılık teyidi: ad+boyut+font+renk ikinci tutamaçta birebir");
 		}
-		println!("[AS5] stil şerit tamam");
+		println!("[AS6] stil şerit tamam");
 	}
 
 	// P4.3 video şeridi: video argümanı verildiyse BGRA kare hattını sürer
