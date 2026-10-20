@@ -471,6 +471,53 @@ pub struct GridApp {
 	audio: Option<AudioSection>,
 	stiller: Vec<StyleRow>,
 	dialog: Option<DialogSection>,
+	// P4.6 dilim 2: arayüz düzeni — ilk girişte seçim ekranı (`Secim`),
+	// seçim ayar dosyasına yazılır (`velnosub-ui.json`; VELNOSUB_UI_JSON
+	// ortam değişkeniyle yol geçilebilir), Ayarlar bölümünden değiştirilir
+	duzen: Duzen,
+	aktif: Sekme,
+}
+
+/// Arayüz düzeni. `Secim` yalnızca ayar dosyası yokken geçerli ilk ekrandır.
+#[derive(PartialEq, Clone, Copy)]
+enum Duzen {
+	Secim,
+	Mobil,
+	Masaustu,
+}
+
+/// Mobil düzenin alt sekmesi. Sekmeler yalnız gerçek içeriğe oyulur
+/// (boş sekme yok); Altyazı + Ayarlar her zaman var.
+#[derive(PartialEq, Clone, Copy)]
+enum Sekme {
+	Altyazi,
+	Video,
+	Ses,
+	Stil,
+	Form,
+	Ayarlar,
+}
+
+/// Arayüz ayar dosyası yolu: `VELNOSUB_UI_JSON` varsa o, yoksa çalışma
+/// dizinindeki `velnosub-ui.json` (ABI config yolu konvensiyonuyla aynı).
+fn ayar_yolu() -> String {
+	std::env::var("VELNOSUB_UI_JSON").unwrap_or_else(|_| "velnosub-ui.json".into())
+}
+
+/// Dosyadaki `"ui"` değerini okur; dosya yoksa ya da biçim bilinmiyorsa None.
+fn ayar_yukle() -> Option<String> {
+	let icerik = std::fs::read_to_string(ayar_yolu()).ok()?;
+	if icerik.contains("\"mobil\"") {
+		Some("mobil".into())
+	} else if icerik.contains("\"masaustu\"") {
+		Some("masaustu".into())
+	} else {
+		None
+	}
+}
+
+fn ayar_yaz(duzen: &str) -> std::io::Result<()> {
+	std::fs::write(ayar_yolu(), format!("{{ \"ui\": \"{duzen}\" }}"))
 }
 
 impl GridApp {
@@ -494,7 +541,14 @@ impl GridApp {
 			audio: None,
 			stiller: Vec::new(),
 			dialog: None,
+			duzen: Duzen::Secim,
+			aktif: Sekme::Altyazi,
 		};
+		match ayar_yukle().as_deref() {
+			Some("mobil") => app.duzen = Duzen::Mobil,
+			Some("masaustu") => app.duzen = Duzen::Masaustu,
+			_ => {}
+		}
 		if let Some(p) = open {
 			if let Err(e) = app.load(&p) {
 				app.note = format!("açılamadı: {e}");
@@ -693,225 +747,241 @@ impl GridApp {
 	}
 }
 
-impl eframe::App for GridApp {
-	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-		// P4.3: video şeridi — üst panel (sanallaştırılmış grid'in üstünde)
+impl GridApp {
+	// ---- şerit gövdeleri: masaüstü panel ve mobil sekme AYNI gövdeyi paylaşıır;
+	// `mobil` bayrağı yalnız dokunma hedefi boyunu ve ta Adrian genişlik akışını değiştirir ----
+
+	fn video_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
 		let mut v_hata: Option<String> = None;
 		if let Some(v) = self.video.as_mut() {
-			Panel::top("vpanel").show(ui, |ui| {
-				if v.dok.is_none() {
-					if let Err(e) = v.cizim_cek(ui.ctx()) {
+			if v.dok.is_none() {
+				if let Err(e) = v.cizim_cek(ui.ctx()) {
+					v_hata = Some(e);
+				}
+			}
+			let mut geri = egui::Button::new("◀ geri");
+			let mut ileri = egui::Button::new("ileri ▶");
+			if mobil {
+				geri = geri.min_size(egui::vec2(0.0, 44.0));
+				ileri = ileri.min_size(egui::vec2(0.0, 44.0));
+			}
+			ui.horizontal(|su| {
+				if su.add(geri).clicked() && v.frame > 0 {
+					v.frame -= 1;
+					if let Err(e) = v.cizim_cek(su.ctx()) {
 						v_hata = Some(e);
 					}
 				}
-				ui.horizontal(|ui| {
-					if ui.button("◀ geri").clicked() && v.frame > 0 {
-						v.frame -= 1;
-						if let Err(e) = v.cizim_cek(ui.ctx()) {
-							v_hata = Some(e);
-						}
+				if su.add(ileri).clicked() && v.frame + 1 < v.kareler {
+					v.frame += 1;
+					if let Err(e) = v.cizim_cek(su.ctx()) {
+						v_hata = Some(e);
 					}
-					if ui.button("ileri ▶").clicked() && v.frame + 1 < v.kareler {
-						v.frame += 1;
-						if let Err(e) = v.cizim_cek(ui.ctx()) {
-							v_hata = Some(e);
-						}
-					}
-					ui.label(RichText::new(format!(
-						"kare {}/{}",
-						v.frame + 1, v.kareler
-					)).weak());
-				});
-				if let Some(sac) = &v.dok {
-					ui.image((
-						sac.id(),
-						egui::vec2(v.w as f32, v.hgt as f32),
-					));
 				}
-				ui.label(RichText::new(&v.info).weak());
-				ui.add_space(4.0);
+				su.label(RichText::new(format!(
+					"kare {}/{}",
+					v.frame + 1, v.kareler
+				)).weak());
 			});
+			if let Some(sac) = &v.dok {
+				ui.image((
+					sac.id(),
+					egui::vec2(v.w as f32, v.hgt as f32),
+				));
+			}
+			ui.label(RichText::new(&v.info).weak());
+			ui.add_space(4.0);
 		}
 		if let Some(e) = v_hata {
 			self.note = format!("video doku hatası: {e}");
 		}
+	}
 
+	fn ses_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
 		// P4.4: ses şeridi — oynatma tuşları + dalga formu (peak kovalarından)
 		if let Some(a) = self.audio.as_mut() {
-			Panel::top("wpanel").show(ui, |ui| {
-				ui.add_space(4.0);
-				ui.horizontal(|ui| {
-					if ui.button("▶ oynat").clicked() {
-						let adet = a.toplam.min((a.rate as i64) * 5);
-						let rc = unsafe { velnosub_abi_audio_play(a.handle, 0, adet) };
-						a.oynatma_denendi = true;
-						a.ses_durum = if rc == 0 {
-							"oynatma istendi".into()
-						} else {
-							format!("oynatma olmadı: {}", last_error())
-						};
-					}
-					if ui.button("⏹ kes").clicked() {
-						unsafe { velnosub_abi_audio_stop(a.handle) };
-						a.ses_durum = "kesildi".into();
-					}
-					ui.label(RichText::new(&a.info).weak());
-				});
-				if a.oynatma_denendi {
-					let d = unsafe { velnosub_abi_audio_state(a.handle) };
-					let ad = match d {
-						-1 => "oynatma yok",
-						4 => "hazırlanıyor",
-						0 => "oynatılıyor",
-						1 => "boşalma",
-						2 => "hata",
-						_ => "bilinmeyen",
+			ui.add_space(4.0);
+			let mut oynat = egui::Button::new("▶ oynat");
+			let mut kes = egui::Button::new("⏹ kes");
+			if mobil {
+				oynat = oynat.min_size(egui::vec2(0.0, 44.0));
+				kes = kes.min_size(egui::vec2(0.0, 44.0));
+			}
+			ui.horizontal(|su| {
+				if su.add(oynat).clicked() {
+					let adet = a.toplam.min((a.rate as i64) * 5);
+					let rc = unsafe { velnosub_abi_audio_play(a.handle, 0, adet) };
+					a.oynatma_denendi = true;
+					a.ses_durum = if rc == 0 {
+						"oynatma istendi".into()
+					} else {
+						format!("oynatma olmadı: {}", last_error())
 					};
-					a.ses_durum = format!("durum {d} — {ad}");
 				}
-				ui.label(RichText::new(&a.ses_durum).weak());
-				ui.label(RichText::new(format!("{} kanal", a.ch)).weak());
-
-				// dalga formu: 512 kova → duvara dik çubuklar (min..max)
-				let genislik = ui.available_width();
-				let yuk = 72.0f32;
-				let (dik, _) =
-					ui.allocate_exact_size(egui::vec2(genislik, yuk), egui::Sense::hover());
-				let boy = a.minv.len().max(1) as f32;
-				let orta = dik.center().y;
-				let yarim = yuk * 0.5 - 2.0;
-				let adim = dik.width() / boy;
-				let kalem = egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 180, 250));
-				for k in 0..a.minv.len() {
-					let x = dik.left() + adim * (k as f32 + 0.5);
-					let ymin = orta - yarim * (a.maxv[k] as f32 / 32768.0);
-					let ymax = orta - yarim * (a.minv[k] as f32 / 32768.0);
-					ui.painter()
-						.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
+				if su.add(kes).clicked() {
+					unsafe { velnosub_abi_audio_stop(a.handle) };
+					a.ses_durum = "kesildi".into();
 				}
-				ui.add_space(4.0);
+				su.label(RichText::new(&a.info).weak());
 			});
-		}
+			if a.oynatma_denendi {
+				let d = unsafe { velnosub_abi_audio_state(a.handle) };
+				let ad = match d {
+					-1 => "oynatma yok",
+					4 => "hazırlanıyor",
+					0 => "oynatılıyor",
+					1 => "boşalma",
+					2 => "hata",
+					_ => "bilinmeyen",
+				};
+				a.ses_durum = format!("durum {d} — {ad}");
+			}
+			ui.label(RichText::new(&a.ses_durum).weak());
+			ui.label(RichText::new(format!("{} kanal", a.ch)).weak());
 
+			// dalga formu: 512 kova → duvara dik çubuklar (min..max)
+			let genislik = ui.available_width();
+			let yuk = 72.0f32;
+			let (dik, _) =
+				ui.allocate_exact_size(egui::vec2(genislik, yuk), egui::Sense::hover());
+			let boy = a.minv.len().max(1) as f32;
+			let orta = dik.center().y;
+			let yarim = yuk * 0.5 - 2.0;
+			let adim = dik.width() / boy;
+			let kalem = egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 180, 250));
+			for k in 0..a.minv.len() {
+				let x = dik.left() + adim * (k as f32 + 0.5);
+				let ymin = orta - yarim * (a.maxv[k] as f32 / 32768.0);
+				let ymax = orta - yarim * (a.minv[k] as f32 / 32768.0);
+				ui.painter()
+					.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
+			}
+			ui.add_space(4.0);
+		}
+	}
+
+	fn stil_icerik(&mut self, ui: &mut egui::Ui, _mobil: bool) {
 		// P4.5: stiller şeridi — ad/font özeti + canlı boyut düzenleme
 		if !self.stiller.is_empty() {
-			Panel::top("spanel").show(ui, |ui| {
-				ui.add_space(4.0);
-				ui.label(
-					RichText::new(format!("Stiller ({})", self.stiller.len()))
-						.strong(),
-				);
-				let kopya = self.stiller.clone();
-				for (i, r) in kopya.iter().enumerate() {
-					ui.horizontal(|ui| {
-						let mut v = r.size;
-						let yanit = ui.add(
-							egui::DragValue::new(&mut v)
-								.speed(0.5)
-								.range(2.0f64..=9999.0)
-								.suffix(" pts"),
-						);
-						if yanit.changed() {
-							if let Some(h) = self.handle {
-								let rc = unsafe {
-									velnosub_abi_style_edit_size(h, i as c_int, v)
-								};
-								if rc == 0 {
-									self.stiller[i].size = v;
-									self.note =
-										format!("stil {}: boyut {:.1}", r.name, v);
-								} else {
-									self.note = format!("stil boyutu hatası: {}", last_error());
-								}
+			ui.add_space(4.0);
+			ui.label(
+				RichText::new(format!("Stiller ({})", self.stiller.len()))
+					.strong(),
+			);
+			let kopya = self.stiller.clone();
+			for (i, r) in kopya.iter().enumerate() {
+				ui.horizontal(|ui| {
+					let mut v = r.size;
+					let yanit = ui.add(
+						egui::DragValue::new(&mut v)
+							.speed(0.5)
+							.range(2.0f64..=9999.0)
+							.suffix(" pts"),
+					);
+					if yanit.changed() {
+						if let Some(h) = self.handle {
+							let rc = unsafe {
+								velnosub_abi_style_edit_size(h, i as c_int, v)
+							};
+							if rc == 0 {
+								self.stiller[i].size = v;
+								self.note =
+									format!("stil {}: boyut {:.1}", r.name, v);
+							} else {
+								self.note = format!("stil boyutu hatası: {}", last_error());
 							}
 						}
-						// font kutusu: odak kaybında ABI yazma hattı
-						let mut font_dsk = r.font.clone();
-						let font_yanit = ui.add(
-							egui::TextEdit::singleline(&mut font_dsk).desired_width(96.0),
-						);
-						if font_yanit.lost_focus()
-							&& font_dsk != r.font
-							&& !font_dsk.trim().is_empty()
-						{
-							if let Some(h) = self.handle {
-								let yazi = font_dsk.trim().to_string();
-								let yazi_not = yazi.clone();
-								match stil_yaz(h, i as c_int, |hc| hc[1] = yazi) {
-									Ok(()) => {
-										self.note = format!(
-											"stil {}: font {}",
-											r.name, yazi_not
-										);
-										self.load_styles();
-									}
-									Err(e) => self.note = format!("stil font hatası: {e}"),
-								}
-							}
-						}
-						// ana renk: ASS <-> Color32 akışı (alpha tersi ABI'da)
-						let mut renk = ass_to_color32(&r.primary)
-							.unwrap_or(egui::Color32::WHITE);
-						if ui
-							.color_edit_button_srgba(&mut renk)
-							.changed()
-						{
-							let ass = color32_to_ass(renk);
-							if let Some(h) = self.handle {
-								match stil_yaz(h, i as c_int, |hc| hc[3] = ass.clone()) {
-									Ok(()) => {
-										self.note = format!("stil {}: ana renk {ass}", r.name);
-										self.load_styles();
-									}
-									Err(e) => self.note = format!("stil renk hatası: {e}"),
-								}
-							}
-						}
-						// hiza 1..9 açılır listesi
-						let eski_hiza = r.alignment;
-						let mut secim = r.alignment.clamp(1, 9);
-						egui::ComboBox::from_id_salt(format!("hiza{i}"))
-							.selected_text(format!("\u{5c}an{secim}"))
-							.width(56.0)
-							.show_ui(ui, |kut| {
-								for k in 0..9 {
-									kut.selectable_value(
-										&mut secim, k as i32 + 1,
-										format!("\u{5c}an{}", k + 1),
+					}
+					// font kutusu: odak kaybında ABI yazma hattı
+					let mut font_dsk = r.font.clone();
+					let font_yanit = ui.add(
+						egui::TextEdit::singleline(&mut font_dsk).desired_width(96.0),
+					);
+					if font_yanit.lost_focus()
+						&& font_dsk != r.font
+						&& !font_dsk.trim().is_empty()
+					{
+						if let Some(h) = self.handle {
+							let yazi = font_dsk.trim().to_string();
+							let yazi_not = yazi.clone();
+							match stil_yaz(h, i as c_int, |hc| hc[1] = yazi) {
+								Ok(()) => {
+									self.note = format!(
+										"stil {}: font {}",
+										r.name, yazi_not
 									);
+									self.load_styles();
 								}
-							});
-						if secim != eski_hiza.clamp(1, 9) {
-							if let Some(h) = self.handle {
-								match stil_yaz(
-									h, i as c_int,
-									|hc| hc[8] = secim.to_string(),
-								) {
-									Ok(()) => {
-										self.note =
-											format!("stil {}: hiza \\an{secim}", r.name);
-										self.load_styles();
-									}
-									Err(e) => self.note = format!("stil hiza hatası: {e}"),
-								}
+								Err(e) => self.note = format!("stil font hatası: {e}"),
 							}
 						}
-						ui.label(RichText::new(format!(
-							"{} — {} · p{} s{} o{} k{} · bi{} ken[{}] kod{} ölç[{}] {}",
-							r.name, r.font, r.primary, r.secondary, r.outline,
-							r.shadow, r.flags, r.margins, r.encoding, r.scale, r.edge
-						))
-						.weak());
-					});
-				}
-				ui.add_space(4.0);
-			});
+					}
+					// ana renk: ASS <-> Color32 akışı (alpha tersi ABI'da)
+					let mut renk = ass_to_color32(&r.primary)
+						.unwrap_or(egui::Color32::WHITE);
+					if ui
+						.color_edit_button_srgba(&mut renk)
+						.changed()
+					{
+						let ass = color32_to_ass(renk);
+						if let Some(h) = self.handle {
+							match stil_yaz(h, i as c_int, |hc| hc[3] = ass.clone()) {
+								Ok(()) => {
+									self.note = format!("stil {}: ana renk {ass}", r.name);
+									self.load_styles();
+								}
+								Err(e) => self.note = format!("stil renk hatası: {e}"),
+							}
+						}
+					}
+					// hiza 1..9 açılır listesi
+					let eski_hiza = r.alignment;
+					let mut secim = r.alignment.clamp(1, 9);
+					egui::ComboBox::from_id_salt(format!("hiza{i}"))
+						.selected_text(format!("\u{5c}an{secim}"))
+						.width(56.0)
+						.show_ui(ui, |kut| {
+							for k in 0..9 {
+								kut.selectable_value(
+									&mut secim, k as i32 + 1,
+									format!("\u{5c}an{}", k + 1),
+								);
+							}
+						});
+					if secim != eski_hiza.clamp(1, 9) {
+						if let Some(h) = self.handle {
+							match stil_yaz(
+								h, i as c_int,
+								|hc| hc[8] = secim.to_string(),
+							) {
+								Ok(()) => {
+									self.note =
+										format!("stil {}: hiza \\an{secim}", r.name);
+									self.load_styles();
+								}
+								Err(e) => self.note = format!("stil hiza hatası: {e}"),
+							}
+						}
+					}
+					ui.label(RichText::new(format!(
+						"{} — {} · p{} s{} o{} k{} · bi{} ken[{}] kod{} ölç[{}] {}",
+						r.name, r.font, r.primary, r.secondary, r.outline,
+						r.shadow, r.flags, r.margins, r.encoding, r.scale, r.edge
+					))
+					.weak());
+				});
+			}
+			ui.add_space(4.0);
 		}
+	}
 
+	fn form_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
 		// P4.5 III: dialog form şeridi — sınıflara göre egui widget eşlemesi;
-		// değerler damada form koluyla tutulur, düğme tıklamasında ABI'ye yazılır
-		if let Some(fd) = self.dialog.as_mut() {
-			Panel::top("dpanel").show(ui, |ui| {
+		// düğme bölümü alan ödünç alanı bırakıldıktan sonra gelir
+		let dug = match self.dialog.as_mut() {
+			None => None,
+			Some(fd) => {
 				ui.add_space(4.0);
 				ui.label(
 					RichText::new(format!("Makro formu: {} alan, {} düğme",
@@ -1006,41 +1076,36 @@ impl eframe::App for GridApp {
 						}
 					}
 				}
-				ui.add_space(6.0);
-				ui.horizontal(|kut| {
-					let dug = fd.dugmeler.clone();
-					for (bi, ad) in dug.iter().enumerate() {
-						if kut.button(RichText::new(ad).strong()).clicked() {
-							// gönderme: tüm alan değerleri ABI'ye yazılır,
-							// sonra düğme seçimi kaydedilir
-							let h = fd.handle;
-							let mut yaz = 0usize;
-							for (i, a2) in fd.alanlar.iter().enumerate() {
-								if a2.sinif != "label" {
-									let c = CString::new(a2.deger.clone())
-										.map(|c| {
-											unsafe { velnosub_abi_dialog_set(h, i as c_int, c.as_ptr()) }
-										})
-										.unwrap_or(-1);
-									if c == 0 {
-										yaz += 1;
-									}
-								}
-							}
-							let secim = unsafe { velnosub_abi_dialog_show(h, bi as c_int) };
-							self.note = format!(
-								"form: düğme {} ({ad}) — {yaz}/{evet} alan tip yanı: {secim}",
-								bi + 1,
-								evet = fd.alanlar.iter().filter(|x| x.sinif != "label").count(),
-							);
-						}
+				Some(fd.dugmeler.clone())
+			}
+		};
+		let Some(dug) = dug else { return };
+		ui.add_space(6.0);
+		if !mobil {
+			ui.horizontal(|kut| {
+				for (bi, ad) in dug.iter().enumerate() {
+					if kut.button(RichText::new(ad).strong()).clicked() {
+						self.form_gonder(bi, ad);
 					}
-				});
-				ui.add_space(4.0);
+				}
 			});
+		} else {
+			// mobil: her düğme dolu genişlik ve 44pt yükseklik
+			let gen = ui.available_width();
+			for (bi, ad) in dug.iter().enumerate() {
+				if ui.add(
+					egui::Button::new(RichText::new(ad).strong())
+						.min_size(egui::vec2(gen, 44.0)),
+				).clicked() {
+					self.form_gonder(bi, ad);
+				}
+			}
 		}
+		ui.add_space(4.0);
+	}
 
-		Panel::bottom("velnosub_durum").show(ui, |ui| {
+	fn durum_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+		if !mobil {
 			ui.add_space(6.0);
 			ui.horizontal(|ui| {
 				if ui.button("Kaydet").clicked() {
@@ -1060,25 +1125,75 @@ impl eframe::App for GridApp {
 				ui.label(RichText::new(&self.note).weak());
 			});
 			ui.add_space(6.0);
-		});
-
-		CentralPanel::default().show_inside(ui, |ui| {
-			if self.rows.is_empty() {
-				ui.centered_and_justified(|ui| {
-					ui.label(RichText::new("dosya açılmadı").weak().size(18.0));
-				});
-				return;
+		} else {
+			// mobil: Kaydet/Yeniden aç en az 44pt, not tüm genişlikte
+			ui.add_space(8.0);
+			let gen = ui.available_width();
+			if ui.add(
+				egui::Button::new(RichText::new("Kaydet").strong())
+					.min_size(egui::vec2(gen, 44.0)),
+			).clicked() {
+				if let Some(p) = self.save_path.clone() {
+					self.save_to(&p);
+				} else {
+					self.note = "kayıt yolu verilmedi (VELNOSUB_SAVE)".into();
+				}
 			}
-			// Düzenlenip Commit tetiklenecek satırlar; ödünç çatışmasını
-			// çözmek için çerçeve sonunda işlenir (tek çerçevede tek satır).
-			let mut duzenenler: Vec<usize> = Vec::new();
-			let satir_h =
-				ui.text_style_height(&egui::TextStyle::Body) * 2.4;
-			ScrollArea::vertical()
-				.auto_shrink(false)
-				.show_rows(ui, satir_h, self.rows.len(), |ui, aralık| {
-					for i in aralık {
-						let Some(row) = self.rows.get_mut(i) else { continue };
+			ui.add_space(8.0);
+			if ui.add(
+				egui::Button::new("Yeniden aç")
+					.min_size(egui::vec2(gen, 44.0)),
+			).clicked() {
+				if let Some(p) = self.path.clone() {
+					if let Err(e) = self.load(&p) {
+						self.note = format!("açılamadı: {e}");
+					}
+				}
+			}
+			ui.add_space(6.0);
+			if !self.note.is_empty() {
+				ui.label(RichText::new(&self.note).weak());
+			}
+			ui.add_space(6.0);
+		}
+	}
+
+	fn grid_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+		if self.rows.is_empty() {
+			ui.centered_and_justified(|ui| {
+				ui.label(RichText::new("dosya açılmadı").weak().size(18.0));
+			});
+			return;
+		}
+		// Düzenlenip Commit tetiklenecek satırlar; ödünç çatışmasını
+		// çözmek için çerçeve sonunda işlenir (tek çerçevede tek satır).
+		let mut duzenenler: Vec<usize> = Vec::new();
+		// mobil: satır dokunma alanı en az 44pt (gövde 3.2x stiletma)
+		let satir_h = ui.text_style_height(&egui::TextStyle::Body)
+			* if mobil { 3.2 } else { 2.4 };
+		ScrollArea::vertical()
+			.auto_shrink(false)
+			.show_rows(ui, satir_h, self.rows.len(), |ui, aralık| {
+				for i in aralık {
+					let Some(row) = self.rows.get_mut(i) else { continue };
+					if mobil {
+						// telefon genişliğinde reflow: zaman üstte, metin tam genişlik
+						ui.vertical(|ui| {
+							ui.label(
+								RichText::new(format!("{}", &row.times))
+									.weak()
+									.color(Color32::GRAY),
+							);
+							let w = ui.available_width();
+							let resp = TextEdit::singleline(&mut row.text)
+								.desired_width(w)
+								.show(ui)
+								.response;
+							if resp.changed() {
+								duzenenler.push(i);
+							}
+						});
+					} else {
 						ui.horizontal(|ui| {
 							ui.label(
 								RichText::new(format!("{}  ", &row.times))
@@ -1095,15 +1210,288 @@ impl eframe::App for GridApp {
 							}
 						});
 					}
-				});
-			for i in duzenenler {
-				if let (Some(row), Some(h)) = (self.rows.get(i), self.handle) {
-					match edit_line(h, i, &row.text.clone()) {
-						Ok(()) => self.note = format!("satır {} işlendi", i + 1),
-						Err(e) => self.note = format!("işleme hatası: {e}"),
-					}
+				}
+			});
+		for i in duzenenler {
+			if let (Some(row), Some(h)) = (self.rows.get(i), self.handle) {
+				match edit_line(h, i, &row.text.clone()) {
+					Ok(()) => self.note = format!("satır {} işlendi", i + 1),
+					Err(e) => self.note = format!("işleme hatası: {e}"),
 				}
 			}
+		}
+	}
+
+	/// İlk giriş: ayar dosyası yokken gösterilen düzen seçim ekranı. Seçim
+	/// dosyaya yazılır; yazma olmazsa oturum seçimle devam eder ve uyarı
+	/// net yazılır (hata durumu saklanmaz).
+	fn secim_ekrani(&mut self, ui: &mut egui::Ui) {
+		ui.add_space(24.0);
+		ui.vertical_centered(|ui| {
+			ui.label(RichText::new("velnosub").size(30.0).strong());
+			ui.add_space(4.0);
+			ui.label(RichText::new("Arayüz düzeni").weak());
+			ui.add_space(10.0);
+			ui.label("Hangi düzeni kullanmak istersin?");
+			ui.label(
+				RichText::new("Ayarlar bölümünden sonra da değiştirebilirsin.")
+					.weak(),
+			);
+			ui.add_space(20.0);
 		});
+		let gen = ui.available_width().min(360.0);
+		if ui.add(
+			egui::Button::new(
+				RichText::new("Mobil UI").size(18.0),
+			)
+			.min_size(egui::vec2(gen, 96.0)),
+		).clicked() {
+			self.duzen_sec(Duzen::Mobil);
+		}
+		ui.label(
+			RichText::new("Alt sekme çubuğu ve geniş dokunma alanları; küçük ekranda tek elle kullanım için.").weak(),
+		);
+		ui.add_space(10.0);
+		if ui.add(
+			egui::Button::new(
+				RichText::new("Masaüstü UI").size(18.0),
+			)
+			.min_size(egui::vec2(gen, 96.0)),
+		).clicked() {
+			self.duzen_sec(Duzen::Masaustu);
+		}
+		ui.label(
+			RichText::new("Şeritler üst üste; satır başına iki sütunlu mevcut düzen.").weak(),
+		);
+		ui.add_space(16.0);
+		if self.note.starts_with("ayar yazılamadı") {
+			ui.label(
+				RichText::new(&self.note)
+					.color(egui::Color32::from_rgb(220, 120, 90)),
+			);
+		}
+		ui.label(
+			RichText::new(format!("ayar dosyası: {}", ayar_yolu())).weak(),
+		);
+	}
+
+	fn duzen_sec(&mut self, duzen: Duzen) {
+		let kayit = match duzen {
+			Duzen::Mobil => "mobil",
+			Duzen::Masaustu => "masaustu",
+			Duzen::Secim => return,
+		};
+		match ayar_yaz(kayit) {
+			Ok(()) => self.note = String::new(),
+			Err(e) => {
+				self.note =
+					format!("ayar yazılamadı ({}): {e}", ayar_yolu());
+			}
+		}
+		self.duzen = duzen;
+		self.aktif = Sekme::Altyazi;
+	}
+
+	/// Ayarlar bölümü: düzen seçimi canlı etkilidir ve hep dosyaya yazılır;
+	/// ayrıca ilk seçim ekranına dönüş gerçek bir eylemdir.
+	fn ayarlar_bolum(&mut self, ui: &mut egui::Ui) {
+		ui.add_space(8.0);
+		ui.heading("Ayarlar");
+		ui.add_space(8.0);
+		ui.label(RichText::new("Arayüz düzeni").strong());
+		ui.add_space(4.0);
+		let gen = ui.available_width().min(360.0);
+		if ui.add(
+			egui::Button::new(RichText::new("Mobil UI").size(18.0))
+				.min_size(egui::vec2(gen, 44.0))
+				.selected(self.duzen == Duzen::Mobil),
+		).clicked() {
+			self.duzen_sec(Duzen::Mobil);
+			return;
+		}
+		if ui.add(
+			egui::Button::new(RichText::new("Masaüstü UI").size(18.0))
+				.min_size(egui::vec2(gen, 44.0))
+				.selected(self.duzen == Duzen::Masaustu),
+		).clicked() {
+			self.duzen_sec(Duzen::Masaustu);
+			return;
+		}
+		ui.label(
+			RichText::new(
+				if self.duzen == Duzen::Mobil {
+					"seçili: mobil UI"
+				} else {
+					"seçili: masaüstü UI"
+				},
+			)
+			.weak(),
+		);
+		ui.add_space(12.0);
+		if ui.add(
+			egui::Button::new("İlk seçim ekranını tekrar göster")
+				.min_size(egui::vec2(gen, 44.0)),
+		).clicked() {
+			self.duzen = Duzen::Secim;
+		}
+		ui.add_space(12.0);
+		ui.label(RichText::new(format!("ayar dosyası: {}", ayar_yolu())).weak());
+		if self.note.starts_with("ayar yazılamadı") {
+			ui.label(
+				RichText::new(&self.note)
+					.color(egui::Color32::from_rgb(220, 120, 90)),
+			);
+		}
+	}
+
+	/// Mobil çerçeve: alt sekme çubuğu + tek bölme içerik. Sekmeler yalnız
+	/// yüklenen içeriğe oyulur; boş sekme yok.
+	fn mobil_cerceve(&mut self, ui: &mut egui::Ui) {
+		let mut etiketler: Vec<(Sekme, &'static str)> =
+			vec![(Sekme::Altyazi, "Altyazı")];
+		if self.video.is_some() {
+			etiketler.push((Sekme::Video, "Video"));
+		}
+		if self.audio.is_some() {
+			etiketler.push((Sekme::Ses, "Ses"));
+		}
+		if !self.stiller.is_empty() {
+			etiketler.push((Sekme::Stil, "Stil"));
+		}
+		if self.dialog.is_some() {
+			etiketler.push((Sekme::Form, "Form"));
+		}
+		etiketler.push((Sekme::Ayarlar, "Ayarlar"));
+		if !etiketler.iter().any(|(s, _)| *s == self.aktif) {
+			self.aktif = Sekme::Altyazi;
+		}
+		Panel::bottom("vtabs").show(ui, |su| {
+			su.add_space(6.0);
+			// sekme genişliği kalan alana oranlanır: en dar pencerede de
+			// taşma olmaz (satır yatay kaydırma yok)
+			let adet = etiketler.len().max(1) as f32;
+			let gen = ((su.available_width() - 8.0) / adet).max(48.0);
+			su.horizontal(|k| {
+				for (s, ad) in &etiketler {
+					if k.add(
+						egui::Button::new(RichText::new(*ad))
+							.min_size(egui::vec2(gen, 44.0))
+							.selected(self.aktif == *s),
+					).clicked() {
+						self.aktif = *s;
+					}
+				}
+			});
+			su.add_space(6.0);
+		});
+		CentralPanel::default().show_inside(ui, |su| {
+			match self.aktif {
+				Sekme::Altyazi => {
+					self.durum_icerik(su, true);
+					self.grid_icerik(su, true);
+				}
+				Sekme::Video => self.video_icerik(su, true),
+				Sekme::Ses => self.ses_icerik(su, true),
+				Sekme::Stil => self.stil_icerik(su, true),
+				Sekme::Form => self.form_icerik(su, true),
+				Sekme::Ayarlar => self.ayarlar_bolum(su),
+			}
+		});
+	}
+
+	/// Masaüstü çerçeve: mevcut P4.2–P4.6 şerit akışı (üst paneller +
+	/// alt durum çubuğu + grid), gövdeler mobil ile aynı.
+	fn masaustu_cerceve(&mut self, ui: &mut egui::Ui) {
+		if self.video.is_some() {
+			Panel::top("vpanel").show(ui, |su| {
+				self.video_icerik(su, false);
+			});
+		}
+		if self.audio.is_some() {
+			Panel::top("wpanel").show(ui, |su| {
+				self.ses_icerik(su, false);
+			});
+		}
+		if !self.stiller.is_empty() {
+			Panel::top("spanel").show(ui, |su| {
+				self.stil_icerik(su, false);
+			});
+		}
+		if self.dialog.is_some() {
+			Panel::top("dpanel").show(ui, |su| {
+				self.form_icerik(su, false);
+			});
+		}
+		Panel::bottom("velnosub_durum").show(ui, |su| {
+			self.durum_icerik(su, false);
+		});
+		CentralPanel::default().show_inside(ui, |su| {
+			self.grid_icerik(su, false);
+		});
+	}
+}
+
+impl GridApp {
+	/// Form düğme gönderimi: tüm alan değerleri ABI'ye yazılır, sonra düğme
+	/// seçimi kaydedilir (masaüstü ve mobil ortak).
+	fn form_gonder(&mut self, bi: usize, ad: &str) {
+		let Some(fd) = self.dialog.as_mut() else { return };
+		let h = fd.handle;
+		let mut yaz = 0usize;
+		for (i, a2) in fd.alanlar.iter().enumerate() {
+			if a2.sinif != "label" {
+				let c = CString::new(a2.deger.clone())
+					.map(|c| unsafe { velnosub_abi_dialog_set(h, i as c_int, c.as_ptr()) })
+					.unwrap_or(-1);
+				if c == 0 {
+					yaz += 1;
+				}
+			}
+		}
+		let secim = unsafe { velnosub_abi_dialog_show(h, bi as c_int) };
+		self.note = format!(
+			"form: düğme {} ({ad}) — {yaz}/{evet} alan tip yanı: {secim}",
+			bi + 1,
+			evet = fd.alanlar.iter().filter(|x| x.sinif != "label").count(),
+		);
+	}
+}
+
+impl eframe::App for GridApp {
+	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+		match self.duzen {
+			Duzen::Secim => {
+				CentralPanel::default().show_inside(ui, |su| {
+					self.secim_ekrani(su);
+				});
+			}
+			Duzen::Mobil => self.mobil_cerceve(ui),
+			Duzen::Masaustu => self.masaustu_cerceve(ui),
+		}
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	/// İlk giriş kuralı ve seçim kaydı: dosya yoksa `None` (seçim ekranı),
+	/// yazımdan sonra değer birebir okunur. Ekransız haberci (derleme ortamı
+	/// GUI penceresi açamaz; düzen çizimi cihaz/APK bağlamına kaldı).
+	#[test]
+	fn ayar_yoksa_secim_kaydi_birebir() {
+		let yol = std::env::temp_dir()
+			.join(format!("velnosub-ui-test{}.json", std::process::id()));
+		std::env::set_var("VELNOSUB_UI_JSON", &yol);
+		let _ = std::fs::remove_file(&yol);
+		assert_eq!(ayar_yukle(), None, "dosya yokken secim ekranı beklenirdi");
+		ayar_yaz("mobil").expect("motilteri yazılamadı");
+		assert_eq!(ayar_yukle().as_deref(), Some("mobil"));
+		ayar_yaz("masaustu").expect("masaustu yazılamadı");
+		assert_eq!(ayar_yukle().as_deref(), Some("masaustu"));
+		// bilinmeyen içerik (eskimiş dosya) seçimsizdir; tekrar sorar
+		std::fs::write(&yol, "{}").unwrap();
+		assert_eq!(ayar_yukle(), None);
+		let _ = std::fs::remove_file(&yol);
 	}
 }

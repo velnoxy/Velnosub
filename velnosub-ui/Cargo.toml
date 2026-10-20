@@ -6,6 +6,13 @@ edition = "2021"
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
 
+# host derlemesi (android dışı) winit'in masaüstü omurgasını ister:
+# default-features kapalıiki x11 hiç etkinleşmediği için aarch64-linux-gnu
+# hedefinde winit "platform not supported" derleme hatası veriyordu.
+[target.'cfg(not(target_os = "android"))'.dependencies.eframe]
+version = "0.37"
+features = ["x11"]
+
 [profile.release]
 debug = false
 
