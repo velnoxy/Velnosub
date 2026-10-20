@@ -25,6 +25,9 @@ extern "C" {
 		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
 	) -> c_int;
 	fn velnosub_abi_edit_line(h: c_int, idx: c_int, text: *const c_char) -> c_int;
+	fn velnosub_abi_style_of(h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int) -> c_int;
+	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
+	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
 	fn velnosub_abi_save(h: c_int, out_path: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
@@ -94,7 +97,6 @@ fn line_text(h: c_int, idx: c_int) -> Result<String, String> {
 		h,
 	)
 }
-
 fn line_times(h: c_int, idx: c_int) -> Result<String, String> {
 	read_cstr(
 		|h, buf, len| unsafe { velnosub_abi_line_times(h, idx, buf, len) },
@@ -225,6 +227,47 @@ fn audio_peaks_cek(h: c_int, toplam: i64) -> Result<(Vec<i16>, Vec<i16>), String
 	Ok((minv, maxv))
 }
 
+/// P4.5: ABI stil dizgesinin ayrıştırılmış bir stil satırı.
+#[derive(Clone)]
+pub struct StyleRow {
+	name: String,
+	font: String,
+	size: f64,
+	primary: String,
+	secondary: String,
+	outline: String,
+	shadow: String,
+	flags: String,
+	alignment: i32,
+	margins: String,
+	encoding: i32,
+	scale: String,
+	edge: String,
+}
+
+/// ABI stil dizgesini büyüt- yeniden-dene kuralıyla oku (line_text örneği).
+fn style_of(h: c_int, idx: c_int) -> Result<String, String> {
+	let mut len = 384usize;
+	loop {
+		let mut buf = vec![0u8; len];
+		let n = unsafe {
+			velnosub_abi_style_of(
+				h, idx,
+				buf.as_mut_ptr() as *mut c_char,
+				buf.len() as c_int,
+			)
+		};
+		if n < 0 {
+			return Err(last_error());
+		}
+		if (n as usize) < len.saturating_sub(1) {
+			buf.truncate(n as usize);
+			return Ok(String::from_utf8_lossy(&buf).into_owned());
+		}
+		len *= 2;
+	}
+}
+
 /// P4.2 uygulama durumu: tek açık tutamaç + satır önbelleği.
 pub struct GridApp {
 	handle: Option<c_int>,
@@ -234,6 +277,7 @@ pub struct GridApp {
 	note: String,
 	video: Option<VideoSection>,
 	audio: Option<AudioSection>,
+	stiller: Vec<StyleRow>,
 }
 
 impl GridApp {
@@ -255,6 +299,7 @@ impl GridApp {
 			note: "açık dosya yok".into(),
 			video: None,
 			audio: None,
+			stiller: Vec::new(),
 		};
 		if let Some(p) = open {
 			if let Err(e) = app.load(&p) {
@@ -305,7 +350,44 @@ impl GridApp {
 		self.rows = rows;
 		self.path = Some(path.to_string());
 		self.note = format!("{path} — {ev} satır, {st} stil");
+		self.load_styles();
 		Ok(())
+	}
+
+	/// P4.5: stilleri ABI dizgesinden ayıkla; load/yeniden-aç sonrası taze.
+	fn load_styles(&mut self) {
+		self.stiller.clear();
+		let Some(h) = self.handle else {
+			return;
+		};
+		let st = unsafe { velnosub_abi_style_count(h) };
+		if st <= 0 {
+			return;
+		}
+		for i in 0..st {
+			let Ok(t) = style_of(h, i) else {
+				continue;
+			};
+			let p: Vec<&str> = t.split('|').collect();
+			if p.len() < 13 {
+				continue;
+			}
+			self.stiller.push(StyleRow {
+				name: p[0].into(),
+				font: p[1].into(),
+				size: p[2].parse().unwrap_or(0.0),
+				primary: p[3].into(),
+				secondary: p[4].into(),
+				outline: p[5].into(),
+				shadow: p[6].into(),
+				flags: p[7].into(),
+				alignment: p[8].parse().unwrap_or(0),
+				margins: p[9].into(),
+				encoding: p[10].parse().unwrap_or(0),
+				scale: p[11].into(),
+				edge: p[12].into(),
+			});
+		}
 	}
 
 	fn save_to(&mut self, path: &str) {
@@ -502,6 +584,51 @@ impl eframe::App for GridApp {
 					let ymax = orta - yarim * (a.minv[k] as f32 / 32768.0);
 					ui.painter()
 						.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
+				}
+				ui.add_space(4.0);
+			});
+		}
+
+		// P4.5: stiller şeridi — ad/font özeti + canlı boyut düzenleme
+		if !self.stiller.is_empty() {
+			Panel::top("spanel").show(ui, |ui| {
+				ui.add_space(4.0);
+				ui.label(
+					RichText::new(format!("Stiller ({})", self.stiller.len()))
+						.strong(),
+				);
+				let kopya = self.stiller.clone();
+				for (i, r) in kopya.iter().enumerate() {
+					ui.horizontal(|ui| {
+						let mut v = r.size;
+						let yanit = ui.add(
+							egui::DragValue::new(&mut v)
+								.speed(0.5)
+								.range(2.0f64..=9999.0)
+								.suffix(" pts"),
+						);
+						if yanit.changed() {
+							if let Some(h) = self.handle {
+								let rc = unsafe {
+									velnosub_abi_style_edit_size(h, i as c_int, v)
+								};
+								if rc == 0 {
+									self.stiller[i].size = v;
+									self.note =
+										format!("stil {}: boyut {:.1}", r.name, v);
+								} else {
+									self.note = format!("stil boyutu hatası: {}", last_error());
+								}
+							}
+						}
+						ui.label(RichText::new(format!(
+							"{} — {} · p{} s{} o{} k{} · bi{} hiza{} ken[{}] kod{} ölç[{}] {}",
+							r.name, r.font, r.primary, r.secondary, r.outline,
+							r.shadow, r.flags, r.alignment, r.margins,
+							r.encoding, r.scale, r.edge
+						))
+						.weak());
+					});
 				}
 				ui.add_space(4.0);
 			});

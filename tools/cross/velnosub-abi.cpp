@@ -287,6 +287,93 @@ int velnosub_abi_edit_line(int h, int idx, const char *text) {
 	return -1;
 }
 
+// ---- P4.5 omurgası: stil kolu (alan dizgesi + ölçü/ad düzenleme) -------
+
+// alan dizgesi ('|' ile ayrılmış 13 hane):
+// 0 ad, 1 font, 2 boyut, 3-6 renkler ana/ikincil/kontur/gölge (ASS biçimi),
+// 7 biçim baytları "kalın,italik,altçizgi,üstçizgi", 8 hiza,
+// 9 kenarlar "B,G,D", 10 kodlama, 11 "ölçekx,ölçeks,haraba,açı",
+// 12 "kenarstili,konturgenis, gölgegenis"
+static std::string stil_dizgesi(AssStyle const& s) {
+	auto ik = [](bool b) { return b ? "1" : "0"; };
+	return s.name + "|" + s.font + "|" + std::to_string(s.fontsize)
+	     + "|" + s.primary.GetAssStyleFormatted()
+	     + "|" + s.secondary.GetAssStyleFormatted()
+	     + "|" + s.outline.GetAssStyleFormatted()
+	     + "|" + s.shadow.GetAssStyleFormatted()
+	     + "|" + ik(s.bold) + "," + ik(s.italic) + "," + ik(s.underline)
+	     + "," + ik(s.strikeout)
+	     + "|" + std::to_string(s.alignment)
+	     + "|" + std::to_string(s.Margin[0]) + "," + std::to_string(s.Margin[1])
+	     + "," + std::to_string(s.Margin[2])
+	     + "|" + std::to_string(s.encoding)
+	     + "|" + std::to_string(s.scalex) + "," + std::to_string(s.scaley)
+	     + "," + std::to_string(s.spacing) + "," + std::to_string(s.angle)
+	     + "|" + std::to_string(s.borderstyle) + ","
+	     + std::to_string(s.outline_w) + "," + std::to_string(s.shadow_w);
+}
+
+int velnosub_abi_style_of(int h, int idx, char *buf, int buflen) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Styles.size())) {
+			set_err("stil dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		std::string const t = stil_dizgesi(*std::next(c.file.Styles.begin(), idx));
+		int const n = static_cast<int>(t.size());
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, t.data(), static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_style_edit_size(int h, int idx, double size) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (size < 2.0 || size > 9999.0) { set_err("stil boyutu dışında"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Styles.size())) {
+			set_err("stil dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		AssStyle &s = *std::next(c.file.Styles.begin(), idx);
+		s.fontsize = size;
+		s.UpdateData();
+		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_style_edit_name(int h, int idx, const char *name) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!name || !*name) { set_err("stil adı boş"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Styles.size())) {
+			set_err("stil dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		AssStyle &s = *std::next(c.file.Styles.begin(), idx);
+		s.name = name;
+		s.UpdateData();
+		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 // ---- P4.3 omurgası: video kolu (BGRA kare teslimi) -------------------
 
 int velnosub_abi_video_open(const char *path) {
@@ -480,8 +567,8 @@ int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
 std::map<int, std::shared_ptr<AudioPlayer>> g_oynatici;
 std::mutex g_oynatma_kilit;
 
-// kilit ALINMIŞken çağrılır: akışı kapat, oynatıcıyı haritadan düş
-// (yıkıcı, hâlâ açık olan dosyayı kapatır)
+// kilit alinmisken cagrilir: akisi kapat, oynaticiyi haritadan dus
+// (yikici, halen acik olan dosyayi kapatir)
 static void ses_kes_kilitli(int h) {
 	auto it = g_oynatici.find(h);
 	if (it == g_oynatici.end()) return;

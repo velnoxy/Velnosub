@@ -27,6 +27,9 @@ extern "C" {
 		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
 	) -> c_int;
 	fn velnosub_abi_edit_line(h: c_int, idx: c_int, text: *const c_char) -> c_int;
+	fn velnosub_abi_style_of(h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int) -> c_int;
+	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
+	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
 	fn velnosub_abi_video_open(path: *const c_char) -> c_int;
@@ -69,6 +72,29 @@ fn line_text(h: c_int, idx: c_int) -> Result<String, String> {
 		let mut buf = vec![0u8; len];
 		let n = unsafe {
 			velnosub_abi_line_text(
+				h, idx,
+				buf.as_mut_ptr() as *mut c_char,
+				buf.len() as c_int,
+			)
+		};
+		if n < 0 {
+			return Err(last_error());
+		}
+		if (n as usize) < len - 1 {
+			buf.truncate(n as usize);
+			return Ok(String::from_utf8_lossy(&buf).into_owned());
+		}
+		len *= 2;
+	}
+}
+
+/// Stil alan dizgesini ABI'den oku (line_text okuma kuralının aynısı).
+fn style_of(h: c_int, idx: c_int) -> Result<String, String> {
+	let mut len = 384usize;
+	loop {
+		let mut buf = vec![0u8; len];
+		let n = unsafe {
+			velnosub_abi_style_of(
 				h, idx,
 				buf.as_mut_ptr() as *mut c_char,
 				buf.len() as c_int,
@@ -281,6 +307,79 @@ fn main() -> ExitCode {
 		println!("[AG4] ikinci tutamaç kapandı");
 	}
 	println!("[AG5] grid şerit tamam");
+
+	// P4.5 stil şeridi: stil dizgesi + ad/boyut düzenleme + kalıcılık
+	{
+		let st = unsafe { velnosub_abi_style_count(h) };
+		if st < 0 {
+			eprintln!("[ABE] stil sayısı: {}", last_error());
+			return ExitCode::FAILURE;
+		}
+		println!("[AS0] stiller: {st}");
+		for i in 0..st.min(2) {
+			let t = match style_of(h, i) {
+				Ok(t) => t,
+				Err(e) => {
+					eprintln!("[ABE] stil {i}: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			println!("[AS1] stil {i}: {t}");
+		}
+		if st >= 1 {
+			let rc = unsafe { velnosub_abi_style_edit_size(h, 0, 24.0) };
+			if rc != 0 {
+				eprintln!("[ABE] stil boyutu: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			let ince = match style_of(h, 0) {
+				Ok(t) => t,
+				Err(e) => {
+					eprintln!("[ABE] stil teyit: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			let parca: Vec<&str> = ince.split('|').collect();
+			let boyut = parca.get(2).copied().unwrap_or("?");
+			println!("[AS2] stil 0 boyutu 24 yazıldı; teyit: {boyut}");
+			let ad = "VelnoSub";
+			let ad_c = CString::new(ad).unwrap();
+			let rc = unsafe { velnosub_abi_style_edit_name(h, 0, ad_c.as_ptr()) };
+			if rc != 0 {
+				eprintln!("[ABE] stil adı: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			println!("[AS3] stil 0 adı yazıldı (VelnoSub)");
+
+			let kay_c = CString::new(out_path.clone()).unwrap();
+			let rc = unsafe { velnosub_abi_save(h, kay_c.as_ptr()) };
+			if rc != 0 {
+				eprintln!("[ABE] stil kayıt: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			let h2 = unsafe { velnosub_abi_open(kay_c.as_ptr()) };
+			if h2 < 0 {
+				eprintln!("[ABE] stil ikinci açılış: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			let kalit = style_of(h2, 0);
+			unsafe { velnosub_abi_close(h2) };
+			let kalit = match kalit {
+				Ok(t) => t,
+				Err(e) => {
+					eprintln!("[ABE] kalıcı stil: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			let es: Vec<&str> = kalit.split('|').collect();
+			if es.first() != Some(&"VelnoSub") || es.get(2) != Some(&"24.000000") {
+				eprintln!("[ABE] stil kalıcılığı: {kalit}");
+				return ExitCode::FAILURE;
+			}
+			println!("[AS4] kalıcılık teyidi: ad+boyut ikinci tutamaçta birebir");
+		}
+		println!("[AS5] stil şerit tamam");
+	}
 
 	// P4.3 video şeridi: video argümanı verildiyse BGRA kare hattını sürer
 	if let Some(vp) = video_path {
