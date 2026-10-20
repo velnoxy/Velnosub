@@ -23,7 +23,7 @@
 #include <vector>
 
 namespace {
-class PCMPlayer final : public oboe::AudioStreamDataCallback {
+class PCMPlayer final : public oboe::AudioStreamDataCallback, public oboe::AudioStreamErrorCallback {
 public:
 	PCMPlayer(std::vector<int16_t> samples, int rate, int chs)
 	: pcm(std::move(samples)), sample_rate(rate), channels(chs) {}
@@ -60,7 +60,8 @@ public:
 		    ->setFormat(oboe::AudioFormat::I16)
 		    ->setChannelCount(channels)
 		    ->setSampleRate(sample_rate)
-		    ->setDataCallback(this);
+		    ->setDataCallback(this)
+		    ->setErrorCallback(this);
 
 		std::shared_ptr<oboe::AudioStream> stream;
 		oboe::Result rc = builder.openStream(stream);
