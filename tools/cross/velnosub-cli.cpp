@@ -34,6 +34,11 @@
 #include <iterator>
 #include <string>
 
+// P5.3: flyweight Text mutasyon vekili (src/core/velnosub_core_edit.cpp) —
+// cli ikilisi ayrı DSO olduğundan doğrudan Text ataması çapraz-fabrika
+// bozulması üretiyor (abi TU'sundaki baş nota bak)
+extern "C" int velnosub_core_edit_first_text(AssFile &file, const char *text);
+
 namespace {
 std::string read_all(std::string const& p) {
 	std::ifstream in(p, std::ios::binary);
@@ -93,8 +98,8 @@ int main(int argc, char **argv) {
 
 		// 3) seçimli düzenleme (çekirdek Commit overload'u)
 		if (edit_first && !file.Events.empty()) {
-			file.Events.front().Text = edit_text;
-			file.Commit("velnosub cli", AssFile::COMMIT_DIAG_TEXT);
+			// P5.3: flyweight yazımı core.so vekilinden (Commit dahil)
+			velnosub_core_edit_first_text(file, edit_text.c_str());
 			std::cout << "düzenlendi: " << edit_text << "\n";
 		}
 

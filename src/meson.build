@@ -328,6 +328,7 @@ aegisub_core_src = files(
     'spellchecker_hunspell.cpp',
     'core/math_util.cpp',
     'core/commit_compat.cpp',
+    'core/velnosub_core_edit.cpp',
     'core/compat/ui_abi.cpp',
     'core/compat/runtime_abi.cpp',
     'core/compat/font_abi.cpp',

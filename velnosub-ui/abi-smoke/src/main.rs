@@ -6,7 +6,8 @@
 // Çalışma: LD_LIBRARY_PATH=<abi dizini> velnosub-abi-smoke in.ass out.ass \
 //   ["--edit-first", "metin"] [video.mp4]
 // Marker şeridi: [AB0] init, [AB1] açıldı, [AB2] sayaçlar, [AB3] düzenlendi,
-// [AB4] kaydedildi, [AB5] tur, [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
+// [AB4] kaydedildi, [AB5] tur, [AB7] tekrarlı düzenleme (P5.3 regresyon),
+// [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
 // [ABE] hata.
 
 use std::ffi::{c_char, c_int, CStr, CString};
@@ -384,6 +385,46 @@ fn main() -> ExitCode {
 		println!("[AG4] ikinci tutamaç kapandı");
 	}
 	println!("[AG5] grid şerit tamam");
+
+	// P5.3 tekrarlı düzenleme şeridi: flyweight çapraz-DSO yığın bozulması
+	// regresyonu (kök neden: fabrika tekili DSO'ya göre bölünüyor; mutasyonlar
+	// core.so vekili velnosub_core_edit_* ile tek kolde toplanır). Aynı
+	// tutamaçta çok satırı çok turda yazıp her turda geri okur.
+	{
+		let mut hatasiz = true;
+		for tur in 1..=3 {
+			for idx in 1..=4 {
+				let yeni = format!("ab7 tur{tur} satır{idx}");
+				let y_c = CString::new(yeni.clone()).unwrap();
+				let rc = unsafe { velnosub_abi_edit_line(h, idx, y_c.as_ptr()) };
+				if rc != 0 {
+					eprintln!("[ABE] ab7 edit r{tur} i{idx}: {}", last_error());
+					hatasiz = false;
+					break;
+				}
+				let gerial = match line_text(h, idx) {
+					Ok(t) => t,
+					Err(e) => {
+						eprintln!("[ABE] ab7 okuma r{tur} i{idx}: {e}");
+						hatasiz = false;
+						break;
+					}
+				};
+				if gerial != yeni {
+					eprintln!("[ABE] ab7 doğrulama r{tur} i{idx}: {gerial}");
+					hatasiz = false;
+					break;
+				}
+			}
+			if !hatasiz {
+				break;
+			}
+		}
+		if !hatasiz {
+			return cik(h);
+		}
+		println!("[AB7] tekrarlı düzenleme: 3 tur x 4 satır birebir");
+	}
 
 	// P4.5 stil şeridi: stil dizgesi + ad/boyut düzenleme + kalıcılık
 	{

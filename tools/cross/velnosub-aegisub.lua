@@ -16,6 +16,7 @@ int velnosub_abi_event_count(int h);
 int velnosub_abi_style_count(int h);
 int velnosub_abi_line_text(int h, int idx, char *buf, int buflen);
 int velnosub_abi_line_times(int h, int idx, char *buf, int buflen);
+int velnosub_abi_line_meta(int h, int idx, char *buf, int buflen);
 int velnosub_abi_edit_line(int h, int idx, const char *text);
 int velnosub_abi_save(int h, const char *out_path);
 int velnosub_abi_close(int h);
@@ -82,10 +83,17 @@ local function satir_oku(h, i0)
 	local zaman, e2 = oku(abi.velnosub_abi_line_times, h, i0)
 	if not zaman then error(e2, 2) end
 	local bas, son = zaman:match("^(.*) / (.*)$")
+	-- P5.3: aegisub satır alanları — class (ABI olay kolunda hep
+	-- "dialogue") + comment (Comment olayı bayrağı)
+	local meta = oku(abi.velnosub_abi_line_meta, h, i0)
+	if not meta then error(hatasi("line_meta"), 2) end
+	local mhaneler = hata_ayikla(meta)
 	return {
 		text = metin,
 		start_time = bas or zaman,
 		end_time = son or "",
+		class = mhaneler[1] or "dialogue",
+		comment = mhaneler[2] == "1",
 	}
 end
 
@@ -316,19 +324,53 @@ function aegisub.__pump()
 			error(e, 0)
 		end
 		print("[AUS3] yazıldı: " .. p.save)
+		print("[AUS4a] yeniden açılış öncesi")
 		local h2 = abi.velnosub_abi_open(p.save)
+		print("[AUS4b] yeniden açıldı tutamaç: " .. tostring(h2))
 		assert(h2 >= 0, hatasi("yeniden açılış"))
+		local adet2 = abi.velnosub_abi_event_count(h2)
+		print("[AUS4c] olay sayısı: " .. tostring(adet2))
 		local adet2 = abi.velnosub_abi_event_count(h2)
 		assert(adet2 == adet,
 			("kalıcılık: satır sayısı değişti %d → %d"):format(adet, adet2))
 		local son = satir_oku(h2, math.min(adet, 1) - 1)
 		print(("[AUS4] kalıcılık: yeniden açılış satır 1: %s"):format(son.text))
+		for _, si in ipairs(p.sel and #p.sel > 0 and p.sel or { 1 }) do
+			local s2 = satir_oku(h2, si - 1)
+			print(("[AUS6] yeniden açılış satır %d: %s")
+			      :format(si, s2.text))
+		end
 		abi.velnosub_abi_close(h2)
 	end
 	cevap_vals = nil
 	cevap_btn = nil
 	abi.velnosub_abi_close(h)
 	print("[AUS5] pump tamam")
+end
+
+-- P5.3: aegisub 2.x include() — include dizininden BOM temizli yükleme
+-- (upstream autoload scriptleri bu konvansiyonu kullanıyor)
+function include(ad)
+	local kurulu = os.getenv("VELNOSUB_AEGIINC") or "share/lua/inc"
+	for d in tostring(kurulu):gmatch("[^:;]+") do
+		local yol = d .. "/" .. tostring(ad)
+		local ff = io.open(yol, "rb")
+		if ff then
+			local metin = ff:read("*a") or ""
+			ff:close()
+			-- BOM (EF BB BF) yut
+			if metin:sub(1, 3) == "\239\187\191" then
+				metin = metin:sub(4)
+			end
+			local yuk, hata = loadstring(metin, "@" .. tostring(ad))
+			if not yuk then
+				error("include hatası (" .. ad .. "): " .. tostring(hata), 2)
+			end
+			yuk()
+			return true
+		end
+	end
+	error("include yok: " .. tostring(ad) .. " (" .. kurulu .. ")")
 end
 
 -- ---- yüzey monte ----------------------------------------------------
@@ -338,6 +380,7 @@ aegisub.unregister_macro = function(a) makrolar[a] = nil end
 aegisub.progress = {
 	set = function() end,
 	set_task = function(s) aegisub.log("progress: " .. tostring(s)) end,
+	task = function(s) aegisub.log("progress: " .. tostring(s)) end,
 	is_cancelled = function() return false end,
 	title = function() end,
 }
@@ -345,5 +388,24 @@ aegisub.debug = {
 	out = function(...) aegisub.log(tostring((select(1, ...)))) end,
 	mode = function() end,
 }
+-- P5.3: geri kalan aegisub.* yüzey katmanı
+aegisub.set_undo_point = function(ad)
+	aegisub.log("undo noktası (mobil hatta kayıt yok): " .. tostring(ad))
+end
+aegisub.register_filter = function(ad, aciklama, kategori, isleme)
+	aegisub.log(("filter kaydı (mobil dilimde koşulmaz): %s (%d adet işlemci)")
+	             :format(tostring(ad), type(isleme) == "table" and #isleme or 1))
+end
+aegisub.cancel = function() end
+aegisub.decode_path = function(yol)
+	local kullanici = os.getenv("VELNOSUB_USER_DIR") or (
+		os.getenv("HOME") and (os.getenv("HOME") .. "/.velnosub") or "/data/local/tmp/velnosub-user")
+	local oge = tostring(yol)
+	oge = oge:gsub("^%?user", kullanici)
+	oge = oge:gsub("^%?data", os.getenv("VELNOSUB_DATA_DIR") or ".")
+	oge = oge:gsub("^%?script", os.getenv("VELNOSUB_SCRIPT_DIR") or ".")
+	oge = oge:gsub("^%?temp", "/tmp")
+	return oge
+end
 aegisub.__stub = nil
 print("[AUST] aegisub yüzeyi gerçek ABI hattında (P5.1/P5.2)")

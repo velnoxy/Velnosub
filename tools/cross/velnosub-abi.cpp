@@ -13,6 +13,7 @@
 #include "ass_dialogue.h"
 #include "ass_file.h"
 #include "ass_style.h"
+#include <cstdio>
 #include "include/aegisub/video_provider.h"
 #include "options.h"
 #include "subtitle_format.h"
@@ -47,6 +48,12 @@
 #include <memory>
 #include <new>
 #include <string>
+
+// P5.3: flyweight Text mutasyon vekilleri (src/core/velnosub_core_edit.cpp,
+// core.so'da derlenir — fabrika tekili DSO'ya göre bölündüğünden abi.so'dan
+// doğrudan atama yığını bozuyor; ayrıntı TU'nun baş notunda)
+extern "C" int velnosub_core_edit_line_text(AssFile &file, int idx, const char *text);
+extern "C" int velnosub_core_edit_first_text(AssFile &file, const char *text);
 
 namespace {
 
@@ -190,8 +197,11 @@ int velnosub_abi_edit_first(int h, const char *text) {
 	Ctx &c = *g_ctx.at(h);
 	if (c.file.Events.empty()) { set_err("event boş"); return -1; }
 	try {
-		c.file.Events.front().Text = text;
-		c.file.Commit("velnosub abi", AssFile::COMMIT_DIAG_TEXT);
+		// P5.3: flyweight yazımı core.so vekilinden (bkz. velnosub_core_edit.cpp)
+		if (velnosub_core_edit_first_text(c.file, text) != 0) {
+			set_err("event boş");
+			return -1;
+		}
 		return 0;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
@@ -247,6 +257,32 @@ int velnosub_abi_line_text(int h, int idx, char *buf, int buflen) {
 	return -1;
 }
 
+int velnosub_abi_line_meta(int h, int idx, char *buf, int buflen) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		AssDialogue const& d = *std::next(c.file.Events.begin(), idx);
+		// P5.3: aegisub satır sınıfı + yorum bayrağı — "class|comment"
+		// (upstream scriptler class=="dialogue" + comment alanına bakar;
+		// ABI olay kolları yalnız Dialogue satırı tuttukları için sınıf
+		// hep "dialogue" döner; Comment olayı comment=1)
+		std::string const t = "dialogue|" + std::string(d.Comment ? "1" : "0");
+		int const n = static_cast<int>(t.size());
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, t.data(), static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 int velnosub_abi_line_times(int h, int idx, char *buf, int buflen) {
 	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
 	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
@@ -278,8 +314,12 @@ int velnosub_abi_edit_line(int h, int idx, const char *text) {
 			set_err("satır dışında indeks: " + std::to_string(idx));
 			return -1;
 		}
-		std::next(c.file.Events.begin(), idx)->Text = text;
-		c.file.Commit("velnosub abi", AssFile::COMMIT_DIAG_TEXT);
+		// P5.3: flyweight Text yazımı core.so vekilinden (fabrika tekili
+		// DSO'ya göre bölünüyor; abi.so'dan doğrudan atama yığını bozuyor)
+		if (velnosub_core_edit_line_text(c.file, idx, text) != 0) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
 		return 0;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
@@ -636,7 +676,10 @@ int velnosub_abi_dialog_open(const char *spec) {
 			a.ad = parca[2];
 			a.baslik = parca[3];
 			a.deger = parca.size() > 4 ? parca[4] : std::string();
-			if (a.ad.empty()) { set_err("ctl adı boş"); return -1; }
+			if (a.ad.empty() && a.sinif != "label") {
+				set_err("ctl adı boş: " + a.sinif);
+				return -1;
+			}
 			if (a.sinif != "label" && a.deger.empty()) {
 				set_err("ctl değeri boş (label hariç): " + a.ad);
 				return -1;

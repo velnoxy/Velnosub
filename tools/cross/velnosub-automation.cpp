@@ -18,8 +18,13 @@
 #include <luajit.h>
 
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
+#include <algorithm>
+#include <dirent.h>
 
 namespace {
 
@@ -28,6 +33,27 @@ int l_log(lua_State *L) {
 	const char *s = luaL_checklstring(L, 1, &n);
 	std::cout << "[AUL] " << std::string(s, n) << "\n";
 	return 0;
+}
+
+// P5.3: BOM'suz dosya yükleme — upstream autoload scriptleri çoğu BOM'lu
+// (EF BB BF) başlar; ham luaL_dofile "unexpected symbol" verir.
+int yukle(lua_State *L, const char *yol) {
+	FILE *f = fopen(yol, "rb");
+	if (!f) {
+		std::cerr << "[AUE] dosya yok: " << yol << "\n";
+		return 1;
+	}
+	std::string metin;
+	char tampon[4096];
+	std::size_t n;
+	while ((n = fread(tampon, 1, sizeof(tampon), f)) > 0)
+		metin.append(tampon, n);
+	fclose(f);
+	if (metin.size() >= 3 && (unsigned char)metin[0] == 0xEF &&
+	    (unsigned char)metin[1] == 0xBB && (unsigned char)metin[2] == 0xBF) {
+		metin.erase(0, 3);
+	}
+	return luaL_dostring(L, metin.c_str());
 }
 
 int l_gettext(lua_State *L) {
@@ -83,7 +109,7 @@ int main(int argc, char **argv) {
 	// P5.1/P5.2: gerçek aegisub.* yüzeyi (FFI → libvelnosub-abi.so)
 	const char *shim = std::getenv("VELNOSUB_AEGISHIM");
 	if (shim && *shim) {
-		if (luaL_dofile(L, shim)) {
+		if (yukle(L, shim)) {
 			const char *err = lua_tostring(L, -1);
 			std::cerr << "[AUE] shim hatası: " << (err ? err : "(mesaj yok)")
 			          << "\n";
@@ -93,9 +119,68 @@ int main(int argc, char **argv) {
 		std::cout << "[AUS0] aegisub yüzeyi yüklendi\n";
 	}
 
+	// P5.3: manager taraması — --include / --dir / --script arg'ları;
+	// dir'de *.lua sıralı yüklenir (upstream BOM'ları dahil)
+	std::vector<std::string> dizinler, scriptler, incs;
+	for (int i = 2; i < argc; ++i) {
+		std::string a = argv[i];
+		if (a == "--dir" && i + 1 < argc) { dizinler.push_back(argv[++i]); }
+		else if (a == "--script" && i + 1 < argc) { scriptler.push_back(argv[++i]); }
+		else if (a == "--include" && i + 1 < argc) { incs.push_back(argv[++i]); }
+	}
+	for (auto const& inc : incs) {
+		std::cout << "[AUZ2] include yükleniyor: " << inc << "\n";
+		if (yukle(L, inc.c_str())) {
+			const char *err = lua_tostring(L, -1);
+			std::cerr << "[AUE] include hatası (" << inc << "): "
+			          << (err ? err : "(mesaj yok)") << "\n";
+			lua_close(L);
+			return 1;
+		}
+	}
+	for (auto const& d : dizinler) {
+		DIR *dt = opendir(d.c_str());
+		if (!dt) {
+			std::cerr << "[AUE] dizin yok: " << d << "\n";
+			lua_close(L);
+			return 1;
+		}
+		std::vector<std::string> dosyalar;
+		struct dirent *girdi;
+		while ((girdi = readdir(dt)) != nullptr) {
+			std::string ad = girdi->d_name;
+			if (ad.size() > 4 && ad.compare(ad.size() - 4, 4, ".lua") == 0)
+				dosyalar.push_back(ad);
+		}
+		closedir(dt);
+		std::sort(dosyalar.begin(), dosyalar.end());
+		std::cout << "[AUZ0] tarama: " << d << " (" << dosyalar.size()
+		          << " script)\n";
+		for (auto const& ad : dosyalar) {
+			if (yukle(L, (d + "/" + ad).c_str())) {
+				const char *err = lua_tostring(L, -1);
+				std::cerr << "[AUE] script-dir hatası (" << ad << "): "
+				          << (err ? err : "(mesaj yok)") << "\n";
+				lua_close(L);
+				return 1;
+			}
+			std::cout << "[AUZ1] yüklendi: " << ad << "\n";
+		}
+	}
+	for (auto const& s : scriptler) {
+		std::cout << "[AUZ1] script yükleniyor: " << s << "\n";
+		if (yukle(L, s.c_str())) {
+			const char *err = lua_tostring(L, -1);
+			std::cerr << "[AUE] script hatası (" << s << "): "
+			          << (err ? err : "(mesaj yok)") << "\n";
+			lua_close(L);
+			return 1;
+		}
+	}
+
 	int rc;
 	if (argc >= 2) {
-		rc = luaL_dofile(L, argv[1]);
+		rc = yukle(L, argv[1]);
 	} else {
 		rc = luaL_dostring(L, g_builtin_script);
 	}
