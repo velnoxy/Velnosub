@@ -18,8 +18,8 @@ JOBS=${JOBS:-$(nproc)}
 
 mode=${1:?kullanım: $0 arm64|x86_64}
 case "$mode" in
-    arm64) TRIP=aarch64-linux-android; ABI_DIR=arm64-v8a; ARCH=aarch64 ;;
-    x86_64) TRIP=x86_64-linux-android; ABI_DIR=x86_64; ARCH=x86_64 ;;
+    arm64) TRIP=aarch64-linux-android; ABI_DIR=arm64-v8a; ARCH=aarch64; XASM="" ;;
+    x86_64) TRIP=x86_64-linux-android; ABI_DIR=x86_64; ARCH=x86_64; XASM="--disable-x86asm" ;;
     *) echo "kullanım: $0 arm64|x86_64"; exit 2 ;;
 esac
 
@@ -54,6 +54,7 @@ CC="$CCX" ./configure \
     --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,flac,opus,vorbis,pcm_s16le,pcm_f32le,srt \
     --enable-parser=h264,hevc,aac,vorbis,opus,flac \
     --enable-protocol=file \
+    $XASM \
     > "$WORK/ffmpeg-configure-$mode.log" 2>&1) || { tail -20 "$WORK/ffmpeg-configure-$mode.log"; exit 1; }
 
 (cp tools/cross/ffversion-fast.sh "$BUILD/ffbuild/version.sh" 2>/dev/null &&
