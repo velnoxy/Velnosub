@@ -1,13 +1,15 @@
 // Aegisub Project http://www.aegisub.org/
 //
 // velnosub Faz 5 (P5.0) — LuaJIT 2.1 statik katılım + aegisub.*-stub dumanı.
-// Çekirdek bağlaması P5.1 dilimidir; burada amaç LuaJIT çalışma zamanının
-// mobil zincirde bütünlüğü ve stub API yüzeyinin koşuma hazır olmasıdır.
+// P5.1/P5.2: VELNOSUB_AEGISHIM ortam değişkeniyle gerçek aegisub.* yüzeyi
+// (FFI→libvelnosub-abi.so) yüklenir; script dofile edildikten sonra
+// aegisub.__pump pompası (--ass/--macro/--val/--btn/--save arg'ları) koşar.
 //
 // Kullanım: velnosub-automation [script.lua] [arg...]
 //   script verilirse dofile edilir; verilmezse gömülü duman scripti koşar.
 //   arg... değerleri aegisub.arg tablosunun (1..n) içine konur.
 // Marker şeridi: [AU0] LuaJIT kuruldu, [AU1] aegisub tablo kayıtlı,
+// [AUS0] aegisub yüzeyi yüklendi (shim), [AUP0] pompacı koştu,
 // [AU2] script koştu, [AU3] tamam, [AUE] hata.
 
 #include <lua.hpp>
@@ -78,6 +80,19 @@ int main(int argc, char **argv) {
 	lua_setglobal(L, "aegisub");
 	std::cout << "[AU1] aegisub tablo kayıtlı\n";
 
+	// P5.1/P5.2: gerçek aegisub.* yüzeyi (FFI → libvelnosub-abi.so)
+	const char *shim = std::getenv("VELNOSUB_AEGISHIM");
+	if (shim && *shim) {
+		if (luaL_dofile(L, shim)) {
+			const char *err = lua_tostring(L, -1);
+			std::cerr << "[AUE] shim hatası: " << (err ? err : "(mesaj yok)")
+			          << "\n";
+			lua_close(L);
+			return 1;
+		}
+		std::cout << "[AUS0] aegisub yüzeyi yüklendi\n";
+	}
+
 	int rc;
 	if (argc >= 2) {
 		rc = luaL_dofile(L, argv[1]);
@@ -90,6 +105,24 @@ int main(int argc, char **argv) {
 		lua_close(L);
 		return 1;
 	}
+
+	// P5.2: pump — shim varsa kayıtlı makroyu dosyada koşar + kaydeder
+	lua_getglobal(L, "aegisub");
+	if (lua_istable(L, -1)) {
+		lua_getfield(L, -1, "__pump");
+		if (lua_isfunction(L, -1)) {
+			if (lua_pcall(L, 0, 0, 0)) {
+				const char *err = lua_tostring(L, -1);
+				std::cerr << "[AUE] pump hatası: "
+				          << (err ? err : "(mesaj yok)") << "\n";
+				lua_close(L);
+				return 1;
+			}
+			std::cout << "[AUP0] pompacı koştu\n";
+		}
+	}
+	lua_settop(L, 0);
+
 	std::cout << "[AU2] script koştu\n";
 	std::cout << "[AU3] tamam (LuaJIT zemin dumanı)\n";
 	lua_close(L);
