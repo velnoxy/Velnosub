@@ -174,7 +174,7 @@ int main(int argc, char **argv) {
 			break;
 		}
 
-		uint8_t *dst_data[8] = {nullptr};
+		uint8_t **dst_data = nullptr;
 		int dst_linesize = 0;
 		int max_out = frm->nb_samples > 0 ? frm->nb_samples : 1024;
 		if (av_samples_alloc_array_and_samples(&dst_data, &dst_linesize, out_channels,
