@@ -41,6 +41,9 @@ std::unique_ptr<VideoProvider> CreateFFmpegSourceVideoProvider(agi::fs::path con
 std::unique_ptr<VideoProvider> CreateAvisynthVideoProvider(agi::fs::path const&, std::string const&, agi::BackgroundRunner *);
 std::unique_ptr<VideoProvider> CreateBSVideoProvider(agi::fs::path const&, std::string const&, agi::BackgroundRunner *);
 std::unique_ptr<VideoProvider> CreateVapourSynthVideoProvider(agi::fs::path const&, std::string const&, agi::BackgroundRunner *);
+#ifdef WITH_VELNOSUB_FFMPEG
+std::unique_ptr<VideoProvider> CreateFFmpegVideoProvider(agi::fs::path const&, std::string const&, agi::BackgroundRunner *);
+#endif
 
 std::unique_ptr<VideoProvider> CreateCacheVideoProvider(std::unique_ptr<VideoProvider>);
 
@@ -125,6 +128,9 @@ namespace {
 		{"YUV4MPEG", CreateYUV4MPEGVideoProvider, true},
 #ifdef WITH_FFMS2
 		{"FFmpegSource", CreateFFmpegSourceVideoProvider, false},
+#endif
+#ifdef WITH_VELNOSUB_FFMPEG
+		{"FFmpeg", CreateFFmpegVideoProvider, false, [](auto) { return true; }},
 #endif
 #ifdef WITH_AVISYNTH
 		{"Avisynth", CreateAvisynthVideoProvider, false, [](auto p) { return agi::fs::HasExtension(p, "avs"); }},

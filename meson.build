@@ -276,6 +276,19 @@ if needs_ffmpeg
     ]
 endif
 
+# velnosub Faz 3 (P3.2): mobil kolda ffmpeg tabanlı video sağlayıcı. Masa
+# baseline'ına dokunmaz: yalnız -Dvelnosub_mobile=true iken ve libavformat/
+# libswscale pc'leri (build-ffmpeg.sh çıktısı) bulunursa devreye girer.
+if get_option('velnosub_mobile')
+    velnosub_vp_fmt = dependency('libavformat', required: false)
+    velnosub_vp_sws = dependency('libswscale', required: false)
+    if velnosub_vp_fmt.found() and velnosub_vp_sws.found()
+        conf.set('WITH_VELNOSUB_FFMPEG', 1)
+        deps_core += velnosub_vp_fmt
+        deps_core += velnosub_vp_sws
+    endif
+endif
+
 if get_option('avisynth').enabled()
     conf.set('WITH_AVISYNTH', 1) # bundled separately with installer
     dep_avail += 'AviSynth'
@@ -473,10 +486,22 @@ if get_option('velnosub_mobile')
     endif
     velnosub_libass_dep = dependency('libass', version: '>=0.9.7',
                                      fallback: ['libass', 'libass_dep'])
+    velnosub_core_deps = [dependency('icu-uc', version: '>= 4.8.1.1'),
+                          dependency('icu-i18n', version: '>= 4.8.1.1')] + velnosub_boost_libs
+    # P3.2: sağlayıcı TU'un ffmpeg sembolleri .so bağında açıkça gerek
+    if conf.has('WITH_VELNOSUB_FFMPEG')
+        velnosub_core_deps += dependency('libavformat')
+        velnosub_core_deps += dependency('libswscale')
+        velnosub_core_deps += dependency('libavcodec')
+        velnosub_core_deps += dependency('libavutil')
+    endif
     velnosub_core_so = shared_library('velnosub-core',
         link_whole: [libaegisub, aegisub_core],
-        dependencies: [dependency('icu-uc', version: '>= 4.8.1.1'),
-                       dependency('icu-i18n', version: '>= 4.8.1.1')] + velnosub_boost_libs,
+        dependencies: velnosub_core_deps,
+        # P3.2: ffmpeg .a asm tarafından paylaşılabilen genel sembollere adrp
+        # atıfları (örn. fft tabloları) DSO içinde GOT istiyor; bu .so interpozu
+        # hedeflemiyor — Bsymbolic ile semboller bağ içi bağlanır.
+        link_args: conf.has('WITH_VELNOSUB_FFMPEG') ? ['-Wl,-Bsymbolic'] : [],
         install: true)
 
     # P2.2: ASS aç → düzenle → kaydet CLI dumanı (cihazda koşar).

@@ -347,6 +347,10 @@ if get_option('velnosub_mobile')
         'video_provider_yuv4mpeg.cpp',
         'core/options_globals.cpp',
     )
+    # P3.2: libav pc kapısı (libavformat/libswscale) açıksa sağlayıcı TU katılır
+    if conf.has('WITH_VELNOSUB_FFMPEG')
+        aegisub_core_src += files('video_provider_ffmpeg.cpp')
+    endif
 endif
 
 subdir('core')

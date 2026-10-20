@@ -16,6 +16,18 @@ if conf.has('WITH_FFMS2')
     aegisub_core_deps += dependency('ffms2', version: '>= 2.22')
 endif
 
+# P3.2: velnosub ffmpeg video sağlayıcı — sağlayıcı TU derlenirken .a kitaplık
+# sembolleri de çekirdek arşivine taşınır (meson duruk transferi etmez) ve
+# makro çekirdek derleme argümanıyla beslenir (acconf.pch yok).
+aegisub_core_args = ['-DAGI_CORE']
+if conf.has('WITH_VELNOSUB_FFMPEG')
+    aegisub_core_deps += dependency('libavformat')
+    aegisub_core_deps += dependency('libswscale')
+    aegisub_core_deps += dependency('libavcodec')
+    aegisub_core_deps += dependency('libavutil')
+    aegisub_core_args += ['-DWITH_VELNOSUB_FFMPEG=1']
+endif
+
 # P1.4: subtitles_provider_libass ve MatroskaParser yolu.
 # P2.2 (Faz 2): cross'ta sistem libass yoksa wrap fallback devreye girer
 # (libass + freetype + harfbuzz + fribidi alt-projeleri).
@@ -26,5 +38,5 @@ aegisub_core = static_library('aegisub-core', aegisub_core_src, acconf, version_
     include_directories: [libaegisub_inc, deps_inc, version_inc,
                           include_directories('..')],
     dependencies: aegisub_core_deps,
-    cpp_args: ['-DAGI_CORE'],
+    cpp_args: aegisub_core_args,
     install: false)
