@@ -13,6 +13,7 @@
 #include "ass_dialogue.h"
 #include "ass_file.h"
 #include "ass_style.h"
+#include <ass/ass.h>
 #include <cstdio>
 #include "include/aegisub/video_provider.h"
 #include "options.h"
@@ -399,6 +400,148 @@ int velnosub_abi_line_delete(int h, int idx) {
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }
 	return -1;
+}
+
+// P4.6 dilim 1: libass önizleme kolü — tutamaç başına şarıtlı ASS_Renderer.
+// AssStyle::GetEntryData/AssDialogue::GetEntryData okuma-kolu (fabrika
+// dokunmuyor) — abi.so'dan çağrılabilir. Font: pkg'taki blob (ask..., fontconfig
+// cihazda yok: ASS_FONTPROVIDER_NONE + ass_add_font; P2.3 düzendır).
+struct RCtx {
+	ASS_Library *lib = nullptr;
+	ASS_Renderer *ren = nullptr;
+	ASS_Track *track = nullptr;
+	int gen = 0;
+	int yuk = 0;
+};
+
+static std::map<int, RCtx> g_r;
+
+static void r_close(RCtx &r) {
+	if (r.track) ass_free_track(r.track);
+	if (r.ren) ::ass_renderer_done(r.ren);
+	if (r.lib) ::ass_library_done(r.lib);
+	r = RCtx{};
+}
+
+int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
+                             const char *aile_font) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (g_r.count(h)) r_close(g_r.at(h)); // yeniden açık: önceki şartı yumlat
+	if (gen <= 0 || gen > 4096 || yuk <= 0 || yuk > 4096) {
+		set_err("render çerçeve ölçüleri aralık dışı");
+		return -1;
+	}
+	try {
+		RCtx &r = g_r[h];
+		r.gen = gen;
+		r.yuk = yuk;
+		r.lib = ::ass_library_init();
+		if (!r.lib) {
+			r_close(r);
+			set_err("ass_library_init bitti boş");
+			return -1;
+		}
+		if (yol_font && *yol_font) {
+			std::string fdata = read_all(yol_font);
+			if (fdata.empty()) {
+				r_close(r);
+				set_err("font dosyası okunamadı: " + std::string(yol_font));
+				return -1;
+			}
+			::ass_add_font(r.lib, aile_font && *aile_font ? aile_font : "Default",
+			               fdata.data(), static_cast<int>(fdata.size()));
+		}
+		// bellekten seri: durum (düzenlemeler) birebir taşınır
+		Ctx &c = *g_ctx.at(h);
+		std::string ser = "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n";
+		for (auto &st : c.file.Styles)
+			ser += st.GetEntryData() + "\n";
+		ser += "\n[Events]\n";
+		for (auto &ev : c.file.Events)
+			ser += ev.GetEntryData() + "\n";
+		r.track = ::ass_new_track(r.lib);
+		::ass_process_data(r.track, ser.data(), static_cast<int>(ser.size()));
+		if (r.track->n_events <= 0) {
+			r_close(r);
+			set_err("libass olay listesi boş");
+			return -1;
+		}
+		r.ren = ::ass_renderer_init(r.lib);
+		if (!r.ren) {
+			r_close(r);
+			set_err("ass_renderer_init bitti boş");
+			return -1;
+		}
+		::ass_set_frame_size(r.ren, r.gen, r.yuk);
+		::ass_set_fonts(r.ren, yol_font && *yol_font ? yol_font : nullptr,
+		                nullptr, ASS_FONTPROVIDER_NONE, nullptr, 1);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+// ms içinde kare render; RGBA sekizli (r,g,b,255) yazım; dönüş glyph etki
+// pikseli (0 = boş kare, katı hata değil). n == gen*yuk*4 ister.
+int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
+	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
+	RCtx &r = g_r.at(h);
+	if (!buf) { set_err("boş kare depositi"); return -1; }
+	if (n != r.gen * r.yuk * 4) {
+		set_err("kare depositi boyu " + std::to_string(n) + " != "
+		        + std::to_string(r.gen * r.yuk * 4));
+		return -1;
+	}
+	int change = 0;
+	ASS_Image *imgs = ::ass_render_frame(r.ren, r.track, ms, &change);
+	std::vector<uint32_t> kare(static_cast<size_t>(r.gen) * r.yuk, 0u);
+	unsigned long glyphs = 0;
+	for (ASS_Image *img = imgs; img; img = img->next) {
+		if (!img->bitmap || img->w <= 0 || img->h <= 0) continue;
+		uint32_t color = img->color;
+		unsigned alfa = (color >> 24) & 0xFF;      // 0 opak, 255 saydam
+		unsigned kr = (color >> 16) & 0xFF;
+		unsigned kg = (color >> 8) & 0xFF;
+		unsigned kb = color & 0xFF;
+		for (int yy = 0; yy < img->h; ++yy) {
+			int py = img->dst_y + yy;
+			if (py < 0 || py >= r.yuk) continue;
+			unsigned char const *row = img->bitmap + yy * img->stride;
+			for (int xx = 0; xx < img->w; ++xx) {
+				int px = img->dst_x + xx;
+				if (px < 0 || px >= r.gen) continue;
+				unsigned etki = row[xx] * (255u - alfa) / 255u;
+				if (!etki) continue;
+				++glyphs;
+				uint32_t &dst = kare[static_cast<size_t>(py) * r.gen + px];
+				unsigned dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF,
+				         db = dst & 0xFF;
+				dr = (kr * etki + dr * (255u - etki)) / 255u;
+				dg = (kg * etki + dg * (255u - etki)) / 255u;
+				db = (kb * etki + db * (255u - etki)) / 255u;
+				dst = 0xFF000000u | (dr << 16) | (dg << 8) | db;
+			}
+		}
+	}
+	for (int y = 0; y < r.yuk; ++y) {
+		unsigned char *satir = buf + (static_cast<size_t>(y) * r.gen) * 4;
+		for (int x = 0; x < r.gen; ++x) {
+			uint32_t p = kare[static_cast<size_t>(y) * r.gen + x];
+			satir[x * 4 + 0] = static_cast<unsigned char>((p >> 16) & 0xFF);
+			satir[x * 4 + 1] = static_cast<unsigned char>((p >> 8) & 0xFF);
+			satir[x * 4 + 2] = static_cast<unsigned char>(p & 0xFF);
+			satir[x * 4 + 3] = 255;
+		}
+	}
+	return static_cast<int>(glyphs);
+}
+
+int velnosub_abi_render_close(int h) {
+	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
+	r_close(g_r.at(h));
+	g_r.erase(h);
+	return 0;
 }
 
 int velnosub_abi_style_of(int h, int idx, char *buf, int buflen) {

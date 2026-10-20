@@ -7,7 +7,8 @@
 //   ["--edit-first", "metin"] [video.mp4]
 // Marker şeridi: [AB0] init, [AB1] açıldı, [AB2] sayaçlar, [AB3] düzenlendi,
 // [AB4] kaydedildi, [AB5] tur, [AB7] tekrarlı düzenleme (P5.3 regresyon),
-// [AB8] ekleme/silme (P5.2 devam), [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
+// [AB8] ekleme/silme (P5.2 devam), [AB9] libass önizleme (P4.6 dilim 1),
+// [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
 // [ABE] hata.
 
 use std::ffi::{c_char, c_int, CStr, CString};
@@ -35,6 +36,14 @@ extern "C" {
 		son: *const c_char, stil: *const c_char,
 	) -> c_int;
 	fn velnosub_abi_line_delete(h: c_int, idx: c_int) -> c_int;
+	fn velnosub_abi_render_open(
+		h: c_int, gen: c_int, yuk: c_int, yol_font: *const c_char,
+		aile_font: *const c_char,
+	) -> c_int;
+	fn velnosub_abi_render_frame(
+		h: c_int, ms: c_int, buf: *mut u8, n: c_int,
+	) -> c_int;
+	fn velnosub_abi_render_close(h: c_int) -> c_int;
 	fn velnosub_abi_edit_line(h: c_int, idx: c_int, text: *const c_char) -> c_int;
 	fn velnosub_abi_style_of(h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int) -> c_int;
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
@@ -481,6 +490,63 @@ fn main() -> ExitCode {
 			return cik(h);
 		}
 		println!("[AB8] silindi: {ev1}→{ev2} satır — şerit tamam");
+	}
+
+	// P4.6 dilim 1: libass önizleme şeridi — render_open/frame/close;
+	// şılırlı kare: erken ms'de glyph etki > 0, uzak geleçte 0; deposit
+	// boyu reddi katı (tip reddi kanca)
+	{
+		let yol_font = std::env::var("VELNOSUB_FONT")
+			.unwrap_or_else(|_| "./DejaVuSans.ttf".into());
+		let y_c = CString::new(yol_font.clone()).unwrap();
+		let a_c = CString::new("Default").unwrap();
+		let rc = unsafe {
+			velnosub_abi_render_open(h, 240, 180, y_c.as_ptr(), a_c.as_ptr())
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab9 render_open: {}", last_error());
+			return cik(h);
+		}
+		println!("[AB9] render açıldı: 240x180 ({yol_font})");
+		let mut kare = vec![0u8; 240 * 180 * 4];
+		let mut en_cok = 0i64;
+		for ms in [0i32, 8000, 16000, 24000, 32000] {
+			let gl = unsafe {
+				velnosub_abi_render_frame(h, ms, kare.as_mut_ptr(), kare.len() as c_int)
+			};
+			if gl < 0 {
+				eprintln!("[ABE] ab9 frame({ms}): {}", last_error());
+				return cik(h);
+			}
+			if gl as i64 > en_cok {
+				en_cok = gl as i64;
+			}
+		}
+		if en_cok <= 0 {
+			eprintln!("[ABE] ab9 glyph etki 0 — font eşleşmesi kontrol edin");
+			return cik(h);
+		}
+		println!("[AB9] erken kare render: en çok glyph etki {en_cok}");
+		let uzak = unsafe {
+			velnosub_abi_render_frame(h, 3_600_000, kare.as_mut_ptr(), kare.len() as c_int)
+		};
+		if uzak != 0 {
+			eprintln!("[ABE] ab9 uzak kare 0 beklenirdi: {uzak}");
+			return cik(h);
+		}
+		println!("[AB9] uzak gele empty kare 0 — boş kare doğru");
+		let rc = unsafe { velnosub_abi_render_frame(h, 0, kare.as_mut_ptr(), 3) };
+		if rc == 0 {
+			eprintln!("[ABE] ab9 deposit boyu reddi beklenirdi");
+			return cik(h);
+		}
+		println!("[AB9] deposit boyu reddedildi — tip kanca birebir");
+		let rc = unsafe { velnosub_abi_render_close(h) };
+		if rc != 0 {
+			eprintln!("[ABE] ab9 render_close: {}", last_error());
+			return cik(h);
+		}
+		println!("[AB9] render şartı kapandı — şerit tamam");
 	}
 
 	// P4.5 stil şeridi: stil dizgesi + ad/boyut düzenleme + kalıcılık

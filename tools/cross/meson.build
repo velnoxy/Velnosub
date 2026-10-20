@@ -48,9 +48,10 @@ endif
 # extern "C" yüzey; akış P2.2 CLI'ın koşuma geçmiş tek kanalıdır.
 # P4.4: oboe.pc bulunursa ses oynatma kanca hattı da derlenir
 # (-DVELNOSUB_ABI_OBOE=1); masa/host-check kollarında oboe yoktur.
+# P4.6 dilim 1: libass bağlanır — ABI render kolü (önizleme karesi).
 abi_oboe_dep = dependency('oboe', required: false)
 abi_cpp_args = ['-DAGI_CORE']
-abi_deps = [boost_dep]
+abi_deps = [boost_dep, velnosub_libass_dep]
 if abi_oboe_dep.found()
     abi_cpp_args += ['-DVELNOSUB_ABI_OBOE=1']
     abi_deps += [abi_oboe_dep]
