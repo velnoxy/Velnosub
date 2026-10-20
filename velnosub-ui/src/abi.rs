@@ -1203,9 +1203,8 @@ impl GridApp {
 						}
 					}
 				}
-				// masaüstünde de Ayarlar penceresiyle hem düzen hem tema
-				// erişilebilir (denetim 4'ün uydu kolu: erişim her iki
-				// düzende gerçek eylem)
+				// denetim 4: erişim her iki düzende gerçek eylem — masaüstünde
+				// Ayarlar düğmesi, mobilde Ayarlar sekmesi
 				if ui.button("Ayarlar").clicked() {
 					self.ayar_win = true;
 				}
@@ -1520,8 +1519,9 @@ impl GridApp {
 			su.add_space(6.0);
 			// sekme genişliği kalan alana oranlanır: en dar pencerede de
 			// taşma olmaz (satır yatay kaydırma yok);
-			// denetim 1: dar genişlikte etiket kırpılmasın — iç yapışma daralır,
-			// metin boyu sekme genişliğine uyarlanır (alt 9pt, üst 15.5pt)
+			// denetim 1: dar genişlikte etiket kırpılmasın — düğme iç
+			// padding'i daralır, metin boyu sekme genişliğine uyarlanır
+			// (9–15.5pt bandı)
 			let adet = etiketler.len().max(1) as f32;
 			let gen = ((su.available_width() - 8.0) / adet).max(44.0);
 			su.horizontal(|k| {
