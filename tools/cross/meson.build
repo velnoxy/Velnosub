@@ -51,7 +51,7 @@ endif
 # P4.6 dilim 1: libass bağlanır — ABI render kolü (önizleme karesi).
 abi_oboe_dep = dependency('oboe', required: false)
 abi_cpp_args = ['-DAGI_CORE']
-abi_deps = [boost_dep, velnosub_libass_dep]
+abi_deps = [boost_dep, velnosub_libass_dep, velnosub_ft2_dep]
 if abi_oboe_dep.found()
     abi_cpp_args += ['-DVELNOSUB_ABI_OBOE=1']
     abi_deps += [abi_oboe_dep]

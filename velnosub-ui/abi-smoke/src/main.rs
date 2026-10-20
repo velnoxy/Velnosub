@@ -40,6 +40,12 @@ extern "C" {
 	fn velnosub_abi_line_times_set(
 		h: c_int, idx: c_int, ms_bas: i64, ms_son: i64,
 	) -> c_int;
+	// P5.2 dilim C: aegisub.text_extents ölçüm kolu (FreeType)
+	fn velnosub_abi_text_extents(
+		yol_font: *const c_char, boyut: f64, kalin: c_int, italik: c_int,
+		harf_bos: f64, olcek_x: f64, olcek_y: f64,
+		metin: *const c_char, out4: *mut f64,
+	) -> c_int;
 	fn velnosub_abi_render_open(
 		h: c_int, gen: c_int, yuk: c_int, yol_font: *const c_char,
 		aile_font: *const c_char,
@@ -625,6 +631,175 @@ fn main() -> ExitCode {
 			return cik(h);
 		}
 		println!("[AB10] zaman geri alındı — şerit tamam");
+	}
+
+	// P5.2 dilim C: aegisub.text_extents ölçüm kolu — FreeType 26.6;
+	// kanıt: boyut doğrusallığı (2x ≈ %2 kusurla), aralık büyümesi,
+	// boşluk genişlemesi + hata yolları ([AB11])
+	{
+		let yol_font = std::env::var("VELNOSUB_FONT")
+			.unwrap_or_else(|_| "./DejaVuSans.ttf".into());
+		let y_c = CString::new(yol_font.clone()).unwrap();
+		let mut out = [0.0f64; 4];
+		let metin = CString::new("HAHA VelnoSub").unwrap();
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 28.0, 0, 0, 0.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab11 ölçüm: {}", last_error());
+			return cik(h);
+		}
+		let (g0, y0, d0, l0) = (out[0], out[1], out[2], out[3]);
+		if !(g0 > 150.0 && g0 < 300.0 && y0 > 15.0 && y0 < 33.0) {
+			eprintln!(
+				"[ABE] ab11 genişlik/yükseklik beklenmedik: {:.3}/{:.3}",
+				g0, y0
+			);
+			return cik(h);
+		}
+		println!(
+			"[AB11] ölçüm 28px: g={:.3} y={:.3} d={:.3} l={:.3}",
+			g0, y0, d0, l0
+		);
+		// 2x boyut → DejaVu hint'li ilerletmelerle BİREBİR 2x (probe 440)
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 56.0, 0, 0, 0.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab11 2x ölçüm: {}", last_error());
+			return cik(h);
+		}
+		let oran = out[0] / g0;
+		if !(oran > 1.995 && oran < 2.005) {
+			eprintln!("[ABE] ab11 doğrusallık: oran {:.4}", oran);
+			return cik(h);
+		}
+		println!("[AB11] 56px ölçüm birebir doğrusal (oran {:.4})", oran);
+		// kalın: sentetik %4 ilerletme → genişlik artar
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 28.0, 1, 0, 0.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab11 kalin ölçüm: {}", last_error());
+			return cik(h);
+		}
+		if !(out[0] > g0 + 8.0 && out[0] < g0 + 30.0) {
+			eprintln!(
+				"[ABE] ab11 kalin genişlik: {:.3} (taban {:.3})",
+				out[0], g0
+			);
+			return cik(h);
+		}
+		println!(
+			"[AB11] kalin: g {:.3} → {:.3} (sentetik %4 artış)",
+			g0, out[0]
+		);
+		// italik: sentetik 0.2 eğme — ilerletme değişmez; rc yolu kanıt
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 28.0, 0, 1, 0.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 || out[0] <= 0.0 {
+			eprintln!("[ABE] ab11 italik ölçüm: {}", last_error());
+			return cik(h);
+		}
+		println!(
+			"[AB11] italik ölçüm: g={:.3} y={:.3} (eğme ilerletmeyi değiştirmez)",
+			out[0], out[1]
+		);
+		// scale_x %150 → genişlik 1.5x
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 28.0, 0, 0, 0.0, 150.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 || !(out[0] > g0 * 1.49 && out[0] < g0 * 1.51) {
+			eprintln!(
+				"[ABE] ab11 scale_x: {:.3} (beklenen ~{:.3})",
+				out[0],
+				g0 * 1.5
+			);
+			return cik(h);
+		}
+		println!(
+			"[AB11] scale_x %%150: g {:.3} → {:.3} (1.5x birebir)",
+			g0, out[0]
+		);
+		// harf aralığı: spacing 4 → genişlik ≥ (% ölçekle artar)
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 28.0, 0, 0, 4.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab11 boşluk ölçüm: {}", last_error());
+			return cik(h);
+		}
+		if out[0] <= g0 {
+			eprintln!(
+				"[ABE] ab11 spacing: {:.3} <= {:.3}",
+				out[0], g0
+			);
+			return cik(h);
+		}
+		println!(
+			"[AB11] spacing 4px: g {:.3} → {:.3} (artış tamam)",
+			g0, out[0]
+		);
+		// hata yolları: boş metin → rc 0 + sıfır küme (upstream davranışı);
+		// kötü font yolu → rc < 0
+		let boş = CString::new("").unwrap();
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 28.0, 0, 0, 0.0, 100.0, 100.0,
+				boş.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc != 0 || out.iter().any(|v| *v != 0.0) {
+			eprintln!(
+				"[ABE] ab11 boş metin: rc={rc} out={:?}",
+				&out[..]
+			);
+			return cik(h);
+		}
+		println!("[AB11] boş metin → sıfır küme — upstream davranışı");
+		let kötü = CString::new("/tmp/opencode/yok-boyle-font.ttf")
+			.unwrap();
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				kötü.as_ptr(), 28.0, 0, 0, 0.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc == 0 || out.iter().any(|v| *v != 0.0) {
+			eprintln!("[ABE] ab11 kötü font yolu beklenirdi");
+			return cik(h);
+		}
+		println!("[AB11] kötü font yolu red + sıfır küme — tip kanca birebir");
+		let rc = unsafe {
+			velnosub_abi_text_extents(
+				y_c.as_ptr(), 600.0, 0, 0, 0.0, 100.0, 100.0,
+				metin.as_ptr(), out.as_mut_ptr(),
+			)
+		};
+		if rc == 0 {
+			eprintln!("[ABE] ab11 boyut aralık reddi beklenirdi");
+			return cik(h);
+		}
+		println!("[AB11] boyut aralık dışı red — şerit tamam");
 	}
 
 	// P4.5 stil şeridi: stil dizgesi + ad/boyut düzenleme + kalıcılık

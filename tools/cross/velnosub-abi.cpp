@@ -33,6 +33,7 @@
 #endif
 
 #include <atomic>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -40,6 +41,14 @@
 
 #include <cstring>
 #include <cstdio>
+
+// P5.2 dilim C: aegisub.text_extents — FreeType ölçüm kolu (upstream auto4
+// wx tabanlı ölçümün mobil hattı: 26.6 sabit nokta, aynı scalex/scaley/100
+// telafisi ve ölçek normallemesi; fontname eşleşmesi cihaz font-servis
+// fazına kalmakta — tek paket fontuyla ölçüm; italik sentetik 0.2 eğme,
+// kalin ~%4 ilerletme yaklaşması)
+#include <ft2build.h>
+#include FT_FREETYPE_H
 #include <cstdint>
 #include <cstdlib>
 #include <fstream>
@@ -1432,6 +1441,167 @@ void velnosub_abi_close(int h) {
 
 const char *velnosub_abi_last_error() {
 	return g_last_error.c_str();
+}
+
+// P5.2 dilim C: UTF-8 kod noktası okuyucu (basit deçici; kötü bayt '?')
+static unsigned long ft_utf8_oku(const unsigned char *z, int &at) {
+	unsigned char c = z[at];
+	if ((c & 0x80) == 0) {
+		at += 1;
+		return c;
+	}
+	int ek = 0;
+	unsigned long cp = 0;
+	if ((c & 0xE0) == 0xC0) {
+		ek = 1;
+		cp = c & 0x1F;
+	} else if ((c & 0xF0) == 0xE0) {
+		ek = 2;
+		cp = c & 0x0F;
+	} else if ((c & 0xF8) == 0xF0) {
+		ek = 3;
+		cp = c & 0x07;
+	} else {
+		at += 1;
+		return '?';
+	}
+	for (int i = 0; i < ek; ++i) {
+		unsigned char d = z[at + 1 + i];
+		if ((d & 0xC0) != 0x80) {
+			at += ek + 1;
+			return '?';
+		}
+		cp = (cp << 6) | (d & 0x3F);
+	}
+	at += ek + 1;
+	return cp ? cp : '?';
+}
+
+// P5.2 dilim C: aegisub.text_extents — upstream auto4 ölçüm kolunun
+// mobil hattı. Giriş: font yolu (pkg blob), boyut (piksel, 72dpi), kalin/
+// italik/harf aralığı (harf_bos), olcek_x/olcek_y (%100); çıkış out4:
+// genişlik, yükseklik, descent, external leading (piksel).
+// Formül upstream auto4_base.cpp CalculateTextExtents'un non-WIN32 dalıyla
+// aynı yapıdadır: spacing≠0 → harf harf (kerning yok), spacing=0 → tek
+// geçiş kerning'li; ölçek normallemesi fontsize/ink-yükseklik; son telafi
+// scalex/scaley/100 — büyük ölçüler FreeType 26.6 sabit noktasında.
+int velnosub_abi_text_extents(const char *yol_font, double boyut,
+                              int kalin, int italik, double harf_bos,
+                              double olcek_x, double olcek_y,
+                              const char *metin, double *out4) {
+	if (!out4 || !metin) {
+		set_err("boş çıktı tamponu");
+		return -1;
+	}
+	// upstream kolu girişte sıfırlar: hata bitse bile çıktı tamponu
+	// sıfır kalır (arka arkaya çağrıların sayıllarını bozmaz)
+	out4[0] = out4[1] = out4[2] = out4[3] = 0;
+	if (!yol_font || !*yol_font) {
+		set_err("boş font yolu");
+		return -1;
+	}
+	if (boyut <= 0 || boyut > 500) {
+		set_err("font boyutu aralık dışı");
+		return -1;
+	}
+	FT_Library ft = nullptr;
+	FT_Face face = nullptr;
+	if (FT_Init_FreeType(&ft)) {
+		set_err("freetype kurulamadı");
+		return -1;
+	}
+	if (FT_New_Face(ft, yol_font, 0, &face)) {
+		FT_Done_FreeType(ft);
+		set_err(std::string("font yüzü açılamadı: ") + yol_font);
+		return -1;
+	}
+	double size26 = boyut * 64.0;
+	if (FT_Set_Char_Size(face, 0,
+	                     static_cast<FT_F26Dot6>(size26 + 0.5), 72,
+	                     72) != 0) {
+		FT_Done_Face(face);
+		FT_Done_FreeType(ft);
+		set_err("font boyutu kurulamadı");
+		return -1;
+	}
+	if (italik) {
+		// sentetik italik: 0.2 eğme (libass koluyla aynı katsayı)
+		FT_Matrix mat = {0x10000, 0x3333, 0, 0x10000};
+		FT_Set_Transform(face, &mat, nullptr);
+	}
+	FT_Long yuksek26 = face->size->metrics.height;
+	FT_Long asc26 = face->size->metrics.ascender;
+	FT_Long desc26 = face->size->metrics.descender;
+	double lead26 = static_cast<double>(yuksek26 - (asc26 - desc26));
+	const double ek26 = harf_bos * 64.0;
+	const bool bosluk_ekli = std::abs(ek26) > 0.5;
+	const double kalin_art26 = kalin ? size26 * 0.04 : 0.0;
+	double gen26 = 0.0, yuk26 = 0.0, des26 = 0.0, lea26 = 0.0;
+	FT_UInt prev_gi = 0;
+	int at = 0;
+	const unsigned char *z = reinterpret_cast<unsigned char const*>(metin);
+		// zero-ink karakter (boşluk gibi): wx kolu font metrik yüksekliği
+		// verir; FreeType ink'i 0 geldiği için ascender−descender'a düş
+		double b26_zemin =
+			static_cast<double>(asc26 - desc26) > 0.0
+				? static_cast<double>(asc26 - desc26)
+				: size26;
+		while (z[at]) {
+			unsigned long cp = ft_utf8_oku(z, at);
+			FT_UInt gi = cp ? FT_Get_Char_Index(face, cp) : 0;
+			if (FT_Load_Glyph(face, gi, FT_LOAD_NO_BITMAP) != 0)
+				continue;
+			FT_Glyph_Metrics const& m = face->glyph->metrics;
+			double a26 = static_cast<double>(face->glyph->advance.x) +
+			             kalin_art26;
+			if (bosluk_ekli) {
+				// upstream spacing dalı: harf harf; kerning devre dışı
+				double b26 = m.height > 0
+				                 ? static_cast<double>(m.height)
+				                 : b26_zemin;
+				double scaling = size26 / b26;
+				gen26 += (a26 + ek26) * scaling;
+				double b_y = b26 * scaling;
+				if (b26 > 0.0 && m.height > 0 && b_y > yuk26)
+					yuk26 = b_y;
+				FT_Long c26 = m.height > m.horiBearingY
+				                  ? m.height - m.horiBearingY
+				                  : 0;
+				double cd =
+					static_cast<double>(c26) * scaling;
+				if (b26 > 0.0 && cd > des26) des26 = cd;
+				double ld = lead26 * scaling;
+				if (ld > lea26) lea26 = ld;
+			} else {
+				// upstream spacing=0 dalı: tek geçiş (kerning dahil)
+				gen26 += a26;
+				if (FT_HAS_KERNING(face) && prev_gi && gi) {
+					FT_Vector kern;
+					if (FT_Get_Kerning(face, prev_gi, gi,
+					                   FT_KERNING_DEFAULT,
+					                   &kern) == 0)
+						gen26 += static_cast<double>(kern.x);
+				}
+				prev_gi = gi;
+				if (m.height > 0 &&
+				    static_cast<double>(m.height) > yuk26)
+					yuk26 = static_cast<double>(m.height);
+				FT_Long c26 = m.height > m.horiBearingY
+				                  ? m.height - m.horiBearingY
+				                  : 0;
+				double cd = static_cast<double>(c26);
+				if (cd > des26) des26 = cd;
+				if (lead26 > lea26) lea26 = lead26;
+			}
+		}
+	// scalex/scaley (%) telafisi + 26.6 → piksel bölmesi (upstream /64)
+	out4[0] = olcek_x / 100.0 * gen26 / 64.0;
+	out4[1] = olcek_y / 100.0 * yuk26 / 64.0;
+	out4[2] = olcek_y / 100.0 * des26 / 64.0;
+	out4[3] = olcek_y / 100.0 * lea26 / 64.0;
+	FT_Done_Face(face);
+	FT_Done_FreeType(ft);
+	return 0;
 }
 
 } // extern "C"

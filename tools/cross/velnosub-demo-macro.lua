@@ -65,3 +65,29 @@ local function ekle_sil(subs, sel, aktif)
 	aegisub.debug.out("ekle sil bitti\n")
 end
 aegisub.register_macro("Ekle sil dene", "insert_line/delete_line dumanı", ekle_sil)
+
+-- P5.2 dilim C: aegisub.text_extents dumanı — stil tablosuyla ölçüm +
+-- sınıf tip kancası (dialog tablosu "Not a style entry" reddi)
+local function olc_dene(subs, sel, aktif)
+	local st = {
+		class = "style",
+		fontname = "DejaVu Sans",
+		fontsize = 28,
+		bold = false,
+		italic = false,
+		underline = false,
+		strikeout = false,
+		spacing = 0,
+		scale_x = 100,
+		scale_y = 100,
+	}
+	local g, y, d, l = aegisub.text_extents(st, "Merhaba velnosub")
+	aegisub.log(("ölçüm: g=%.2f y=%.2f d=%.2f l=%.2f")
+	             :format(g, y, d, l))
+	local ok, cevap = pcall(function()
+		return aegisub.text_extents({ class = "dialogue" }, "x")
+	end)
+	aegisub.log(("dialog sınıf red: %s (%s)")
+	             :format(tostring(ok), tostring(cevap)))
+end
+aegisub.register_macro("Ölç dene", "P5.2 dilim C ölçüm dumanı", olc_dene)

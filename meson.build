@@ -486,6 +486,11 @@ if get_option('velnosub_mobile')
     endif
     velnosub_libass_dep = dependency('libass', version: '>=0.9.7',
                                      fallback: ['libass', 'libass_dep'])
+    # P5.2 dilim C: aegisub.text_extents ölçümü — ABI doğrudan FreeType
+    # kullanır (upstream auto4'ün fontconfig/wx kolunun mobil hattı;
+    # subproject hattında libass ile aynı freetype2 derlemesine biner)
+    velnosub_ft2_dep = dependency('freetype2', version: '>=2.6',
+                                  fallback: ['freetype2', 'ft2_dep'])
     velnosub_core_deps = [dependency('icu-uc', version: '>= 4.8.1.1'),
                           dependency('icu-i18n', version: '>= 4.8.1.1')] + velnosub_boost_libs
     # P3.2: sağlayıcı TU'un ffmpeg sembolleri .so bağında açıkça gerek

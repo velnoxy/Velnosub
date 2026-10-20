@@ -32,6 +32,11 @@ int velnosub_abi_dialog_set(int h, int idx, const char *deger);
 int velnosub_abi_dialog_show(int h, int dugme);
 int velnosub_abi_dialog_showid(int h);
 int velnosub_abi_dialog_close(int h);
+int velnosub_abi_line_times_set(int h, int idx, long long ms_bas, long long ms_son);
+int velnosub_abi_text_extents(const char *yol_font, double boyut,
+                              int kalin, int italik, double harf_bos,
+                              double olcek_x, double olcek_y,
+                              const char *metin, double *out4);
 ]]
 
 local abi = ffi.load("velnosub-abi")
@@ -546,6 +551,32 @@ aegisub.file_name = function()
 		or tostring(acik_dosya_yolu)
 end
 aegisub.gettext = function(s) return tostring(s) end
+-- P5.2 dilim C: aegisub.text_extents — upstream auto4 ölçüm kolu
+-- (style tablosunu bekler: class=="style"; ölçüm ABI FreeType koluyla)
+aegisub.text_extents = function(st, metin)
+	if type(st) ~= "table" then
+		error("text_extents: 1. argüman stil tablosu olmalı", 2)
+	end
+	if tostring(st.class or ""):lower() ~= "style" then
+		error("Not a style entry", 0)
+	end
+	local yol = os.getenv("VELNOSUB_FONT") or "./DejaVuSans.ttf"
+	local out = ffi.new("double[4]")
+	local rc = abi.velnosub_abi_text_extents(
+		yol,
+		tonumber(st.fontsize) or 16,
+		st.bold and 1 or 0,
+		st.italic and 1 or 0,
+		tonumber(st.spacing) or 0,
+		tonumber(st.scale_x) or 100,
+		tonumber(st.scale_y) or 100,
+		tostring(metin or ""),
+		out)
+	if rc ~= 0 then
+		error(hatasi("text_extents"), 0)
+	end
+	return out[0], out[1], out[2], out[3]
+end
 aegisub.project_properties = function()
 	print("[AUSB] proje özetleri: mobil hatta nötr değerler")
 	return {
