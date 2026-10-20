@@ -45,7 +45,10 @@ host)
     mkdir -p "$BUILD" "$PREFIX"
     # Bütün repo kopyalanır (src ../dynasm'e kızıl referans verir)
     cp -r "$LUASRC/." "$BUILD/"
-    (cd "$BUILD/src" && make -j"$JOBS" -s BUILDMODE=static >/dev/null)
+    # Upstream wrap'iyle aynı paydada: 5.2 uyum modu — ipairs/#/pairs
+    # metamethodlu userdata ilerlemesi (karaskel collect_head gibi)
+    (cd "$BUILD/src" && make -j"$JOBS" -s BUILDMODE=static \
+        XCFLAGS="-DLUAJIT_ENABLE_LUA52COMPAT" >/dev/null)
     (cd "$BUILD" && make -s install PREFIX="$PREFIX" >/dev/null)
     LN=$(ls "$PREFIX/lib"/libluajit*.a | head -1 | xargs basename | sed 's/^lib//; s/\.a$//')
     install_pc "$PREFIX/lib" "$LN" "$PREFIX"
@@ -69,6 +72,7 @@ arm64|x86_64)
         CC="$CCX" HOST_CC=cc \
         TARGET_SYS="Linux" \
         BUILDMODE=static \
+        XCFLAGS="-DLUAJIT_ENABLE_LUA52COMPAT" \
         TARGET_AR="llvm-ar rcus" \
         TARGET_STRIP="llvm-strip" \
         TARGET_CFLAGS="-D__ANDROID_API__=$API" >/dev/null)

@@ -608,3 +608,4 @@ aegisub.decode_path = function(yol)
 end
 aegisub.__stub = nil
 print("[AUST] aegisub yüzeyi gerçek ABI hattında (P5.1/P5.2)")
+print("[AUST2] LuaJIT 5.2 uyum zemini: " .. tostring(table.pack ~= nil))
