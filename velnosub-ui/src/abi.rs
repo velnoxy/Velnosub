@@ -748,8 +748,8 @@ impl GridApp {
 }
 
 impl GridApp {
-	// ---- şerit gövdeleri: masaüstü panel ve mobil sekme AYNI gövdeyi paylaşıır;
-	// `mobil` bayrağı yalnız dokunma hedefi boyunu ve ta Adrian genişlik akışını değiştirir ----
+	// ---- şerit gövdeleri: masaüstü panel ve mobil sekme AYNI gövdeyi paylaşır;
+	// `mobil` bayrağı yalnız dokunma hedefi boyunu ve satır düzenini değiştirir ----
 
 	fn video_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
 		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
@@ -1168,7 +1168,7 @@ impl GridApp {
 		// Düzenlenip Commit tetiklenecek satırlar; ödünç çatışmasını
 		// çözmek için çerçeve sonunda işlenir (tek çerçevede tek satır).
 		let mut duzenenler: Vec<usize> = Vec::new();
-		// mobil: satır dokunma alanı en az 44pt (gövde 3.2x stiletma)
+		// mobil: satır dokunma yüksekliği en az 44pt (3.2x gövde yüksekliği)
 		let satir_h = ui.text_style_height(&egui::TextStyle::Body)
 			* if mobil { 3.2 } else { 2.4 };
 		ScrollArea::vertical()
@@ -1223,8 +1223,8 @@ impl GridApp {
 	}
 
 	/// İlk giriş: ayar dosyası yokken gösterilen düzen seçim ekranı. Seçim
-	/// dosyaya yazılır; yazma olmazsa oturum seçimle devam eder ve uyarı
-	/// net yazılır (hata durumu saklanmaz).
+	/// dosyaya yazılır; dosyaya yazılamazsa oturum seçilmiş düzenle devam
+	/// eder ve uyarı dürüstçe gösterilir.
 	fn secim_ekrani(&mut self, ui: &mut egui::Ui) {
 		ui.add_space(24.0);
 		ui.vertical_centered(|ui| {
@@ -1485,7 +1485,7 @@ mod tests {
 		std::env::set_var("VELNOSUB_UI_JSON", &yol);
 		let _ = std::fs::remove_file(&yol);
 		assert_eq!(ayar_yukle(), None, "dosya yokken secim ekranı beklenirdi");
-		ayar_yaz("mobil").expect("motilteri yazılamadı");
+		ayar_yaz("mobil").expect("mobil ayarı yazılamadı");
 		assert_eq!(ayar_yukle().as_deref(), Some("mobil"));
 		ayar_yaz("masaustu").expect("masaustu yazılamadı");
 		assert_eq!(ayar_yukle().as_deref(), Some("masaustu"));
