@@ -290,6 +290,35 @@ local function stiller_nesne(h)
 	return proxy
 end
 
+-- ---- P5 dilim 2: script_resolution ------------------------------------
+-- upstream AssFile::GetResolution kardeşliği: Info listesinden
+-- PlayResX/Y (iequals → ilk eşleşme; atoi baştan-tam-sayı; boş/bulunmaz 0
+-- -- Gabest tam kuralları: 0,0→384x288; x=0→y==1024?1280:y*4/3; y=0→
+-- x==1280?1024:x*3/4 (int bölme kırpımlı)
+local function atoi_bas(v)
+	local n = tonumber(tostring(v):match("^%s*(-?%d+)"))
+	return n or 0
+end
+local function cozunurluk_oku(bilgi)
+	local px, py = 0, 0
+	for _, b in ipairs(bilgi) do
+		local k = b.key:lower()
+		if k == "playresx" then
+			px = atoi_bas(b.value)
+		elseif k == "playresy" then
+			py = atoi_bas(b.value)
+		end
+	end
+	if px == 0 and py == 0 then
+		px, py = 384, 288
+	elseif px == 0 then
+		px = (py == 1024) and 1280 or math.floor(py * 4 / 3)
+	elseif py == 0 then
+		py = (px == 1280) and 1024 or math.floor(px * 3 / 4)
+	end
+	return px, py
+end
+
 local function subs_nesne(h, dosya_yolu)
 	local nev = abi.velnosub_abi_event_count(h)
 	if nev < 0 then error(hatasi("event_count"), 3) end
@@ -329,6 +358,12 @@ local function subs_nesne(h, dosya_yolu)
 			if i == "styles" then
 				-- P5 dilim 1: karaskel hattı — stiller okuma proxy'si
 				return stiller_nesne(h)
+			end
+			if i == "script_resolution" then
+				-- P5 dilim 2: upstream kardeşliği (değer bilgi listesinden)
+				return function()
+					return cozunurluk_oku(bilgi)
+				end
 			end
 			if i == "insert_line" then
 				return function(_, konum, satir)

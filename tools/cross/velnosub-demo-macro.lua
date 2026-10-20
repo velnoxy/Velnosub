@@ -147,3 +147,11 @@ local function stil_dene(subs, sel, aktif)
 	            :format(y))
 end
 aegisub.register_macro("Stil dene", "subs.styles okuma dumanı (dilim 1)", stil_dene)
+
+-- P5 dilim 2: subs.script_resolution dumanı — upstream GetResolution
+-- kardeşliği: PlayRes kuralları
+local function coz_dene(subs, sel, aktif)
+	local bw, bh = subs.script_resolution()
+	aegisub.log(("çöz: %d x %d"):format(bw, bh))
+end
+aegisub.register_macro("Çöz dene", "script_resolution dumanı (dilim 2)", coz_dene)
