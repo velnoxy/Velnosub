@@ -555,6 +555,284 @@ int velnosub_abi_style_write(int h, int idx, const char *dizge) {
 	return -1;
 }
 
+// ---- P4.5 III / Faz 5 D:dialog formları omurgası (dinamik tanımlar) ----
+// mini tanım DSL: her satır "ctl|<sınıf>|<ad>|<başlık>|<değer>[|<ek>]" ya da
+// "buton|<metin>", '#' yorum. sınıflar: label edit intedit floatedit
+// checkbox dropdown textbox color coloralpha (aegisub.dialog sınıfları adaysı)
+
+struct Alan {
+	std::string sinif, ad, baslik, deger;
+	double alt = 0.0, ust = 0.0; // intedit/floatedit sınırları
+	std::vector<std::string> ogeler;
+};
+struct DialogDef {
+	std::vector<Alan> alanlar;
+	std::vector<std::string> dugmeler;
+	int son_dugme = -1;
+};
+std::map<int, std::unique_ptr<DialogDef>> g_dialog;
+int g_dnext = 0;
+
+static std::vector<std::string> boru_ayikla(std::string const& metin) {
+	std::vector<std::string> parca;
+	size_t bas = 0;
+	while (true) {
+		size_t son = metin.find('|', bas);
+		parca.push_back(metin.substr(
+			bas, son == std::string::npos ? std::string::npos : son - bas));
+		if (son == std::string::npos) break;
+		bas = son + 1;
+	}
+	return parca;
+}
+
+static bool belge_sayi(std::string const& metin, double &deger) {
+	if (metin.empty()) return false;
+	try {
+		size_t kalan;
+		deger = std::stod(metin, &kalan);
+		return kalan == metin.size();
+	} catch (std::exception const&) {
+		return false;
+	}
+}
+
+int velnosub_abi_dialog_open(const char *spec) {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!spec || !*spec) { set_err("boş dialog tanımı"); return -1; }
+	try {
+		auto dd = std::make_unique<DialogDef>();
+		std::string metin(spec);
+		size_t bas = 0;
+		bool dosya_sonu = false;
+		while (!dosya_sonu) {
+			size_t son = metin.find('\n', bas);
+			std::string satir = metin.substr(
+				bas, son == std::string::npos ? std::string::npos : son - bas);
+			if (son == std::string::npos) dosya_sonu = true;
+			else bas = son + 1;
+			while (!satir.empty() && (satir.back() == '\r' || satir.back() == ' '))
+				satir.pop_back();
+			if (satir.empty() || satir[0] == '#') continue;
+			auto parca = boru_ayikla(satir);
+			if (parca[0] == "buton") {
+				if (parca.size() < 2 || parca[1].empty()) {
+					set_err("buton metni eksik");
+					return -1;
+				}
+				dd->dugmeler.push_back(parca[1]);
+				continue;
+			}
+			if (parca[0] != "ctl") {
+				set_err("satır ctl/buton değil: " + satir);
+				return -1;
+			}
+			if (parca.size() < 4) {
+				set_err("ctl hücre eksik (4 min): " + satir);
+				return -1;
+			}
+			Alan a;
+			a.sinif = parca[1];
+			a.ad = parca[2];
+			a.baslik = parca[3];
+			a.deger = parca.size() > 4 ? parca[4] : std::string();
+			if (a.ad.empty()) { set_err("ctl adı boş"); return -1; }
+			if (a.sinif != "label" && a.deger.empty()) {
+				set_err("ctl değeri boş (label hariç): " + a.ad);
+				return -1;
+			}
+			std::string ek = parca.size() > 5 ? parca[5] : std::string();
+			auto sinir = [&](std::string const& met, double &alt, double &ust) {
+				size_t v = met.find(',');
+				if (v == std::string::npos) return false;
+				return belge_sayi(met.substr(0, v), alt) &&
+				       belge_sayi(met.substr(v + 1), ust);
+			};
+			auto oge_ayikla = [&](std::string const& met) {
+				std::vector<std::string> dizi;
+				size_t b = 0;
+				while (true) {
+					size_t s = met.find(';', b);
+					dizi.push_back(met.substr(
+						b, s == std::string::npos ? std::string::npos : s - b));
+					if (s == std::string::npos) break;
+					b = s + 1;
+				}
+				return dizi;
+			};
+			if (a.sinif == "intedit" || a.sinif == "floatedit") {
+				if (ek.empty() || !sinir(ek, a.alt, a.ust)) {
+					set_err(a.sinif + " için sınır hücresi alt,ust");
+					return -1;
+				}
+				double y;
+				if (!belge_sayi(a.deger, y)) {
+					set_err(a.sinif + " değeri sayı değil: " + a.deger);
+					return -1;
+				}
+			} else if (a.sinif == "checkbox") {
+				if (a.deger != "0" && a.deger != "1") {
+					set_err("checkbox değeri 0/1 olmalı");
+					return -1;
+				}
+			} else if (a.sinif == "dropdown") {
+				a.ogeler = oge_ayikla(ek);
+				bool var = false;
+				for (auto const& o : a.ogeler) if (o == a.deger) var = true;
+				if (a.ogeler.empty() || !var) {
+					set_err("dropdown değeri öğeler arasında değil");
+					return -1;
+				}
+			} else if (a.sinif == "label" || a.sinif == "edit" || a.sinif == "textbox"
+			           || a.sinif == "color" || a.sinif == "coloralpha") {
+				// ek sütunu arında yok
+			} else {
+				set_err("bilinmeyen ctl sınıfı: " + a.sinif);
+				return -1;
+			}
+			dd->alanlar.push_back(std::move(a));
+		}
+		if (dd->alanlar.empty()) { set_err("dialog alanı boş"); return -1; }
+		if (dd->dugmeler.empty()) dd->dugmeler = {"Uygula"};
+		int h = ++g_dnext;
+		g_dialog.emplace(h, std::move(dd));
+		return h;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_dialog_count(int h) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	return static_cast<int>(g_dialog.at(h)->alanlar.size());
+}
+
+int velnosub_abi_dialog_btncount(int h) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	return static_cast<int>(g_dialog.at(h)->dugmeler.size());
+}
+
+int velnosub_abi_dialog_ctl(int h, int idx, char *buf, int buflen) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		DialogDef &d = *g_dialog.at(h);
+		if (idx < 0 || idx >= static_cast<int>(d.alanlar.size())) {
+			set_err("alan dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		Alan const& a = d.alanlar[idx];
+		std::string t = a.sinif + "|" + a.ad + "|" + a.baslik + "|" + a.deger;
+		if (a.sinif == "intedit" || a.sinif == "floatedit") {
+			t += "|" + std::to_string(a.alt) + "," + std::to_string(a.ust);
+		} else if (!a.ogeler.empty()) {
+			t += "|";
+			for (size_t i = 0; i < a.ogeler.size(); ++i) {
+				if (i) t += ";";
+				t += a.ogeler[i];
+			}
+		}
+		int const n = static_cast<int>(t.size());
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, t.data(), static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_dialog_button(int h, int idx, char *buf, int buflen) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		DialogDef &d = *g_dialog.at(h);
+		if (idx < 0 || idx >= static_cast<int>(d.dugmeler.size())) {
+			set_err("düğme dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		std::string const& t = d.dugmeler[idx];
+		int const n = static_cast<int>(t.size());
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, t.data(), static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_dialog_set(int h, int idx, const char *deger) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	if (!deger) { set_err("boş değer"); return -1; }
+	try {
+		DialogDef &d = *g_dialog.at(h);
+		if (idx < 0 || idx >= static_cast<int>(d.alanlar.size())) {
+			set_err("alan dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		Alan &a = d.alanlar[idx];
+		std::string metin(deger);
+		auto aradi = [](std::vector<std::string> const& dizi, std::string const& m) {
+			for (auto const& o : dizi) if (o == m) return true;
+			return false;
+		};
+		if (a.sinif == "intedit") {
+			double y;
+			if (!belge_sayi(metin, y) || y != std::floor(y)) {
+				set_err("intedit değeri tam sayı değil: " + metin);
+				return -1;
+			}
+		} else if (a.sinif == "floatedit") {
+			double y;
+			if (!belge_sayi(metin, y)) {
+				set_err("floatedit değeri sayı değil: " + metin);
+				return -1;
+			}
+		} else if (a.sinif == "checkbox") {
+			if (metin != "0" && metin != "1") {
+				set_err("checkbox değeri 0/1 olmalı");
+				return -1;
+			}
+		} else if (a.sinif == "dropdown") {
+			if (!aradi(a.ogeler, metin)) {
+				set_err("dropdown değeri öğeler arasında değil: " + metin);
+				return -1;
+			}
+		}
+		a.deger = metin;
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_dialog_show(int h, int dugme) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	DialogDef &d = *g_dialog.at(h);
+	if (dugme < 0 || dugme >= static_cast<int>(d.dugmeler.size())) {
+		set_err("düğme dışında indeks: " + std::to_string(dugme));
+		return -1;
+	}
+	d.son_dugme = dugme;
+	return dugme;
+}
+
+int velnosub_abi_dialog_showid(int h) {
+	if (!g_dialog.count(h)) { set_err("tanımsız dialog tutamacı"); return -1; }
+	return g_dialog.at(h)->son_dugme;
+}
+
+int velnosub_abi_dialog_close(int h) {
+	if (!g_dialog.count(h)) return 0;
+	g_dialog.erase(h);
+	return 0;
+}
+
 // ---- P4.3 omurgası: video kolu (BGRA kare teslimi) -------------------
 
 int velnosub_abi_video_open(const char *path) {

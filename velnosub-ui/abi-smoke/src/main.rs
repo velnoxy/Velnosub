@@ -31,6 +31,19 @@ extern "C" {
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
 	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
 	fn velnosub_abi_style_write(h: c_int, idx: c_int, dizge: *const c_char) -> c_int;
+	fn velnosub_abi_dialog_open(spec: *const c_char) -> c_int;
+	fn velnosub_abi_dialog_count(h: c_int) -> c_int;
+	fn velnosub_abi_dialog_btncount(h: c_int) -> c_int;
+	fn velnosub_abi_dialog_ctl(
+		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_dialog_button(
+		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_dialog_set(h: c_int, idx: c_int, deger: *const c_char) -> c_int;
+	fn velnosub_abi_dialog_show(h: c_int, dugme: c_int) -> c_int;
+	fn velnosub_abi_dialog_showid(h: c_int) -> c_int;
+	fn velnosub_abi_dialog_close(h: c_int);
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
 	fn velnosub_abi_video_open(path: *const c_char) -> c_int;
@@ -112,6 +125,68 @@ fn style_of(h: c_int, idx: c_int) -> Result<String, String> {
 	}
 }
 
+/// Dialog alan dizgesini ABI'den oku (aynı kuralla).
+fn dialog_ctl(h: c_int, idx: c_int) -> Result<String, String> {
+	let mut len = 384usize;
+	loop {
+		let mut buf = vec![0u8; len];
+		let n = unsafe {
+			velnosub_abi_dialog_ctl(
+				h, idx,
+				buf.as_mut_ptr() as *mut c_char,
+				buf.len() as c_int,
+			)
+		};
+		if n < 0 {
+			return Err(last_error());
+		}
+		if (n as usize) < len - 1 {
+			buf.truncate(n as usize);
+			return Ok(String::from_utf8_lossy(&buf).into_owned());
+		}
+		len *= 2;
+	}
+}
+
+/// P4.5 III: dialog düğme metnini ABI'den oku.
+fn dialog_button(h: c_int, idx: c_int) -> Result<String, String> {
+	let mut buf = vec![0u8; 96];
+	let n = unsafe {
+		velnosub_abi_dialog_button(
+			h, idx,
+			buf.as_mut_ptr() as *mut c_char,
+			buf.len() as c_int,
+		)
+	};
+	if n < 0 {
+		return Err(last_error());
+	}
+	buf.truncate((n as usize).min(95));
+	Ok(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// Hata çıkışı: kol kapanmadan statik yıkıcı çakışıyor (double-free) —
+/// her erken dönüş bu kapıdan geçer.
+fn cik(h: c_int) -> ExitCode {
+	unsafe { velnosub_abi_close(h) };
+	ExitCode::FAILURE
+}
+
+/// P4.5 III duman tanımı: paketteki /root/velsub/testmedia/dialog-ornak.txt
+/// ile YAŞ-farklı hücre tanımları aynıdır (host+cihaz birebir şeridin anahtarı)
+const ORNEK_SPEC: &str = concat!(
+	"# velnosub dialog spec\n",
+	"ctl|label|l1|Makro denemesi: alanları doldur\n",
+	"ctl|edit|metin|Metin|selam\n",
+	"ctl|intedit|sayi|Sayı|42|1,100\n",
+	"ctl|floatedit|oran|Oran|1.50|0,10\n",
+	"ctl|checkbox|durum|Etkin|1\n",
+	"ctl|dropdown|bicim|Biçim|B|B;C;A\n",
+	"ctl|textbox|not|Not|çok satırlı not\n",
+	"buton|Uygula\n",
+	"buton|İptal\n",
+);
+
 fn line_times(h: c_int, idx: c_int) -> String {
 	let mut buf = vec![0u8; 96];
 	let n = unsafe {
@@ -183,6 +258,7 @@ fn main() -> ExitCode {
 	let cfg_c = CString::new(cfg.clone()).unwrap();
 	let rc = unsafe { velnosub_abi_init(cfg_c.as_ptr()) };
 	if rc != 0 {
+		// init başarısız: kapatılacak kol yok; küçük katkı (temiz yıkım)
 		eprintln!("[ABE] init: {rc} ({})", last_error());
 		return ExitCode::FAILURE;
 	}
@@ -192,7 +268,7 @@ fn main() -> ExitCode {
 	let h = unsafe { velnosub_abi_open(in_c.as_ptr()) };
 	if h < 0 {
 		eprintln!("[ABE] open: {}", last_error());
-		return ExitCode::FAILURE;
+		return cik(h);
 	}
 	println!("[AB1] açıldı (tutamaç: {h})");
 
@@ -200,7 +276,7 @@ fn main() -> ExitCode {
 	let st = unsafe { velnosub_abi_style_count(h) };
 	if ev < 0 || st < 0 {
 		eprintln!("[ABE] sayaçlar: {}", last_error());
-		return ExitCode::FAILURE;
+		return cik(h);
 	}
 	println!("[AB2] satır: {ev} stil: {st}");
 
@@ -217,7 +293,7 @@ fn main() -> ExitCode {
 			}
 			Err(e) => {
 				eprintln!("[ABE] satır {i}: {e}");
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 		}
 	}
@@ -238,7 +314,7 @@ fn main() -> ExitCode {
 		let rc = unsafe { velnosub_abi_edit_first(h, t_c.as_ptr()) };
 		if rc != 0 {
 			eprintln!("[ABE] edit: {}", last_error());
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		println!("[AB3] düzenlendi: {text}");
 	}
@@ -247,14 +323,14 @@ fn main() -> ExitCode {
 	let rc = unsafe { velnosub_abi_save(h, out_c.as_ptr()) };
 	if rc != 0 {
 		eprintln!("[ABE] save: {}", last_error());
-		return ExitCode::FAILURE;
+		return cik(h);
 	}
 	println!("[AB4] kaydedildi: {out_path}");
 
 	let tur = unsafe { velnosub_abi_reload_count(h, out_c.as_ptr()) };
 	if tur < 0 {
 		eprintln!("[ABE] reload: {}", last_error());
-		return ExitCode::FAILURE;
+		return cik(h);
 	}
 	println!("[AB5] tur: {tur} satır");
 
@@ -265,18 +341,18 @@ fn main() -> ExitCode {
 		let rc = unsafe { velnosub_abi_edit_line(h, 4, y_c.as_ptr()) };
 		if rc != 0 {
 			eprintln!("[ABE] edit_line: {}", last_error());
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		let gerial = match line_text(h, 4) {
 			Ok(t) => t,
 			Err(e) => {
 				eprintln!("[ABE] edit_line geri okuma: {e}");
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 		};
 		if gerial != yeni {
 			eprintln!("[ABE] edit_line doğrulaması: {gerial}");
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		println!("[AG2] 5. satır düzenlendi + geri okundu");
 
@@ -284,25 +360,25 @@ fn main() -> ExitCode {
 		let rc = unsafe { velnosub_abi_save(h, out2_c.as_ptr()) };
 		if rc != 0 {
 			eprintln!("[ABE] grid kayıt: {}", last_error());
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		let h2 = unsafe { velnosub_abi_open(out2_c.as_ptr()) };
 		if h2 < 0 {
 			eprintln!("[ABE] ikinci açılış: {}", last_error());
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		let kalit = match line_text(h2, 4) {
 			Ok(t) => t,
 			Err(e) => {
 				eprintln!("[ABE] kalıcı okuma: {e}");
 				unsafe { velnosub_abi_close(h2) };
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 		};
 		unsafe { velnosub_abi_close(h2) };
 		if kalit != yeni {
 			eprintln!("[ABE] kalıcılık doğrulaması: {kalit}");
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		println!("[AG3] kayıt doğrulandı (5. satır ikinci tutamaçta)");
 		println!("[AG4] ikinci tutamaç kapandı");
@@ -314,7 +390,7 @@ fn main() -> ExitCode {
 		let st = unsafe { velnosub_abi_style_count(h) };
 		if st < 0 {
 			eprintln!("[ABE] stil sayısı: {}", last_error());
-			return ExitCode::FAILURE;
+			return cik(h);
 		}
 		println!("[AS0] stiller: {st}");
 		for i in 0..st.min(2) {
@@ -322,7 +398,7 @@ fn main() -> ExitCode {
 				Ok(t) => t,
 				Err(e) => {
 					eprintln!("[ABE] stil {i}: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			println!("[AS1] stil {i}: {t}");
@@ -331,13 +407,13 @@ fn main() -> ExitCode {
 			let rc = unsafe { velnosub_abi_style_edit_size(h, 0, 24.0) };
 			if rc != 0 {
 				eprintln!("[ABE] stil boyutu: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			let ince = match style_of(h, 0) {
 				Ok(t) => t,
 				Err(e) => {
 					eprintln!("[ABE] stil teyit: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			let parca: Vec<&str> = ince.split('|').collect();
@@ -348,7 +424,7 @@ fn main() -> ExitCode {
 			let rc = unsafe { velnosub_abi_style_edit_name(h, 0, ad_c.as_ptr()) };
 			if rc != 0 {
 				eprintln!("[ABE] stil adı: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			println!("[AS3] stil 0 adı yazıldı (VelnoSub)");
 
@@ -357,13 +433,13 @@ fn main() -> ExitCode {
 				Ok(t) => t,
 				Err(e) => {
 					eprintln!("[ABE] tam-yazma okuma: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			let mut hucre: Vec<String> = ince.split('|').map(|s| s.to_string()).collect();
 			if hucre.len() != 13 {
 				eprintln!("[ABE] dizge hücre sayısı: {}", hucre.len());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			hucre[1] = "DejaVu Sans".into();
 			hucre[3] = "&H0000FFFF".into(); // sarı (BBGGRR; dizge kapanacak &siz döner)
@@ -372,19 +448,19 @@ fn main() -> ExitCode {
 			let rc = unsafe { velnosub_abi_style_write(h, 0, y_c.as_ptr()) };
 			if rc != 0 {
 				eprintln!("[ABE] tam-yazma: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			let dogru = match style_of(h, 0) {
 				Ok(t) => t,
 				Err(e) => {
 					eprintln!("[ABE] tam-yazma teyit: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			let g: Vec<&str> = dogru.split('|').collect();
 			if g.get(1) != Some(&"DejaVu Sans") || g.get(3) != Some(&"&H0000FFFF") {
 				eprintln!("[ABE] tam-yazma doğrulaması: {dogru}");
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			println!("[AS4] tam-yazma: font {} + ana renk {} teyitli", g[1], g[3]);
 
@@ -392,12 +468,12 @@ fn main() -> ExitCode {
 			let rc = unsafe { velnosub_abi_save(h, kay_c.as_ptr()) };
 			if rc != 0 {
 				eprintln!("[ABE] stil kayıt: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			let h2 = unsafe { velnosub_abi_open(kay_c.as_ptr()) };
 			if h2 < 0 {
 				eprintln!("[ABE] stil ikinci açılış: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			let kalit = style_of(h2, 0);
 			unsafe { velnosub_abi_close(h2) };
@@ -405,7 +481,7 @@ fn main() -> ExitCode {
 				Ok(t) => t,
 				Err(e) => {
 					eprintln!("[ABE] kalıcı stil: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			let es: Vec<&str> = kalit.split('|').collect();
@@ -413,11 +489,108 @@ fn main() -> ExitCode {
 				|| es.get(1) != Some(&"DejaVu Sans") || es.get(3) != Some(&"&H0000FFFF")
 			{
 				eprintln!("[ABE] stil kalıcılığı: {kalit}");
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			println!("[AS5] kalıcılık teyidi: ad+boyut+font+renk ikinci tutamaçta birebir");
 		}
 		println!("[AS6] stil şerit tamam");
+	}
+
+	// P4.5 III: dialog form omurgası — alan ayrıştırma, tipli yazım, düğme
+	{
+		let s_c = CString::new(ORNEK_SPEC.to_string()).unwrap();
+		let dh = unsafe { velnosub_abi_dialog_open(s_c.as_ptr()) };
+		if dh < 0 {
+			eprintln!("[ABE] dialog open: {}", last_error());
+			return cik(h);
+		}
+		let alan = unsafe { velnosub_abi_dialog_count(dh) };
+		let dugme = unsafe { velnosub_abi_dialog_btncount(dh) };
+		if alan < 0 || dugme < 0 {
+			eprintln!("[ABE] dialog sayım: {}", last_error());
+			unsafe { velnosub_abi_dialog_close(dh) };
+			return cik(h);
+		}
+		println!("[AD0] dialog açıldı (alan {alan}, düğme {dugme})");
+		for i in 0..alan {
+			match dialog_ctl(dh, i) {
+				Ok(t) => println!("[AD1] ctl {i}: {t}"),
+				Err(e) => {
+					eprintln!("[ABE] ctl {i}: {e}");
+					unsafe { velnosub_abi_dialog_close(dh) };
+					return cik(h);
+				}
+			}
+		}
+		// tipli yazım: metin=1, sayi=2, oran=3, durum=4, bicim=5
+		let istekler: [(c_int, &str); 5] = [
+			(1, "duman metni"),
+			(2, "89"),
+			(3, "2.25"),
+			(4, "0"),
+			(5, "C"),
+		];
+		for (i, v) in istekler {
+			let c = CString::new(v).unwrap();
+			let rc = unsafe { velnosub_abi_dialog_set(dh, i, c.as_ptr()) };
+			if rc != 0 {
+				eprintln!("[ABE] dialog set {i}: {}", last_error());
+				unsafe { velnosub_abi_dialog_close(dh) };
+				return cik(h);
+			}
+		}
+		println!("[AD2] 5 alan yazıldı (sayı/sürü/anahtar)");
+		let mut tamam = true;
+		for (i, v) in istekler {
+			let t = match dialog_ctl(dh, i) {
+				Ok(t) => t,
+				Err(e) => {
+					eprintln!("[ABE] dialog teyit {i}: {e}");
+					unsafe { velnosub_abi_dialog_close(dh) };
+					return cik(h);
+				}
+			};
+			let hucre: Vec<&str> = t.split('|').collect();
+			if hucre.get(3) != Some(&v) {
+				eprintln!("[ABE] dialog teyidi {i}: {t}");
+				tamam = false;
+				break;
+			}
+		}
+		if !tamam {
+			unsafe { velnosub_abi_dialog_close(dh) };
+			return cik(h);
+		}
+		println!("[AD3] teyit: beş alan ikinci okumada birebir");
+		// düğme seçimi + kayıt
+		let secim = unsafe { velnosub_abi_dialog_show(dh, 1) };
+		let kayit = unsafe { velnosub_abi_dialog_showid(dh) };
+		if secim != 1 || kayit != 1 {
+			eprintln!("[ABE] dialog düğme: secim {secim} kayit {kayit}");
+			unsafe { velnosub_abi_dialog_close(dh) };
+			return cik(h);
+		}
+		match dialog_button(dh, 1) {
+			Ok(ad) => println!("[AD4] düğme 1 seçildi ({ad}, kayıt tutarlı)"),
+			Err(e) => {
+				eprintln!("[ABE] dialog düğme metni: {e}");
+				unsafe { velnosub_abi_dialog_close(dh) };
+				return cik(h);
+			}
+		}
+		// tip reddi: intedit'e harf, dropdown'a öğe dışı
+		let bad1 = CString::new("abc").unwrap();
+		let red1 = unsafe { velnosub_abi_dialog_set(dh, 2, bad1.as_ptr()) };
+		let bad2 = CString::new("Q").unwrap();
+		let red2 = unsafe { velnosub_abi_dialog_set(dh, 5, bad2.as_ptr()) };
+		if red1 == 0 || red2 == 0 {
+			eprintln!("[ABE] tip reddi kalkmadı: {red1} {red2}");
+			unsafe { velnosub_abi_dialog_close(dh) };
+			return cik(h);
+		}
+		println!("[AD5] tip reddi: harf sayıya, öğe dışı anahtar reddedildi ({red1},{red2})");
+		unsafe { velnosub_abi_dialog_close(dh) };
+		println!("[AD6] dialog kol kapandı — şerit tamam");
 	}
 
 	// P4.3 video şeridi: video argümanı verildiyse BGRA kare hattını sürer
@@ -436,7 +609,7 @@ fn main() -> ExitCode {
 			};
 			if n < 0 {
 				eprintln!("[ABE] video bilgi: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			let bilgi = unsafe {
 				CStr::from_ptr(ibuf.as_ptr() as *const c_char)
@@ -449,19 +622,19 @@ fn main() -> ExitCode {
 				Ok(v) => v,
 				Err(e) => {
 					eprintln!("[ABE] kare 0: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			let iki_kare = match video_kare(vh, 1) {
 				Ok(v) => v,
 				Err(e) => {
 					eprintln!("[ABE] kare 1: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			if bir_kare == iki_kare {
 				eprintln!("[ABE] kare 0 ve 1 aynı — kodlamada hareket bekleniyordu");
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			println!("[AV2] kare 0 ({B} bayt) ve kare 1 farklı: BGRA akışı canlı", B = bir_kare.len());
 
@@ -469,12 +642,12 @@ fn main() -> ExitCode {
 				Ok(v) => v,
 				Err(e) => {
 					eprintln!("[ABE] geri sarma karesi: {e}");
-					return ExitCode::FAILURE;
+					return cik(h);
 				}
 			};
 			if geri != bir_kare {
 				eprintln!("[ABE] geri sarma: kare 0 tekrar çözümü eşleşmiyor");
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			println!("[AV3] geri sarma kanıtlandı (kare 0 birebir)");
 			unsafe { velnosub_abi_video_close(vh) };
@@ -515,7 +688,7 @@ fn main() -> ExitCode {
 			};
 			if rc != 0 {
 				eprintln!("[ABE] peaks: {}", last_error());
-				return ExitCode::FAILURE;
+				return cik(h);
 			}
 			let dolu = (0..64).filter(|&k| maxv[k] != 0 || minv[k] != 0).count();
 			let sirali = (0..64).all(|k| minv[k] <= maxv[k]);

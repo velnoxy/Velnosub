@@ -29,6 +29,19 @@ extern "C" {
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
 	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
 	fn velnosub_abi_style_write(h: c_int, idx: c_int, dizge: *const c_char) -> c_int;
+	fn velnosub_abi_dialog_open(spec: *const c_char) -> c_int;
+	fn velnosub_abi_dialog_count(h: c_int) -> c_int;
+	fn velnosub_abi_dialog_btncount(h: c_int) -> c_int;
+	fn velnosub_abi_dialog_ctl(
+		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_dialog_button(
+		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_dialog_set(h: c_int, idx: c_int, deger: *const c_char) -> c_int;
+	fn velnosub_abi_dialog_show(h: c_int, dugme: c_int) -> c_int;
+	fn velnosub_abi_dialog_showid(h: c_int) -> c_int;
+	fn velnosub_abi_dialog_close(h: c_int);
 	fn velnosub_abi_save(h: c_int, out_path: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
@@ -313,6 +326,140 @@ fn color32_to_ass(c: egui::Color32) -> String {
 	)
 }
 
+/// Dialog alan dizgesini ABI'den oku (izadorlama büyüt-vekik kuralı).
+fn dialog_ctl(h: c_int, idx: c_int) -> Result<String, String> {
+	let mut len = 384usize;
+	loop {
+		let mut buf = vec![0u8; len];
+		let n = unsafe {
+			velnosub_abi_dialog_ctl(
+				h, idx,
+				buf.as_mut_ptr() as *mut c_char,
+				buf.len() as c_int,
+			)
+		};
+		if n < 0 {
+			return Err(last_error());
+		}
+		if (n as usize) < len.saturating_sub(1) {
+			buf.truncate(n as usize);
+			return Ok(String::from_utf8_lossy(&buf).into_owned());
+		}
+		len *= 2;
+	}
+}
+
+/// P4.5 III: dinamik form satırı (ABI alan dizgesinden ayrıştırılmış).
+struct AlanRow {
+	sinif: String,
+	ad: String,
+	baslik: String,
+	deger: String,
+	ogeler: Vec<String>,
+	alt: f64,
+	ust: f64,
+}
+
+/// Açılı makro-form kolu: tanım + SATIR AYRIŞTIRMA zapşı.
+struct DialogSection {
+	handle: c_int,
+	alanlar: Vec<AlanRow>,
+	dugmeler: Vec<String>,
+}
+
+fn dialog_ayikla(t: &String) -> Option<AlanRow> {
+	let p: Vec<&str> = t.split('|').collect();
+	if p.len() < 4 {
+		return None;
+	}
+	let sinif = p[0].to_string();
+	let (alt, ust) = if (sinif == "intedit" || sinif == "floatedit") && p.len() >= 5 {
+		let v: Vec<&str> = p[4].split(',').collect();
+		if v.len() == 2 {
+			(v[0].parse().unwrap_or(0.0), v[1].parse().unwrap_or(0.0))
+		} else {
+			(0.0, 0.0)
+		}
+	} else {
+		(0.0, 0.0)
+	};
+	let ogeler = if sinif == "dropdown" && p.len() >= 5 {
+		p[4].split(';').map(|s| s.to_string()).collect()
+	} else {
+		Vec::new()
+	};
+	Some(AlanRow {
+		sinif,
+		ad: p[1].into(),
+		baslik: p[2].into(),
+		deger: p[3].into(),
+		ogeler,
+		alt,
+		ust,
+	})
+}
+
+fn load_dialog(yolu: &str) -> Result<DialogSection, String> {
+	let metin =
+		std::fs::read_to_string(yolu).map_err(|e| format!("spec okunamadı: {e}"))?;
+	let c = CString::new(metin).map_err(|e| format!("spec kodlanamadı: {e}"))?;
+	let dh = unsafe { velnosub_abi_dialog_open(c.as_ptr()) };
+	if dh < 0 {
+		return Err(last_error());
+	}
+	let n = unsafe { velnosub_abi_dialog_count(dh) };
+	if n <= 0 {
+		let e = last_error();
+		unsafe { velnosub_abi_dialog_close(dh) };
+		return Err(e);
+	}
+	let bn = unsafe { velnosub_abi_dialog_btncount(dh) };
+	let mut alanlar = Vec::new();
+	for i in 0..n {
+		match dialog_ctl(dh, i) {
+			Ok(t) => {
+				if let Some(row) = dialog_ayikla(&t) {
+					alanlar.push(row);
+				}
+			}
+			Err(e) => {
+				unsafe { velnosub_abi_dialog_close(dh) };
+				return Err(e);
+			}
+		}
+	}
+	let mut dugmeler = Vec::new();
+	for i in 0..bn.max(0) {
+		let oku = |h: c_int, idx: c_int| -> Result<String, String> {
+			let mut buf = vec![0u8; 96];
+			let n2 = unsafe {
+				velnosub_abi_dialog_button(
+					h, idx,
+					buf.as_mut_ptr() as *mut c_char,
+					buf.len() as c_int,
+				)
+			};
+			if n2 < 0 {
+				return Err(last_error());
+			}
+			buf.truncate((n2 as usize).min(95));
+			Ok(String::from_utf8_lossy(&buf).into_owned())
+		};
+		match oku(dh, i) {
+			Ok(t) => dugmeler.push(t),
+			Err(e) => {
+				unsafe { velnosub_abi_dialog_close(dh) };
+				return Err(e);
+			}
+		}
+	}
+	Ok(DialogSection {
+		handle: dh,
+		alanlar,
+		dugmeler,
+	})
+}
+
 /// P4.2 uygulama durumu: tek açık tutamaç + satır önbelleği.
 pub struct GridApp {
 	handle: Option<c_int>,
@@ -323,6 +470,7 @@ pub struct GridApp {
 	video: Option<VideoSection>,
 	audio: Option<AudioSection>,
 	stiller: Vec<StyleRow>,
+	dialog: Option<DialogSection>,
 }
 
 impl GridApp {
@@ -345,6 +493,7 @@ impl GridApp {
 			video: None,
 			audio: None,
 			stiller: Vec::new(),
+			dialog: None,
 		};
 		if let Some(p) = open {
 			if let Err(e) = app.load(&p) {
@@ -359,6 +508,15 @@ impl GridApp {
 		if let Some(s) = std::env::var("VELNOSUB_AUDIO").ok() {
 			if let Err(e) = app.load_audio(&s) {
 				app.note = format!("ses açılamadı: {e}");
+			}
+		}
+		if let Some(s) = std::env::var("VELNOSUB_DIALOG").ok() {
+			match load_dialog(&s) {
+				Ok(d) => {
+					app.note = format!("form: {} alan", d.alanlar.len());
+					app.dialog = Some(d);
+				}
+				Err(e) => app.note = format!("form açılamadı: {e}"),
 			}
 		}
 		app
@@ -746,6 +904,138 @@ impl eframe::App for GridApp {
 						.weak());
 					});
 				}
+				ui.add_space(4.0);
+			});
+		}
+
+		// P4.5 III: dialog form şeridi — sınıflara göre egui widget eşlemesi;
+		// değerler damada form koluyla tutulur, düğme tıklamasında ABI'ye yazılır
+		if let Some(fd) = self.dialog.as_mut() {
+			Panel::top("dpanel").show(ui, |ui| {
+				ui.add_space(4.0);
+				ui.label(
+					RichText::new(format!("Makro formu: {} alan, {} düğme",
+						fd.alanlar.len(), fd.dugmeler.len()))
+					.strong(),
+				);
+				for (i, a) in fd.alanlar.iter_mut().enumerate() {
+					match a.sinif.as_str() {
+						"label" => {
+							ui.label(RichText::new(if a.deger.is_empty() {
+								a.baslik.clone()
+							} else {
+								a.deger.clone()
+							})
+							.weak());
+						}
+						"edit" => {
+							let gen = ui.available_width() - 120.0;
+							ui.horizontal(|kut| {
+								kut.label(RichText::new(&a.baslik).strong());
+								kut.add(
+									egui::TextEdit::singleline(&mut a.deger)
+										.desired_width(gen),
+								);
+							});
+						}
+						"textbox" => {
+							ui.label(RichText::new(&a.baslik).strong());
+							ui.add(
+								egui::TextEdit::multiline(&mut a.deger)
+									.desired_rows(3),
+							);
+						}
+						"intedit" | "floatedit" => {
+							ui.horizontal(|kut| {
+								kut.label(RichText::new(&a.baslik).strong());
+								if a.sinif == "intedit" {
+									let mut sayi =
+										a.deger.parse::<i64>().unwrap_or(a.alt as i64);
+									if kut.add(
+										egui::DragValue::new(&mut sayi)
+											.speed(1.0)
+											.range(a.alt as i64..=a.ust as i64),
+									).changed() {
+										a.deger = sayi.to_string();
+									}
+								} else {
+									let mut y = a.deger.parse::<f64>().unwrap_or(a.alt);
+									if kut.add(
+										egui::DragValue::new(&mut y)
+											.speed(0.05)
+											.range(a.alt..=a.ust),
+									).changed() {
+										a.deger = format!("{y:.2}");
+									}
+								}
+							});
+						}
+						"checkbox" => {
+							let mut sec = a.deger == "1";
+							if ui.checkbox(&mut sec, RichText::new(&a.baslik).strong()).changed() {
+								a.deger = if sec { "1".into() } else { "0".into() };
+							}
+						}
+						"dropdown" => {
+							ui.horizontal(|kut| {
+								kut.label(RichText::new(&a.baslik).strong());
+								egui::ComboBox::from_id_salt(format!("dsec{i}"))
+									.selected_text(&a.deger)
+									.show_ui(kut, |ac| {
+										let secenekler: Vec<String> = a.ogeler.clone();
+										for oge in secenekler {
+											ac.selectable_value(
+												&mut a.deger, oge.clone(), oge,
+											);
+										}
+									});
+							});
+						}
+						"color" | "coloralpha" => {
+							ui.horizontal(|kut| {
+								kut.label(RichText::new(&a.baslik).strong());
+								let mut renk = ass_to_color32(&a.deger)
+									.unwrap_or(egui::Color32::WHITE);
+								if kut.color_edit_button_srgba(&mut renk).changed() {
+									a.deger = color32_to_ass(renk);
+								}
+							});
+						}
+						_ => {
+							ui.label(RichText::new(format!("? {:?}", a.sinif)).weak());
+						}
+					}
+				}
+				ui.add_space(6.0);
+				ui.horizontal(|kut| {
+					let dug = fd.dugmeler.clone();
+					for (bi, ad) in dug.iter().enumerate() {
+						if kut.button(RichText::new(ad).strong()).clicked() {
+							// gönderme: tüm alan değerleri ABI'ye yazılır,
+							// sonra düğme seçimi kaydedilir
+							let h = fd.handle;
+							let mut yaz = 0usize;
+							for (i, a2) in fd.alanlar.iter().enumerate() {
+								if a2.sinif != "label" {
+									let c = CString::new(a2.deger.clone())
+										.map(|c| {
+											unsafe { velnosub_abi_dialog_set(h, i as c_int, c.as_ptr()) }
+										})
+										.unwrap_or(-1);
+									if c == 0 {
+										yaz += 1;
+									}
+								}
+							}
+							let secim = unsafe { velnosub_abi_dialog_show(h, bi as c_int) };
+							self.note = format!(
+								"form: düğme {} ({ad}) — {yaz}/{evet} alan tip yanı: {secim}",
+								bi + 1,
+								evet = fd.alanlar.iter().filter(|x| x.sinif != "label").count(),
+							);
+						}
+					}
+				});
 				ui.add_space(4.0);
 			});
 		}
