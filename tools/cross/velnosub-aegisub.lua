@@ -364,6 +364,8 @@ end
 
 -- ---- makro kayıtları -------------------------------------------------
 local makrolar = {}
+-- P5.2 dilim B: pump açık dosyayı burada tutar (aegisub.file_name kolu)
+local acik_dosya_yolu = nil
 
 local function register_macro(ad, aciklama, isleme, denetim)
 	makrolar[ad] = {
@@ -415,6 +417,7 @@ function aegisub.__pump()
 		error(hatasi("open " .. p.ass), 0)
 	end
 	local adet = abi.velnosub_abi_event_count(h)
+	acik_dosya_yolu = p.ass
 	print(("[AUS1] dosya açıldı: %s (satır %d, seçim %s, makro %s)")
 	      :format(p.ass, adet, tostring(#p.sel or 0), tostring(p.makro)))
 	local subs = subs_nesne(h)
@@ -451,7 +454,7 @@ function aegisub.__pump()
 		print(("[AUS4] kalıcılık: yeniden açılış satır 1: %s"):format(son.text))
 		for _, si in ipairs(p.sel and #p.sel > 0 and p.sel or { 1 }) do
 			local s2 = satir_oku(h2, si - 1)
-			print(("[AUS6] yeniden açılış satır %d: %s")
+			print(("[AUSB] yeniden açılış satır %d: %s")
 			      :format(si, s2.text))
 		end
 		abi.velnosub_abi_close(h2)
@@ -511,6 +514,57 @@ aegisub.register_filter = function(ad, aciklama, kategori, isleme)
 	             :format(tostring(ad), type(isleme) == "table" and #isleme or 1))
 end
 aegisub.cancel = function() end
+-- P5.2 dilim B: video köprüsü + zarif yüzey parçaları (upstream auto4
+-- davranışı: video yüklü değilken frame_from_ms/ms_from_frame/video_size
+-- nil döner; mobil hatta otomasyon kolu videoyu Lua yüzeyine açmıyor)
+aegisub.lua_automation_version = 4
+aegisub.frame_from_ms = function(ms)
+	if tam_sayi(ms) == nil then
+		error("frame_from_ms: ms tamsayı olmalı", 2)
+	end
+	print("[AUSB] frame_from_ms: video yüklü değil → nil")
+	return nil
+end
+aegisub.ms_from_frame = function(k)
+	if tam_sayi(k) == nil then
+		error("ms_from_frame: kare tamsayı olmalı", 2)
+	end
+	print("[AUSB] ms_from_frame: video yüklü değil → nil")
+	return nil
+end
+aegisub.video_size = function()
+	print("[AUSB] video_size: video yüklü değil → nil")
+	return nil
+end
+aegisub.keyframes = function()
+	print("[AUSB] keyframes: video yok → boş küme")
+	return {}
+end
+aegisub.file_name = function()
+	if not acik_dosya_yolu then return nil end
+	return tostring(acik_dosya_yolu):match("[^/\\]+$")
+		or tostring(acik_dosya_yolu)
+end
+aegisub.gettext = function(s) return tostring(s) end
+aegisub.project_properties = function()
+	print("[AUSB] proje özetleri: mobil hatta nötr değerler")
+	return {
+		automation_scripts = false,
+		export_filters = false,
+		export_encoding = "",
+		style_storage = 0,
+		video_zoom = 100.0,
+		ar_value = 0.0,
+		scroll_position = -1,
+		active_row = 0,
+		ar_mode = 0,
+		video_position = 0,
+		audio_file = "",
+		video_file = "",
+		timecodes_file = "",
+		keyframes_file = "",
+	}
+end
 aegisub.decode_path = function(yol)
 	local kullanici = os.getenv("VELNOSUB_USER_DIR") or (
 		os.getenv("HOME") and (os.getenv("HOME") .. "/.velnosub") or "/data/local/tmp/velnosub-user")
