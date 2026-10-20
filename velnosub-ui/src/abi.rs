@@ -476,6 +476,8 @@ pub struct GridApp {
 	// ortam değişkeniyle yol geçilebilir), Ayarlar bölümünden değiştirilir
 	duzen: Duzen,
 	aktif: Sekme,
+	// masaüstü düzeninde Ayarlar penceresi açık mı (mobilde ayrı sekme var)
+	ayar_win: bool,
 }
 
 /// Arayüz düzeni. `Secim` yalnızca ayar dosyası yokken geçerli ilk ekrandır.
@@ -504,20 +506,98 @@ fn ayar_yolu() -> String {
 	std::env::var("VELNOSUB_UI_JSON").unwrap_or_else(|_| "velnosub-ui.json".into())
 }
 
-/// Dosyadaki `"ui"` değerini okur; dosya yoksa ya da biçim bilinmiyorsa None.
-fn ayar_yukle() -> Option<String> {
-	let icerik = std::fs::read_to_string(ayar_yolu()).ok()?;
-	if icerik.contains("\"mobil\"") {
-		Some("mobil".into())
-	} else if icerik.contains("\"masaustu\"") {
-		Some("masaustu".into())
-	} else {
-		None
+/// Arayüz teması: koyu varsayılan; açık tema Ayarlar'dan seçilir
+/// (denetim bulgu 7).
+#[derive(PartialEq, Clone, Copy)]
+pub enum Tema {
+	Koyu,
+	Acik,
+}
+
+/// Ayar dosyasında okunan değerler; eksik alan None kalır (o alan için
+/// varsayılan kullanılır: dosya yoksa düzen seçimi sorulur, tema koyu).
+pub struct Ayar {
+	pub duzen: Option<String>,
+	pub tema: Option<String>,
+}
+
+/// `{ "anahtar": "deger" }` biçimi için sade tarayıcı: anahtarı bulup
+/// ondan sonraki ilk tırnaklı parçayı döner. Yalnız bizim yazdığımız
+/// `velnosub-ui.json` beklenir; yabancı içerik None döner (yeniden sor).
+fn deger_bul(icerik: &str, anahtar: &str) -> Option<String> {
+	let cap = format!("\"{anahtar}\"");
+	let bas = icerik.find(&cap)? + cap.len();
+	let kalan = &icerik[bas..];
+	let i = kalan.find('"')? + 1;
+	let kalan2 = &kalan[i..];
+	let j = kalan2.find('"')?;
+	Some(kalan2[..j].to_string())
+}
+
+/// Ayar dosyasını okur; dosya yoksa boş Ayar (hem düzen hem tema None).
+pub fn ayar_yukle() -> Ayar {
+	let bos = Ayar {
+		duzen: None,
+		tema: None,
+	};
+	let icerik = match std::fs::read_to_string(ayar_yolu()) {
+		Ok(k) => k,
+		Err(_) => return bos,
+	};
+	Ayar {
+		duzen: deger_bul(&icerik, "ui"),
+		tema: deger_bul(&icerik, "tema"),
 	}
 }
 
-fn ayar_yaz(duzen: &str) -> std::io::Result<()> {
-	std::fs::write(ayar_yolu(), format!("{{ \"ui\": \"{duzen}\" }}"))
+pub fn ayar_yaz(duzen: &str, tema: &str) -> std::io::Result<()> {
+	std::fs::write(
+		ayar_yolu(),
+		format!("{{ \"ui\": \"{duzen}\", \"tema\": \"{tema}\" }}"),
+	)
+}
+
+/// WCAG 2.1 göreli parlaklığı (sRGB doğrusallaştırma) — ölçüm ve tamir
+/// aynı formülü paylaşır.
+fn parlaklik(c: egui::Color32) -> f64 {
+	fn lin(v: f64) -> f64 {
+		if v <= 0.04045 {
+			v / 12.92
+		} else {
+			((v + 0.055) / 1.055).powf(2.4)
+		}
+	}
+	0.2126 * lin(c.r() as f64 / 255.0)
+		+ 0.7152 * lin(c.g() as f64 / 255.0)
+		+ 0.0722 * lin(c.b() as f64 / 255.0)
+}
+
+/// WCAG kontrast oranı (1:1 .. 21:1) — denetim 2'nin ölçüm kolu.
+pub fn kontrast(ust: egui::Color32, alt: egui::Color32) -> f64 {
+	let a = parlaklik(ust);
+	let b = parlaklik(alt);
+	let (acik, koyu) = if a > b { (a, b) } else { (b, a) };
+	(acik + 0.05) / (koyu + 0.05)
+}
+
+/// Kontrast tamiri (denetim 2): egui'nin varsayılan soluk metni koyu
+/// zeminde 4.5:1'ın altında kalıyor; tamir temasına uygun kaynak-griye
+/// sabitler (koyuda 170, aç beyazda 90). Ölçüyü tests::mod doğrular.
+pub fn stil_tamir(style: &mut egui::Style, tema: Tema) {
+	let zayif = match tema {
+		Tema::Koyu => egui::Color32::from_gray(170),
+		Tema::Acik => egui::Color32::from_gray(90),
+	};
+	style.visuals.weak_text_color = Some(zayif);
+}
+
+/// Anlık üçüncü kolu oku: bu çerçevedeki etkin tema (Ui stilinden).
+fn tema_simdi(ui: &egui::Ui) -> Tema {
+	if ui.style().visuals.dark_mode {
+		Tema::Koyu
+	} else {
+		Tema::Acik
+	}
 }
 
 impl GridApp {
@@ -543,8 +623,9 @@ impl GridApp {
 			dialog: None,
 			duzen: Duzen::Secim,
 			aktif: Sekme::Altyazi,
+			ayar_win: false,
 		};
-		match ayar_yukle().as_deref() {
+		match ayar_yukle().duzen.as_deref() {
 			Some("mobil") => app.duzen = Duzen::Mobil,
 			Some("masaustu") => app.duzen = Duzen::Masaustu,
 			_ => {}
@@ -1122,6 +1203,12 @@ impl GridApp {
 						}
 					}
 				}
+				// masaüstünde de Ayarlar penceresiyle hem düzen hem tema
+				// erişilebilir (denetim 4'ün uydu kolu: erişim her iki
+				// düzende gerçek eylem)
+				if ui.button("Ayarlar").clicked() {
+					self.ayar_win = true;
+				}
 				ui.label(RichText::new(&self.note).weak());
 			});
 			ui.add_space(6.0);
@@ -1182,7 +1269,7 @@ impl GridApp {
 							ui.label(
 								RichText::new(format!("{}", &row.times))
 									.weak()
-									.color(Color32::GRAY),
+									.color(Color32::from_gray(170)),
 							);
 							let w = ui.available_width();
 							let resp = TextEdit::singleline(&mut row.text)
@@ -1198,7 +1285,7 @@ impl GridApp {
 							ui.label(
 								RichText::new(format!("{}  ", &row.times))
 									.weak()
-									.color(Color32::GRAY),
+									.color(Color32::from_gray(170)),
 							);
 							let w = ui.available_width() * 0.62;
 							let resp = TextEdit::singleline(&mut row.text)
@@ -1246,7 +1333,7 @@ impl GridApp {
 			)
 			.min_size(egui::vec2(gen, 96.0)),
 		).clicked() {
-			self.duzen_sec(Duzen::Mobil);
+			self.duzen_sec(tema_simdi(ui), Duzen::Mobil);
 		}
 		ui.label(
 			RichText::new("Alt sekme çubuğu ve geniş dokunma alanları; küçük ekranda tek elle kullanım için.").weak(),
@@ -1258,7 +1345,7 @@ impl GridApp {
 			)
 			.min_size(egui::vec2(gen, 96.0)),
 		).clicked() {
-			self.duzen_sec(Duzen::Masaustu);
+			self.duzen_sec(tema_simdi(ui), Duzen::Masaustu);
 		}
 		ui.label(
 			RichText::new("Şeritler üst üste; satır başına iki sütunlu mevcut düzen.").weak(),
@@ -1275,13 +1362,17 @@ impl GridApp {
 		);
 	}
 
-	fn duzen_sec(&mut self, duzen: Duzen) {
+	fn duzen_sec(&mut self, tema: Tema, duzen: Duzen) {
 		let kayit = match duzen {
 			Duzen::Mobil => "mobil",
 			Duzen::Masaustu => "masaustu",
 			Duzen::Secim => return,
 		};
-		match ayar_yaz(kayit) {
+		let tema_kel = match tema {
+			Tema::Koyu => "koyu",
+			Tema::Acik => "acik",
+		};
+		match ayar_yaz(kayit, tema_kel) {
 			Ok(()) => self.note = String::new(),
 			Err(e) => {
 				self.note =
@@ -1297,6 +1388,12 @@ impl GridApp {
 	fn ayarlar_bolum(&mut self, ui: &mut egui::Ui) {
 		ui.add_space(8.0);
 		ui.heading("Ayarlar");
+		self.ayarlar_icerik(ui);
+	}
+
+	/// Ayarlar içeriği: mobil Ayarlar sekmesinde ve masaüstündeki Ayarlar
+	/// penceresinde AYNI gövde kullanılır.
+	fn ayarlar_icerik(&mut self, ui: &mut egui::Ui) {
 		ui.add_space(8.0);
 		ui.label(RichText::new("Arayüz düzeni").strong());
 		ui.add_space(4.0);
@@ -1306,7 +1403,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Mobil),
 		).clicked() {
-			self.duzen_sec(Duzen::Mobil);
+			self.duzen_sec(tema_simdi(ui), Duzen::Mobil);
 			return;
 		}
 		if ui.add(
@@ -1314,7 +1411,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Masaustu),
 		).clicked() {
-			self.duzen_sec(Duzen::Masaustu);
+			self.duzen_sec(tema_simdi(ui), Duzen::Masaustu);
 			return;
 		}
 		ui.label(
@@ -1325,6 +1422,34 @@ impl GridApp {
 					"seçili: masaüstü UI"
 				},
 			)
+			.weak(),
+		);
+		// denetim 7: açık tema seceneği — seçim anında uygulanır ve
+		// dosyaya kalıcı yazılır
+		ui.add_space(12.0);
+		ui.label(RichText::new("Tema").strong());
+		ui.add_space(4.0);
+		let koyu_simdi = tema_simdi(ui) == Tema::Koyu;
+		if ui.add(
+			egui::Button::new(RichText::new("Koyu tema").size(18.0))
+				.min_size(egui::vec2(gen, 44.0))
+				.selected(koyu_simdi),
+		).clicked() {
+			self.tema_sec(ui, Tema::Koyu);
+		}
+		if ui.add(
+			egui::Button::new(RichText::new("Açık tema").size(18.0))
+				.min_size(egui::vec2(gen, 44.0))
+				.selected(!koyu_simdi),
+		).clicked() {
+			self.tema_sec(ui, Tema::Acik);
+		}
+		ui.label(
+			RichText::new(if koyu_simdi {
+				"seçili: koyu tema"
+			} else {
+				"seçili: açık tema"
+			})
 			.weak(),
 		);
 		ui.add_space(12.0);
@@ -1341,6 +1466,32 @@ impl GridApp {
 				RichText::new(&self.note)
 					.color(egui::Color32::from_rgb(220, 120, 90)),
 			);
+		}
+	}
+
+	fn tema_sec(&mut self, ui: &egui::Ui, tema: Tema) {
+		let kayit = match tema {
+			Tema::Koyu => "koyu",
+			Tema::Acik => "acik",
+		};
+		ui.ctx().all_styles_mut(|st| {
+			st.visuals = match tema {
+				Tema::Koyu => egui::Visuals::dark(),
+				Tema::Acik => egui::Visuals::light(),
+			};
+			stil_tamir(st, tema);
+		});
+		let duzen_kel = match self.duzen {
+			Duzen::Mobil => "mobil",
+			Duzen::Masaustu => "masaustu",
+			Duzen::Secim => "mobil",
+		};
+		match ayar_yaz(duzen_kel, kayit) {
+			Ok(()) => self.note = String::new(),
+			Err(e) => {
+				self.note =
+					format!("ayar yazılamadı ({}): {e}", ayar_yolu());
+			}
 		}
 	}
 
@@ -1368,13 +1519,17 @@ impl GridApp {
 		Panel::bottom("vtabs").show(ui, |su| {
 			su.add_space(6.0);
 			// sekme genişliği kalan alana oranlanır: en dar pencerede de
-			// taşma olmaz (satır yatay kaydırma yok)
+			// taşma olmaz (satır yatay kaydırma yok);
+			// denetim 1: dar genişlikte etiket kırpılmasın — iç yapışma daralır,
+			// metin boyu sekme genişliğine uyarlanır (alt 9pt, üst 15.5pt)
 			let adet = etiketler.len().max(1) as f32;
-			let gen = ((su.available_width() - 8.0) / adet).max(48.0);
+			let gen = ((su.available_width() - 8.0) / adet).max(44.0);
 			su.horizontal(|k| {
+				k.spacing_mut().button_padding = egui::vec2(4.0, 8.0);
 				for (s, ad) in &etiketler {
+					let metin_boyu = (gen * 0.22).clamp(9.0, 15.5);
 					if k.add(
-						egui::Button::new(RichText::new(*ad))
+						egui::Button::new(RichText::new(*ad).size(metin_boyu))
 							.min_size(egui::vec2(gen, 44.0))
 							.selected(self.aktif == *s),
 					).clicked() {
@@ -1428,6 +1583,17 @@ impl GridApp {
 		CentralPanel::default().show_inside(ui, |su| {
 			self.grid_icerik(su, false);
 		});
+		if self.ayar_win {
+			// masaüstü Ayarlar penceresi: mobil sekmesindeki gövde AYNI
+			let mut acik = self.ayar_win;
+			egui::Window::new("Ayarlar")
+				.open(&mut acik)
+				.resizable(false)
+				.show(ui.ctx(), |su| {
+					self.ayarlar_icerik(su);
+				});
+			self.ayar_win = acik;
+		}
 	}
 }
 
@@ -1475,23 +1641,59 @@ impl eframe::App for GridApp {
 mod tests {
 	use super::*;
 
-	/// İlk giriş kuralı ve seçim kaydı: dosya yoksa `None` (seçim ekranı),
-	/// yazımdan sonra değer birebir okunur. Ekransız haberci (derleme ortamı
-	/// GUI penceresi açamaz; düzen çizimi cihaz/APK bağlamına kaldı).
+	/// İlk giriş kuralı ve seçim kaydı: dosya yoksa düzen seçimi sorulur
+	/// (Ayar.duzen None), yazım sonra birebir okunur; bilinmeyen içerik
+	/// yeniden sorar. Ekransız haberci — derleme ortamında GUI penceresi
+	/// açılamaz; çizim kanıtı cihaz/APK bağlamına kalmıştır.
 	#[test]
-	fn ayar_yoksa_secim_kaydi_birebir() {
+	fn ayar_dongusu() {
 		let yol = std::env::temp_dir()
 			.join(format!("velnosub-ui-test{}.json", std::process::id()));
 		std::env::set_var("VELNOSUB_UI_JSON", &yol);
 		let _ = std::fs::remove_file(&yol);
-		assert_eq!(ayar_yukle(), None, "dosya yokken secim ekranı beklenirdi");
-		ayar_yaz("mobil").expect("mobil ayarı yazılamadı");
-		assert_eq!(ayar_yukle().as_deref(), Some("mobil"));
-		ayar_yaz("masaustu").expect("masaustu yazılamadı");
-		assert_eq!(ayar_yukle().as_deref(), Some("masaustu"));
-		// bilinmeyen içerik (eskimiş dosya) seçimsizdir; tekrar sorar
+		let ay = ayar_yukle();
+		assert!(ay.duzen.is_none() && ay.tema.is_none(), "dosya yokken seçim sorulmalı");
+		ayar_yaz("mobil", "koyu").expect("ilk yazım");
+		let ay = ayar_yukle();
+		assert_eq!(ay.duzen.as_deref(), Some("mobil"));
+		assert_eq!(ay.tema.as_deref(), Some("koyu"));
+		ayar_yaz("masaustu", "acik").expect("düzen+tema yazımı");
+		let ay = ayar_yukle();
+		assert_eq!(ay.duzen.as_deref(), Some("masaustu"));
+		assert_eq!(ay.tema.as_deref(), Some("acik"));
 		std::fs::write(&yol, "{}").unwrap();
-		assert_eq!(ayar_yukle(), None);
+		let ay = ayar_yukle();
+		assert!(ay.duzen.is_none() && ay.tema.is_none(), "bilinmeyen içerik yeniden sorar");
 		let _ = std::fs::remove_file(&yol);
+	}
+
+	/// Denetim 2 — kontrast ölçümü: egui varsayılan soluk metni koyu
+	/// zeminde AA'nın (4.5:1) altında kalır; stil_tamir sonrası her iki
+	/// temada soluk metin ve hata renginin ölçüleri raporlanır.
+	#[test]
+	fn kontrast_tamiri_aa_uyumlu() {
+		// koyu tema: tamir ÖNCESİ gerçek değer (beklenti: 4.5 altı → ihlal)
+		let koyu = egui::Style::default();
+		let zemin = koyu.visuals.window_fill();
+		let once = kontrast(koyu.visuals.weak_text_color(), zemin);
+		assert!(once < 4.5, "koyu temada varsayılan soluk metin ihlal olmalıydı ({once:.2})");
+		// tamir sonrası: >= 4.5 (metin 4.5x gövde boyundan küçük → AA normal metin)
+		let mut koyu_t = egui::Style::default();
+		stil_tamir(&mut koyu_t, Tema::Koyu);
+		let sonra = kontrast(koyu_t.visuals.weak_text_color(), zemin);
+		assert!(sonra >= 4.5);
+		let zaman_gri = kontrast(egui::Color32::from_gray(170), zemin);
+		assert!(zaman_gri >= 4.5);
+		let hata = kontrast(egui::Color32::from_rgb(220, 120, 90), zemin);
+		assert!(hata >= 4.5);
+		// açık tema: tamir devrede olmalı (varsayılan kalabilir ama garanti sabit)
+		let mut acik = egui::Style { visuals: egui::Visuals::light(), ..Default::default() };
+		let acik_zemin = acik.visuals.window_fill();
+		stil_tamir(&mut acik, Tema::Acik);
+		let acik_sonra = kontrast(acik.visuals.weak_text_color(), acik_zemin);
+		assert!(acik_sonra >= 4.5);
+		println!(
+			"kontrast ölçüleri: koyu-önce={once:.2} (ihlal) koyu-sonra={sonra:.2} zaman-gri={zaman_gri:.2} hata={hata:.2} açık-tamir={acik_sonra:.2}"
+		);
 	}
 }

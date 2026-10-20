@@ -24,7 +24,24 @@ fn main() {
 	if let Err(e) = eframe::run_native(
 		"velnosub",
 		options,
-		Box::new(move |_cc| Ok(Box::new(abi::GridApp::new(open, save)))),
+		Box::new(move |cc| {
+			// kayıtlı tema başlangıçta uygulanır (koyu varsayılan);
+			// kontrast tamiri egui'nin soluk metnini AA uyumlu yapar
+			let ayar = abi::ayar_yukle();
+			let tema = match ayar.tema.as_deref() {
+				Some("acik") => abi::Tema::Acik,
+				_ => abi::Tema::Koyu,
+			};
+			let visuals = match tema {
+				abi::Tema::Koyu => egui::Visuals::dark(),
+				abi::Tema::Acik => egui::Visuals::light(),
+			};
+			cc.egui_ctx.all_styles_mut(|st| {
+				st.visuals = visuals.clone();
+				abi::stil_tamir(st, tema);
+			});
+			Ok(Box::new(abi::GridApp::new(open, save)))
+		}),
 	) {
 		eprintln!("eframe error: {e}");
 	}
