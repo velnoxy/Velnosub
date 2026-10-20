@@ -248,6 +248,48 @@ local function stil_nesne(h, i0)
 	}
 end
 
+-- ---- P5 dilim 1: subs.styles okuma proxy'si ---------------------------
+-- karaskel.collect_head yaklaşımı: styles.n / styles[i] / styles[name];
+-- okuma kesilmiş, birebir ABI stil kanallarından her seferinde taze
+local function stiller_nesne(h)
+	local adede = function()
+		local n = abi.velnosub_abi_style_count(h)
+		if n < 0 then error(hatasi("style_count"), 3) end
+		return n
+	end
+	local proxy = newproxy(true)
+	local mt = getmetatable(proxy)
+	mt.__index = function(_, i)
+		if type(i) == "number" then
+			local n = adede()
+			if i < 1 or i > n or i % 1 ~= 0 then return nil end
+			return stil_nesne(h, i - 1)
+		elseif type(i) == "string" then
+			if i == "n" then return adede() end
+			-- ad araması: tanım sırası, ilk eşleşme (upstream iequals
+			-- karışımı: Lua karaskel katmanı eşitlik arar) 
+			local n = adede()
+			for k = 0, n - 1 do
+				local st = stil_nesne(h, k)
+				if st.name == i then return st end
+			end
+			return nil
+		end
+		return nil
+	end
+	mt.__len = function() return adede() end
+	mt.__ipairs = function()
+		local i = 0
+		return function()
+			local n = adede()
+			i = i + 1
+			if i > n then return nil end
+			return i, stil_nesne(h, i - 1)
+		end
+	end
+	return proxy
+end
+
 local function subs_nesne(h, dosya_yolu)
 	local nev = abi.velnosub_abi_event_count(h)
 	if nev < 0 then error(hatasi("event_count"), 3) end
@@ -283,6 +325,10 @@ local function subs_nesne(h, dosya_yolu)
 			if i == "n" then
 				-- upstream 'n' = lines.size() (tüm satır uzayı)
 				return toplam()
+			end
+			if i == "styles" then
+				-- P5 dilim 1: karaskel hattı — stiller okuma proxy'si
+				return stiller_nesne(h)
 			end
 			if i == "insert_line" then
 				return function(_, konum, satir)

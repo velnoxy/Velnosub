@@ -124,3 +124,26 @@ local function dolas_dene(subs, sel, aktif)
 	             :format(tostring(not ok1), tostring(not ok2)))
 end
 aegisub.register_macro("Dolaş dene", "sanal satır uzayı dumanı (dilim V)", dolas_dene)
+
+-- P5 dilim 1: subs.styles okuma dumanı — karaskel hattı (n/s[i]/s[ad])
+local function stil_dene(subs, sel, aktif)
+	local s = subs.styles
+	aegisub.log(("stiller: n=%d"):format(s.n))
+	for i = 1, s.n do
+		local st = s[i]
+		aegisub.log(("stil %d: %s fontname=%s yazı=%d renk1=%s kimlik=%s")
+		             :format(i, st.name, st.fontname, st.fontsize,
+		                     st.color1, st.class))
+	end
+	local d = s["Default"]
+	aegisub.log(("ad araması 'Default': %s (bold=%s, align=%d, marj=%d,%d,%d,%d, relative_to=%d)")
+	             :format(tostring(d.name), tostring(d.bold), d.align,
+	                     d.margin_l, d.margin_r, d.margin_t, d.margin_b,
+	                     d.relative_to))
+	local g = s.yok_boyle_stil
+	aegisub.log(("ad araması 'yok_boyle_stil': %s"):format(tostring(g)))
+	local _, y = aegisub.text_extents(d, "Ölç")
+	aegisub.log(("Default ile ölçüm (text_extents hattı): y=%.2f")
+	            :format(y))
+end
+aegisub.register_macro("Stil dene", "subs.styles okuma dumanı (dilim 1)", stil_dene)
