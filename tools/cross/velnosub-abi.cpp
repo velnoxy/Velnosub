@@ -13,8 +13,11 @@
 #include "ass_dialogue.h"
 #include "ass_file.h"
 #include "ass_style.h"
+#include "include/aegisub/video_provider.h"
 #include "options.h"
 #include "subtitle_format.h"
+#include "video_frame.h"
+#include "video_provider_manager.h"
 
 #include <libaegisub/dispatch.h>
 #include <libaegisub/exception.h>
@@ -24,6 +27,7 @@
 #include <libaegisub/vfr.h>
 
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -51,6 +55,9 @@ std::string read_all(std::string const& p) {
 }
 
 void set_err(std::string s) { g_last_error = std::move(s); }
+
+std::map<int, std::unique_ptr<VideoProvider>> g_video;
+int g_vnext = 0;
 
 } // namespace
 
@@ -206,6 +213,82 @@ int velnosub_abi_edit_line(int h, int idx, const char *text) {
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }
 	return -1;
+}
+
+// ---- P4.3 omurgası: video kolu (BGRA kare teslimi) -------------------
+
+int velnosub_abi_video_open(const char *path) {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!path || !*path) { set_err("video yolu boş"); return -1; }
+	try {
+		auto prov = VideoProviderFactory::GetProvider(agi::fs::path(path),
+		                                              std::string(), nullptr);
+		if (!prov) { set_err("video okuyucu bulunamadı: " + std::string(path)); return -1; }
+		int h = ++g_vnext;
+		g_video.emplace(h, std::move(prov));
+		return h;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_video_info(int h, char *buf, int buflen) {
+	if (!g_video.count(h)) { set_err("tanımsız video tutamacı"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		VideoProvider &v = *g_video.at(h);
+		char fmt[160];
+		std::snprintf(fmt, sizeof fmt, "%dx%d fps:%.3f kare:%d %s",
+		              v.GetWidth(), v.GetHeight(), v.GetFPS().FPS(),
+		              v.GetFrameCount(), v.GetDecoderName().c_str());
+		int const n = static_cast<int>(std::strlen(fmt));
+		int const m = (buflen - 1) < n ? (buflen - 1) : n;
+		std::memcpy(buf, fmt, static_cast<size_t>(m));
+		buf[m] = '\0';
+		return n;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_video_frame(int h, int n_kare, unsigned char *buf, int buflen) {
+	if (!g_video.count(h)) { set_err("tanımsız video tutamacı"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	try {
+		VideoFrame f;
+		g_video.at(h)->GetFrame(n_kare, f);
+		size_t const needed = f.width * f.height * 4; // BGRA, pitch=w*4
+		if (buflen < 0 || (size_t)buflen < needed)
+			return static_cast<int>(needed); // daha büyük tampon çağır
+		size_t const lines = f.height;
+		for (size_t y = 0; y < lines; ++y)
+			std::memcpy(buf + y * f.pitch, f.data.data() + y * f.pitch, f.pitch);
+		return static_cast<int>(needed);
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_video_geom(int h, int *out_w, int *out_h, double *out_fps, int *out_kare) {
+	if (!g_video.count(h)) { set_err("tanımsız video tutamacı"); return -1; }
+	try {
+		VideoProvider &v = *g_video.at(h);
+		if (out_w) *out_w = v.GetWidth();
+		if (out_h) *out_h = v.GetHeight();
+		if (out_fps) *out_fps = v.GetFPS().FPS();
+		if (out_kare) *out_kare = v.GetFrameCount();
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+void velnosub_abi_video_close(int h) {
+	g_video.erase(h);
 }
 
 void velnosub_abi_close(int h) {

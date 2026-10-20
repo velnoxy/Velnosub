@@ -28,6 +28,18 @@ extern "C" {
 	fn velnosub_abi_save(h: c_int, out_path: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
+	fn velnosub_abi_video_open(path: *const c_char) -> c_int;
+	fn velnosub_abi_video_info(
+		h: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_video_geom(
+		h: c_int, out_w: *mut c_int, out_h: *mut c_int,
+		out_fps: *mut f64, out_kare: *mut c_int,
+	) -> c_int;
+	fn velnosub_abi_video_frame(
+		h: c_int, kare: c_int, buf: *mut u8, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_video_close(h: c_int);
 }
 
 static INIT_OK: OnceLock<bool> = OnceLock::new();
@@ -89,9 +101,87 @@ fn edit_line(h: c_int, idx: usize, text: &str) -> Result<(), String> {
 	}
 }
 
+/// P4.3: video künyesindeki sayısal geometriyi çıkar.
+fn video_geom(h: c_int) -> Result<(usize, usize, f64, i32), String> {
+	let mut w: c_int = 0;
+	let mut hgt: c_int = 0;
+	let mut fps: f64 = 0.0;
+	let mut kareler: c_int = 0;
+	let rc = unsafe {
+		velnosub_abi_video_geom(h, &mut w, &mut hgt, &mut fps, &mut kareler)
+	};
+	if rc != 0 {
+		return Err(last_error());
+	}
+	Ok((w as usize, hgt as usize, fps, kareler))
+}
+
+/// P4.3: BGRA kareyi tampona al (tampon-büyütmeli).
+fn video_kare(h: c_int, idx: c_int) -> Result<Vec<u8>, String> {
+	let mut len: c_int = 1 << 20;
+	loop {
+		let mut buf = vec![0u8; len as usize];
+		let n = unsafe {
+			velnosub_abi_video_frame(h, idx, buf.as_mut_ptr(), buf.len() as c_int)
+		};
+		if n < 0 {
+			return Err(last_error());
+		}
+		if (n as usize) <= buf.len() {
+			buf.truncate(n as usize);
+			return Ok(buf);
+		}
+		if n > len {
+			len = n;
+		}
+	}
+}
+
+/// BGRA bayt düzenini egui ColorImage'e bük (R/B takası, alfa doygun).
+fn bgra_to_image(d: &[u8], w: usize, hgt: usize) -> egui::ColorImage {
+	let mut pixels = Vec::with_capacity(w * hgt);
+	for p in d.chunks_exact(4) {
+		pixels.push(egui::Color32::from_rgba_unmultiplied(p[2], p[1], p[0], 255));
+	}
+	egui::ColorImage {
+		size: [w, hgt],
+		pixels,
+		source_size: egui::Vec2::new(w as f32, hgt as f32),
+	}
+}
+
+impl VideoSection {
+	/// Karesi doku olarak ekle (her kare değişiminde çağırır).
+	fn cizim_cek(&mut self, ctx: &egui::Context) -> Result<(), String> {
+		let d = video_kare(self.handle, self.frame)?;
+		if d.len() != self.w * self.hgt * 4 {
+			return Err(format!(
+				"kare uzunluğu uymadı: beklenen {}, gelen {}",
+				self.w * self.hgt * 4,
+				d.len()
+			));
+		}
+		let img = bgra_to_image(&d, self.w, self.hgt);
+		let ad = format!("vvideo_f{}_{}", self.frame, self.kareler);
+		self.dok = Some(ctx.load_texture(&ad, img, egui::TextureOptions::default()));
+		Ok(())
+	}
+}
+
 struct Row {
 	times: String,
 	text: String,
+}
+
+/// P4.3: açılı video kolu ve önizleme dokusu durumu.
+pub struct VideoSection {
+	handle: c_int,
+	w: usize,
+	hgt: usize,
+	kareler: i32,
+	frame: i32,
+	info: String,
+	dok: Option<egui::TextureHandle>,
 }
 
 /// P4.2 uygulama durumu: tek açık tutamaç + satır önbelleği.
@@ -101,6 +191,7 @@ pub struct GridApp {
 	path: Option<String>,
 	save_path: Option<String>,
 	note: String,
+	video: Option<VideoSection>,
 }
 
 impl GridApp {
@@ -120,10 +211,16 @@ impl GridApp {
 			path: None,
 			save_path: save,
 			note: "açık dosya yok".into(),
+			video: None,
 		};
 		if let Some(p) = open {
 			if let Err(e) = app.load(&p) {
 				app.note = format!("açılamadı: {e}");
+			}
+		}
+		if let Some(v) = std::env::var("VELNOSUB_VIDEO").ok() {
+			if let Err(e) = app.load_video(&v) {
+				app.note = format!("video açılamadı: {e}");
 			}
 		}
 		app
@@ -181,10 +278,88 @@ impl GridApp {
 			Err(e) => format!("kayıt hatası: {e}"),
 		};
 	}
+
+	/// P4.3: video kolu aç; bir kare ertelendi (ui'da doku kurulumu).
+	fn load_video(&mut self, ender: &str) -> Result<(), String> {
+		if let Some(v) = self.video.take() {
+			unsafe { velnosub_abi_video_close(v.handle) };
+		}
+		let yolu = CString::new(ender.to_string()).map_err(|e| e.to_string())?;
+		let h = unsafe { velnosub_abi_video_open(yolu.as_ptr()) };
+		if h < 0 {
+			return Err(last_error());
+		}
+		let (w, hgt, fps, kareler) = video_geom(h)?;
+		let mut obuf = vec![0u8; 160];
+		let n = unsafe {
+			velnosub_abi_video_info(h, obuf.as_mut_ptr() as *mut c_char, obuf.len() as c_int)
+		};
+		let bilgi = if n < 0 {
+			last_error()
+		} else {
+			unsafe {
+				CStr::from_ptr(obuf.as_ptr() as *const c_char)
+					.to_string_lossy()
+					.into_owned()
+			}
+		};
+		self.video = Some(VideoSection {
+			handle: h,
+			w,
+			hgt,
+			kareler,
+			frame: 0,
+			info: format!("fps:{fps:.3} {bilgi}"),
+			dok: None,
+		});
+		self.note = format!("video açıldı: {w}x{hgt}, {kareler} kare");
+		Ok(())
+	}
 }
 
 impl eframe::App for GridApp {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+		// P4.3: video şeridi — üst panel (sanallaştırılmış grid'in üstünde)
+		let mut v_hata: Option<String> = None;
+		if let Some(v) = self.video.as_mut() {
+			Panel::top("vpanel").show(ui, |ui| {
+				if v.dok.is_none() {
+					if let Err(e) = v.cizim_cek(ui.ctx()) {
+						v_hata = Some(e);
+					}
+				}
+				ui.horizontal(|ui| {
+					if ui.button("◀ geri").clicked() && v.frame > 0 {
+						v.frame -= 1;
+						if let Err(e) = v.cizim_cek(ui.ctx()) {
+							v_hata = Some(e);
+						}
+					}
+					if ui.button("ileri ▶").clicked() && v.frame + 1 < v.kareler {
+						v.frame += 1;
+						if let Err(e) = v.cizim_cek(ui.ctx()) {
+							v_hata = Some(e);
+						}
+					}
+					ui.label(RichText::new(format!(
+						"kare {}/{}",
+						v.frame + 1, v.kareler
+					)).weak());
+				});
+				if let Some(sac) = &v.dok {
+					ui.image((
+						sac.id(),
+						egui::vec2(v.w as f32, v.hgt as f32),
+					));
+				}
+				ui.label(RichText::new(&v.info).weak());
+				ui.add_space(4.0);
+			});
+		}
+		if let Some(e) = v_hata {
+			self.note = format!("video doku hatası: {e}");
+		}
+
 		Panel::bottom("velnosub_durum").show(ui, |ui| {
 			ui.add_space(6.0);
 			ui.horizontal(|ui| {
