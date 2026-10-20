@@ -88,3 +88,16 @@ if play_oboe_dep.found()
         dependencies: [play_oboe_dep],
         install: true)
 endif
+
+# P3.1 destek: test-varlık üreticisi (sentetik mp4, mpeg4 kodlayıcı).
+# Statik FFmpeg'in kendi kodlayıcısını kullanır; masa kolunda libavformat
+# yoksa hedef bilinçli atlanır.
+mkmpg_avf = dependency('libavformat', required: false)
+mkmpg_avc = dependency('libavcodec', required: false)
+if mkmpg_avf.found() and mkmpg_avc.found()
+    velnosub_mkmpeg = executable('velnosub-mkmpeg', 'velnosub-mkmpeg.cpp',
+        include_directories: [deps_inc, version_inc],
+        dependencies: [mkmpg_avf, mkmpg_avc,
+                       dependency('libavutil', required: true)],
+        install: true)
+endif
