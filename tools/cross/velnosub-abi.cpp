@@ -97,6 +97,12 @@ struct AudioPlayer final : oboe::AudioStreamDataCallback, oboe::AudioStreamError
 	int64_t kalan = 0;            // kalan kare
 	std::atomic<int> durum{0};    // 0 oynatılıyor, 1 boşalma, 2 hata
 	std::atomic<bool> kes{false};
+	std::shared_ptr<oboe::AudioStream> akis; // kurulum ipliği doldurur
+
+	~AudioPlayer() { // emniyet: stop geçmediyse akışı ve dosyayı kapat
+		if (akis) { akis->stop(); akis->close(); }
+		if (f) std::fclose(f);
+	}
 
 	oboe::DataCallbackResult onAudioReady(oboe::AudioStream *akis, void *veri, int32_t kare) override {
 		(void)akis;
@@ -471,11 +477,86 @@ int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
 }
 
 #ifdef VELNOSUB_ABI_OBOE
-int velnosub_abi_audio_stop(int h); // aşağıda; play önce keser
-
 std::map<int, std::shared_ptr<AudioPlayer>> g_oynatici;
-std::map<int, std::weak_ptr<oboe::AudioStream>> g_akis;
 std::mutex g_oynatma_kilit;
+
+// kilit ALINMIŞken çağrılır: akışı kapat, oynatıcıyı haritadan düş
+// (yıkıcı, hâlâ açık olan dosyayı kapatır)
+static void ses_kes_kilitli(int h) {
+	auto it = g_oynatici.find(h);
+	if (it == g_oynatici.end()) return;
+	auto pb = it->second;
+	pb->kes.store(true);
+	if (pb->akis) {
+		pb->akis->stop();
+		pb->akis->close();
+		pb->akis.reset();
+	}
+	g_oynatici.erase(it);
+}
+
+// kurulum ipliği: dosya aç → konumlan → akış aç → başlat. Kısıtlı ortamlarda
+// (proot binder) openStream süresiz bloke olabilir — çağıran iplik asla
+// beklemez; kilidi yalnızca kısa kritik kesitte tutar.
+static void ses_kurulum_ipligi(int h, std::shared_ptr<AudioPlayer> pbc) {
+	pbc->f = std::fopen(pbc->yol.c_str(), "rb");
+	if (!pbc->f) { pbc->kurulma.store(2); pbc->durum.store(2); return; }
+	if (std::fseek(pbc->f, (long)(pbc->d0 * 2LL * pbc->ch_c), SEEK_SET) != 0) {
+		std::fclose(pbc->f);
+		pbc->f = nullptr;
+		pbc->kurulma.store(2);
+		pbc->durum.store(2);
+		return;
+	}
+	pbc->kalan = pbc->adet;
+
+	oboe::AudioStreamBuilder kurgu;
+	kurgu.setDirection(oboe::Direction::Output)
+	    ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
+	    ->setSharingMode(oboe::SharingMode::Shared)
+	    ->setFormat(oboe::AudioFormat::I16)
+	    ->setChannelCount(pbc->ch_c)
+	    ->setSampleRate(pbc->rate)
+	    ->setDataCallback(pbc.get())
+	    ->setErrorCallback(pbc.get());
+	std::shared_ptr<oboe::AudioStream> akis;
+	oboe::Result rc = kurgu.openStream(akis);
+	if (rc != oboe::Result::OK) {
+		std::fclose(pbc->f);
+		pbc->f = nullptr;
+		pbc->kurulma.store(2);
+		pbc->durum.store(2);
+		return;
+	}
+	if (pbc->kes.load()) {
+		akis->stop();
+		akis->close();
+		std::fclose(pbc->f);
+		pbc->f = nullptr;
+		return;
+	}
+	rc = akis->start();
+	if (rc != oboe::Result::OK) {
+		akis->close();
+		std::fclose(pbc->f);
+		pbc->f = nullptr;
+		pbc->kurulma.store(2);
+		pbc->durum.store(2);
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
+		if (pbc->kes.load()) { // stop tam buraya denk geldiyse
+			akis->stop();
+			akis->close();
+			std::fclose(pbc->f);
+			pbc->f = nullptr;
+			return;
+		}
+		pbc->akis = akis;
+		pbc->kurulma.store(0);
+	}
+}
 
 int velnosub_abi_audio_play(int h, int64_t d0, int64_t adet) {
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
@@ -484,72 +565,32 @@ int velnosub_abi_audio_play(int h, int64_t d0, int64_t adet) {
 		set_err("oynatma aralığı dışında");
 		return -1;
 	}
-	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
-	velnosub_abi_audio_stop(h); // varsa eski akışı kes
 	if (a.yol.empty()) { set_err("ses yolu boş (kolu kapat-aç)"); return -1; }
-	std::FILE *f = std::fopen(a.yol.c_str(), "rb");
-	if (!f) { set_err("oynatma için dosya yeniden açılamadı: " + a.yol); return -1; }
-	if (std::fseek(f, (long)(d0 * 2LL * a.ch), SEEK_SET) != 0) {
-		std::fclose(f);
-		set_err("oynatma konumuna geçilemedi");
-		return -1;
-	}
 	auto pbc = std::make_shared<AudioPlayer>();
-	pbc->f = f;
+	pbc->yol = a.yol;
+	pbc->rate = a.rate;
 	pbc->ch_c = a.ch;
-	pbc->kalan = adet;
-
-	oboe::AudioStreamBuilder kurgu;
-	kurgu.setDirection(oboe::Direction::Output)
-	    ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
-	    ->setSharingMode(oboe::SharingMode::Shared)
-	    ->setFormat(oboe::AudioFormat::I16)
-	    ->setChannelCount(a.ch)
-	    ->setSampleRate(a.rate)
-	    ->setDataCallback(pbc.get())
-	    ->setErrorCallback(pbc.get());
-	std::shared_ptr<oboe::AudioStream> akis;
-	oboe::Result rc = kurgu.openStream(akis);
-	if (rc != oboe::Result::OK) {
-		std::fclose(f);
-		set_err("oboe akış açımı: " + std::string(oboe::convertToText(rc)));
-		return -1;
-	}
-	rc = akis->start();
-	if (rc != oboe::Result::OK) {
-		akis->close();
-		std::fclose(f);
-		set_err("oboe başlatma: " + std::string(oboe::convertToText(rc)));
-		return -1;
-	}
+	pbc->d0 = d0;
+	pbc->adet = adet;
+	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
+	ses_kes_kilitli(h); // varsa eski akışı kes
 	g_oynatici[h] = pbc;
-	g_akis[h] = akis;
-	return 0;
+	std::thread(ses_kurulum_ipligi, h, pbc).detach();
+	return 0; // hemen döner; durum sorgusuyla izlenir
 }
 
-// durumu: -1 oynatma yok, 0 oynatılıyor, 1 boşalma, 2 hata
+// durum: -1 oynatma yok, 4 hazırlanıyor, 0 oynatılıyor, 1 boşalma, 2 hata
 int velnosub_abi_audio_state(int h) {
+	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
 	auto it = g_oynatici.find(h);
 	if (it == g_oynatici.end()) return -1;
+	if (it->second->kurulma.load() == -1) return 4;
 	return it->second->durum.load();
 }
 
 int velnosub_abi_audio_stop(int h) {
 	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
-	auto it = g_oynatici.find(h);
-	if (it == g_oynatici.end()) return 0;
-	auto pb = it->second;
-	pb->kes.store(true);
-	auto ak = g_akis.find(h);
-	if (ak != g_akis.end()) {
-		if (auto st = ak->second.lock()) {
-			st->stop();
-			st->close();
-		}
-		g_akis.erase(ak);
-	}
-	if (pb->f) { std::fclose(pb->f); pb->f = nullptr; }
-	g_oynatici.erase(h);
+	ses_kes_kilitli(h);
 	return 0;
 }
 #else

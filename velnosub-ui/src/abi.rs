@@ -40,6 +40,21 @@ extern "C" {
 		h: c_int, kare: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
 	fn velnosub_abi_video_close(h: c_int);
+	fn velnosub_abi_audio_open(
+		path: *const c_char, rate: c_int, ch: c_int,
+	) -> c_int;
+	fn velnosub_abi_audio_len64(h: c_int) -> i64;
+	fn velnosub_abi_audio_info(
+		h: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_audio_peaks(
+		h: c_int, d0: i64, adet: i64, kovalar: c_int,
+		minv: *mut i16, maxv: *mut i16,
+	) -> c_int;
+	fn velnosub_abi_audio_play(h: c_int, d0: i64, adet: i64) -> c_int;
+	fn velnosub_abi_audio_state(h: c_int) -> c_int;
+	fn velnosub_abi_audio_stop(h: c_int) -> c_int;
+	fn velnosub_abi_audio_close(h: c_int);
 }
 
 static INIT_OK: OnceLock<bool> = OnceLock::new();
@@ -184,6 +199,32 @@ pub struct VideoSection {
 	dok: Option<egui::TextureHandle>,
 }
 
+/// P4.4: açılı ses kolu + dalga formu peak kovaları (sabit 512 kova).
+pub struct AudioSection {
+	handle: c_int,
+	rate: c_int,
+	ch: c_int,
+	toplam: i64,
+	minv: Vec<i16>,
+	maxv: Vec<i16>,
+	info: String,
+	ses_durum: String,
+	oynatma_denendi: bool,
+}
+
+fn audio_peaks_cek(h: c_int, toplam: i64) -> Result<(Vec<i16>, Vec<i16>), String> {
+	let k: c_int = 512;
+	let mut minv = vec![0i16; k as usize];
+	let mut maxv = vec![0i16; k as usize];
+	let rc = unsafe {
+		velnosub_abi_audio_peaks(h, 0, toplam, k, minv.as_mut_ptr(), maxv.as_mut_ptr())
+	};
+	if rc != 0 {
+		return Err(last_error());
+	}
+	Ok((minv, maxv))
+}
+
 /// P4.2 uygulama durumu: tek açık tutamaç + satır önbelleği.
 pub struct GridApp {
 	handle: Option<c_int>,
@@ -192,6 +233,7 @@ pub struct GridApp {
 	save_path: Option<String>,
 	note: String,
 	video: Option<VideoSection>,
+	audio: Option<AudioSection>,
 }
 
 impl GridApp {
@@ -212,6 +254,7 @@ impl GridApp {
 			save_path: save,
 			note: "açık dosya yok".into(),
 			video: None,
+			audio: None,
 		};
 		if let Some(p) = open {
 			if let Err(e) = app.load(&p) {
@@ -221,6 +264,11 @@ impl GridApp {
 		if let Some(v) = std::env::var("VELNOSUB_VIDEO").ok() {
 			if let Err(e) = app.load_video(&v) {
 				app.note = format!("video açılamadı: {e}");
+			}
+		}
+		if let Some(s) = std::env::var("VELNOSUB_AUDIO").ok() {
+			if let Err(e) = app.load_audio(&s) {
+				app.note = format!("ses açılamadı: {e}");
 			}
 		}
 		app
@@ -315,6 +363,49 @@ impl GridApp {
 		self.note = format!("video açıldı: {w}x{hgt}, {kareler} kare");
 		Ok(())
 	}
+
+	/// P4.4: ses kolu aç; tüm aralığın peak kovalarını tek geçişte çek.
+	fn load_audio(&mut self, ender: &str) -> Result<(), String> {
+		if let Some(a) = self.audio.take() {
+			unsafe { velnosub_abi_audio_close(a.handle) };
+		}
+		let yolu = CString::new(ender.to_string()).map_err(|e| e.to_string())?;
+		let h = unsafe { velnosub_abi_audio_open(yolu.as_ptr(), 48000, 2) };
+		if h < 0 {
+			return Err(last_error());
+		}
+		let mut obuf = vec![0u8; 160];
+		let n = unsafe {
+			velnosub_abi_audio_info(h, obuf.as_mut_ptr() as *mut c_char, obuf.len() as c_int)
+		};
+		let bilgi = if n < 0 {
+			last_error()
+		} else {
+			unsafe {
+				CStr::from_ptr(obuf.as_ptr() as *const c_char)
+					.to_string_lossy()
+					.into_owned()
+			}
+		};
+		let toplam = unsafe { velnosub_abi_audio_len64(h) };
+		if toplam <= 0 {
+			return Err(last_error());
+		}
+		let (minv, maxv) = audio_peaks_cek(h, toplam)?;
+		self.audio = Some(AudioSection {
+			handle: h,
+			rate: 48000,
+			ch: 2,
+			toplam,
+			minv,
+			maxv,
+			info: bilgi,
+			ses_durum: "—".into(),
+			oynatma_denendi: false,
+		});
+		self.note = format!("ses açıldı: {toplam} örnek");
+		Ok(())
+	}
 }
 
 impl eframe::App for GridApp {
@@ -358,6 +449,62 @@ impl eframe::App for GridApp {
 		}
 		if let Some(e) = v_hata {
 			self.note = format!("video doku hatası: {e}");
+		}
+
+		// P4.4: ses şeridi — oynatma tuşları + dalga formu (peak kovalarından)
+		if let Some(a) = self.audio.as_mut() {
+			Panel::top("wpanel").show(ui, |ui| {
+				ui.add_space(4.0);
+				ui.horizontal(|ui| {
+					if ui.button("▶ oynat").clicked() {
+						let adet = a.toplam.min((a.rate as i64) * 5);
+						let rc = unsafe { velnosub_abi_audio_play(a.handle, 0, adet) };
+						a.oynatma_denendi = true;
+						a.ses_durum = if rc == 0 {
+							"oynatma istendi".into()
+						} else {
+							format!("oynatma olmadı: {}", last_error())
+						};
+					}
+					if ui.button("⏹ kes").clicked() {
+						unsafe { velnosub_abi_audio_stop(a.handle) };
+						a.ses_durum = "kesildi".into();
+					}
+					ui.label(RichText::new(&a.info).weak());
+				});
+				if a.oynatma_denendi {
+					let d = unsafe { velnosub_abi_audio_state(a.handle) };
+					let ad = match d {
+						-1 => "oynatma yok",
+						4 => "hazırlanıyor",
+						0 => "oynatılıyor",
+						1 => "boşalma",
+						2 => "hata",
+						_ => "bilinmeyen",
+					};
+					a.ses_durum = format!("durum {d} — {ad}");
+				}
+				ui.label(RichText::new(&a.ses_durum).weak());
+
+				// dalga formu: 512 kova → duvara dik çubuklar (min..max)
+				let genislik = ui.available_width();
+				let yuk = 72.0f32;
+				let (dik, _) =
+					ui.allocate_exact_size(egui::vec2(genislik, yuk), egui::Sense::hover());
+				let boy = a.minv.len().max(1) as f32;
+				let orta = dik.center().y;
+				let yarim = yuk * 0.5 - 2.0;
+				let adim = dik.width() / boy;
+				let kalem = egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 180, 250));
+				for k in 0..a.minv.len() {
+					let x = dik.left() + adim * (k as f32 + 0.5);
+					let ymin = orta - yarim * (a.maxv[k] as f32 / 32768.0);
+					let ymax = orta - yarim * (a.minv[k] as f32 / 32768.0);
+					ui.painter()
+						.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
+				}
+				ui.add_space(4.0);
+			});
 		}
 
 		Panel::bottom("velnosub_durum").show(ui, |ui| {

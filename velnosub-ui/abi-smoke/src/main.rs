@@ -387,15 +387,17 @@ fn main() -> ExitCode {
 			if oynat != 0 {
 				println!("[AVE] oynatma bu kolda yok: {}", last_error());
 			} else {
+				// hazırlanıyor (4) ve oynatılıyor (0) üzerinden geç; boşalma (1)
+				// veya hata (2) ulaştığında ya da ~1,5 sn geçince dur
 				let mut son_durum = -1;
-				for _ in 0..12 {
+				for _ in 0..15 {
 					std::thread::sleep(std::time::Duration::from_millis(100));
 					son_durum = unsafe { velnosub_abi_audio_state(ah) };
-					if son_durum != 0 {
+					if son_durum == 1 || son_durum == 2 {
 						break;
 					}
 				}
-				println!("[AW3] oynatma durumu: {son_durum} (0 oynatılıyor, 1 boşalma, 2 hata)");
+				println!("[AW3] oynatma durumu: {son_durum} (-1 yok, 4 hazırlanıyor, 0 oynatılıyor, 1 boşalma, 2 hata)");
 				unsafe { velnosub_abi_audio_stop(ah) };
 				println!("[AW4] oynatma kesildi");
 			}
