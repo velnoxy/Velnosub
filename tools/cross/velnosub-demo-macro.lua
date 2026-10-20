@@ -31,14 +31,15 @@ local function form_dene(subs, sel, aktif)
 	aegisub.log(("form döndü: düğme %s, metin %s, sayı %s, buyuk %s")
 	             :format(tostring(dugme), tostring(vals.metin),
 	                     tostring(vals.sayi), tostring(vals.buyuk)))
-	local l = subs[1]
+	local i = aktif or sel[1]
+	local l = subs[i]
 	if vals.buyuk then
 		l.text = tostring(vals.metin):upper()
 	else
 		l.text = tostring(vals.metin)
 	end
 	l.text = l.text .. " @" .. tostring(vals.sayi)
-	subs[1] = l
+	subs[i] = l
 	aegisub.debug.out("form hattı: " .. l.text)
 end
 
@@ -91,3 +92,35 @@ local function olc_dene(subs, sel, aktif)
 	             :format(tostring(ok), tostring(cevap)))
 end
 aegisub.register_macro("Ölç dene", "P5.2 dilim C ölçüm dumanı", olc_dene)
+
+-- P5 dilim V: sanal satır uzayı dumanı — ipairs(subs) info+stil+olay
+-- sırasını dolaşır; #subs/n tam satır; aralık kırması upstream mesajıyla
+local function dolas_dene(subs, sel, aktif)
+	aegisub.log(("dolaş: toplam=%d, sel=%d"):format(#subs, sel[1] or -1))
+	local sayi = 0
+	for i, l in ipairs(subs) do
+		sayi = sayi + 1
+		if sayi > 12 then break end
+		if l.class == "info" then
+			aegisub.log(("dolaş %d: info %s = %s")
+			             :format(i, l.key, l.value:sub(1, 30)))
+		elseif l.class == "style" then
+			aegisub.log(("dolaş %d: style %s (fontname=%s, yazı=%d, align=%d, marj=%d,%d,%d)")
+			             :format(i, l.name, l.fontname, l.fontsize,
+			                     l.align, l.margin_l, l.margin_r, l.margin_t))
+		else
+			aegisub.log(("dolaş %d: %s (%s) %s")
+			             :format(i, l.class, tostring(l.comment), l.text:sub(1, 34)))
+		end
+	end
+	aegisub.log(("dolaş: ilk 12 döndü (%d satırda kırıldı)")
+	             :format(sayi))
+	local son = subs[subs.n]
+	aegisub.log(("dolaş son satır: %s — %s")
+	             :format(son.class, son.text and son.text:sub(1, 24) or son.name))
+	local ok1 = pcall(function() return subs[0] end)
+	local ok2 = pcall(function() return subs[#subs + 1] end)
+	aegisub.log(("dolaş aralık kırmıları: alt=%s, üst=%s")
+	             :format(tostring(not ok1), tostring(not ok2)))
+end
+aegisub.register_macro("Dolaş dene", "sanal satır uzayı dumanı (dilim V)", dolas_dene)

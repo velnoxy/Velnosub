@@ -14,6 +14,7 @@ int velnosub_abi_init(const char *config_json_path);
 int velnosub_abi_open(const char *in_path);
 int velnosub_abi_event_count(int h);
 int velnosub_abi_style_count(int h);
+int velnosub_abi_style_of(int h, int idx, char *buf, int buflen);
 int velnosub_abi_line_text(int h, int idx, char *buf, int buflen);
 int velnosub_abi_line_times(int h, int idx, char *buf, int buflen);
 int velnosub_abi_line_meta(int h, int idx, char *buf, int buflen);
@@ -136,22 +137,161 @@ local function satir_oku(h, i0)
 	}
 end
 
-local function subs_nesne(h)
-	local adet = abi.velnosub_abi_event_count(h)
-	if adet < 0 then error(hatasi("event_count"), 3) end
+-- ---- P5 dilim V: upstream satır uzayı ---------------------------------
+-- Upstream LuaAssFile lines = [Script Info] + Styles + Events sırası;
+-- Info satırları ABI'da yoktur, dosyadan AssParser::ParseScriptInfoLine
+-- kuralı bire bir taranır: ';' satırı, "Collisions:", ':' taşmayan,
+-- 19 işçi öznitelik ve "Automation Settings " öneki Info'ya DÖNÜŞMEZ;
+-- boş satır kayım değiştirmez; bölüm başlığı durumu çevirir.
+
+local function bilgi_satirlari(yol)
+	local ozl = {
+		["Automation Scripts"] = 1, ["Export Filters"] = 1,
+		["Export Encoding"] = 1, ["Last Style Storage"] = 1,
+		["Audio URI"] = 1, ["Audio File"] = 1, ["Video File"] = 1,
+		["Timecodes File"] = 1, ["Keyframes File"] = 1,
+		["Video Zoom Percent"] = 1, ["Scroll Position"] = 1,
+		["Active Line"] = 1, ["Video Position"] = 1,
+		["Video AR Mode"] = 1, ["Video AR Value"] = 1,
+		["Aegisub Video Zoom Percent"] = 1,
+		["Aegisub Scroll Position"] = 1,
+		["Aegisub Active Line"] = 1,
+		["Aegisub Video Position"] = 1,
+	}
+	local liste = {}
+	if not yol then return liste end
+	local ff = io.open(tostring(yol), "rb")
+	if not ff then return liste end
+	local durum = "info" -- upstream kurucu başlangıç durumu
+	for satir in ff:lines() do
+		satir = (satir:gsub("\r$", ""))
+		if satir == "" then
+			-- upstream data.empty(): kayım değişmez
+		elseif satir:sub(1, 1) == "[" and satir:sub(-1) == "]" then
+			durum = ((satir:lower()) == "[script info]") and "info" or "diger"
+		elseif durum == "info" then
+			if satir:sub(1, 1) ~= ";" and satir:sub(1, 11) ~= "Collisions:" then
+				local pos = satir:find(":", 1, true)
+				if pos then
+					local key = satir:sub(1, pos - 1)
+					if ozl[key] then
+						-- işçi öznitelik: Info girişine dönüşmez
+					elseif key:sub(1, 20) == "Automation Settings " then
+						-- otomasyon ayarı: Info girişine dönüşmez
+					else
+						liste[#liste + 1] = {
+							key = key,
+							value = (satir:sub(pos + 1):gsub("^%s+", "")),
+							raw = satir,
+						}
+					end
+				end
+			end
+		end
+	end
+	ff:close()
+	return liste
+end
+
+-- ---- P5 dilim V+1: ABI stil 13-kanal dizgesi → auto4 stiller tablosu
+-- Upstream auto4_lua_assfile.cpp AssEntryToLua style dalıyla aynı alan
+-- kümesi: fontname ('font' değil), renkler GetAssStyleFormatted+'&',
+-- margin_t/b aynı marj slotu, relative_to=2, class="style".
+local function stil_nesne(h, i0)
+	local dizge, e = oku(abi.velnosub_abi_style_of, h, i0)
+	if not dizge then error(e, 3) end
+	local hucre = {}
+	local bas = 1
+	while true do
+		local _, son = dizge:find("|", bas, true)
+		if not son then
+			hucre[#hucre + 1] = dizge:sub(bas)
+			break
+		end
+		hucre[#hucre + 1] = dizge:sub(bas, son - 1)
+		bas = son + 1
+	end
+	if #hucre ~= 13 then
+		error(("stil dizgesi 13 kanal değil: %d (%s)")
+		      :format(#hucre, dizge:sub(1, 40)), 3)
+	end
+	local b, it, un, st = hucre[8]:match("^(%d),(%d),(%d),(%d)$")
+	if not b then error("bayrak kanalı bozuk: " .. hucre[8], 3) end
+	local ml, mr, mv = hucre[10]:match("^(%d+),(%d+),(%d+)$")
+	if not ml then error("marj kanalı bozuk: " .. hucre[10], 3) end
+	local sx, sy, sp, ag = hucre[12]:match("^(.-),(.-),(.-),(.+)$")
+	if not sx then error("ölçek kanalı bozuk: " .. hucre[12], 3) end
+	local bs, ow, sw = hucre[13]:match("^(%d+),(.-),(.-)$")
+	if not bs then error("kenar kanalı bozuk: " .. hucre[13], 3) end
+	local on = function(v) return tonumber(v) or 0 end
+	return {
+		class = "style",
+		name = hucre[1],
+		fontname = hucre[2],
+		fontsize = on(hucre[3]),
+		color1 = hucre[4] .. "&",
+		color2 = hucre[5] .. "&",
+		color3 = hucre[6] .. "&",
+		color4 = hucre[7] .. "&",
+		bold = b == "1",
+		italic = it == "1",
+		underline = un == "1",
+		strikeout = st == "1",
+		scale_x = on(sx), scale_y = on(sy),
+		spacing = on(sp), angle = on(ag),
+		borderstyle = on(bs), outline = on(ow), shadow = on(sw),
+		align = on(hucre[9]),
+		margin_l = on(ml), margin_r = on(mr),
+		margin_t = on(mv), margin_b = on(mv),
+		encoding = on(hucre[11]),
+		relative_to = 2,
+	}
+end
+
+local function subs_nesne(h, dosya_yolu)
+	local nev = abi.velnosub_abi_event_count(h)
+	if nev < 0 then error(hatasi("event_count"), 3) end
+	local nsty = abi.velnosub_abi_style_count(h)
+	if nsty < 0 then error(hatasi("style_count"), 3) end
+	local bilgi = bilgi_satirlari(dosya_yolu)
+	local nbilgi = #bilgi
+	local ofset = nbilgi + nsty
+	local toplam = function() return ofset + nev end
+	-- sanal dizin okuma: 1..nbilgi info, +nsty stil, kalanı olay satırı
+	local satir_virtual = function(i)
+		if i <= nbilgi then
+			local b = bilgi[i]
+			return {
+				class = "info",
+				key = b.key,
+				value = b.value,
+				raw = b.raw,
+				section = "[Script Info]",
+			}
+		elseif i <= ofset then
+			return stil_nesne(h, i - nbilgi - 1)
+		end
+		return satir_oku(h, i - ofset - 1)
+	end
 	-- newproxy:userdata satır görünümü — LuaJIT'te tablo __len güvenilmez
 	-- (#subs array part'a bakar); userdata metadizisinde __len işler
 	local proxy = newproxy(true)
 	local mt = getmetatable(proxy)
 	mt.__index = function(_, i)
-		-- P5.2 devam: yöntem/özellik düz adlar (auto4 subtitle nesnesi)
+		-- P5 dilim V: dizin uzayı upstream (LuaAssFile ObjectIndexRead)
 		if type(i) == "string" then
+			if i == "n" then
+				-- upstream 'n' = lines.size() (tüm satır uzayı)
+				return toplam()
+			end
 			if i == "insert_line" then
 				return function(_, konum, satir)
-					local p0 = tam_sayi(konum)
-					if not p0 or p0 < 1 or p0 > adet + 1 then
-						error(("insert_line konum dışarıda: %s (satır %d)")
-						      :format(tostring(konum), adet), 2)
+					local v = tam_sayi(konum)
+					local o0 = v and (v - ofset) or nil
+					if not o0 or o0 < 1 or o0 > nev + 1 then
+						error(("insert_line: konum %s bilgi/stil "
+						       .. "bölgesinde veya dışarıda (olay bölgesi 1..%d)")
+						      :format(tostring(konum), nev + 1), 2)
 					end
 					if type(satir) ~= "table" or satir.text == nil then
 						error("insert_line: satır tablosu .text gerekli", 2)
@@ -164,53 +304,60 @@ local function subs_nesne(h)
 					local son = type(satir.end_time) == "number"
 						and ms_zaman(satir.end_time)
 						or tostring(satir.end_time or "")
-					if abi.velnosub_abi_line_insert(h, p0 - 1,
+					if abi.velnosub_abi_line_insert(h, o0 - 1,
 					   tostring(satir.text), bas, son,
 					   satir.style and tostring(satir.style) or "") ~= 0 then
 						error(hatasi("insert_line"), 2)
 					end
-					adet = adet + 1
+					nev = nev + 1
 				end
 			elseif i == "delete_line" then
 				return function(_, konum)
-					local p0 = tam_sayi(konum)
-					if not p0 or p0 < 1 or p0 > adet then
-						error(("delete_line konum dışarıda: %s (satır %d)")
-						      :format(tostring(konum), adet), 2)
+					local v = tam_sayi(konum)
+					local o0 = v and (v - ofset) or nil
+					if not o0 or o0 < 1 or o0 > nev then
+						error(("delete_line: konum %s bilgi/stil "
+						       .. "bölgesinde veya dışarıda (olay bölgesi 1..%d)")
+						      :format(tostring(konum), nev), 2)
 					end
-					if abi.velnosub_abi_line_delete(h, p0 - 1) ~= 0 then
+					if abi.velnosub_abi_line_delete(h, o0 - 1) ~= 0 then
 						error(hatasi("delete_line"), 2)
 					end
-					adet = adet - 1
+					nev = nev - 1
 				end
 			elseif i == "n_lines" then
-				return adet
+				return nev
 			end
 			return nil
 		end
 		local i0 = tam_sayi(i)
-		if not i0 or i0 < 1 or i0 > adet then
-			error(("satır aralık dışı: %s (satır %d)"):format(tostring(i), adet), 2)
+		if not i0 or i0 < 1 or i0 > toplam() then
+			-- upstream CheckBounds mesajı bire bir
+			error("Requested out-of-range line from subtitle file: "
+			      .. tostring(i), 2)
 		end
-		return satir_oku(h, i0 - 1)
+		return satir_virtual(i0)
 	end
 	mt.__newindex = function(_, i, satir)
 		local i0 = tam_sayi(i)
-		if not i0 or i0 < 1 or i0 > adet then
-			error(("satır aralık dışı: %s (satır %d)"):format(tostring(i), adet), 2)
+		if not i0 or i0 <= ofset or i0 > toplam() then
+			-- bilgi/stil bölgesi ABI yazımına kapalı (dilim kapsamı dışı)
+			error("Requested out-of-range line from subtitle file: "
+			      .. tostring(i), 2)
 		end
+		local j0 = i0 - ofset
 		if type(satir) ~= "table" then
 			error("satır ataması tablo olmalı (" .. type(satir) .. ")", 2)
 		end
 		-- P5.2: alan yazımı — text flyweight vekiliyle, zamanlar ms
 		-- tamsayısıyla; verilmeyen alanlar mevcut değerinde kalır
 		if satir.text ~= nil then
-			if abi.velnosub_abi_edit_line(h, i0 - 1, tostring(satir.text)) ~= 0 then
+			if abi.velnosub_abi_edit_line(h, j0 - 1, tostring(satir.text)) ~= 0 then
 				error(hatasi("edit_line"), 2)
 			end
 		end
 		if satir.start_time ~= nil or satir.end_time ~= nil then
-			local mevcut = oku(abi.velnosub_abi_line_times, h, i0 - 1)
+			local mevcut = oku(abi.velnosub_abi_line_times, h, j0 - 1)
 			if not mevcut then error(hatasi("line_times"), 2) end
 			local zb, zs = mevcut:match("^(.*) / (.*)$")
 			local ms_bas = zaman_ms(zb)
@@ -240,15 +387,25 @@ local function subs_nesne(h)
 			elseif satir.end_time ~= nil then
 				error("end_time tip: ms sayısı veya ASS dizgesi", 2)
 			end
-			if abi.velnosub_abi_line_times_set(h, i0 - 1, ms_bas, ms_son) ~= 0 then
+			if abi.velnosub_abi_line_times_set(h, j0 - 1, ms_bas, ms_son) ~= 0 then
 				error(hatasi("line_times_set"), 2)
 			end
 		end
 	end
 	mt.__len = function()
-		return adet
+		return toplam()
 	end
-	return proxy
+	-- P5 dilim V: ObjectIPairs karşılığı (upstream auto4 - 5.2 uyum
+	-- LuaJIT'te __ipairs userdata'da da işler)
+	mt.__ipairs = function()
+		local i = 0
+		return function()
+			if i >= toplam() then return nil end
+			i = i + 1
+			return i, satir_virtual(i)
+		end
+	end
+	return proxy, ofset, nev
 end
 
 -- ---- aegisub.dialog.display: dialog tanım tablosu → ABI mini DSL ------
@@ -425,14 +582,20 @@ function aegisub.__pump()
 	acik_dosya_yolu = p.ass
 	print(("[AUS1] dosya açıldı: %s (satır %d, seçim %s, makro %s)")
 	      :format(p.ass, adet, tostring(#p.sel or 0), tostring(p.makro)))
-	local subs = subs_nesne(h)
+	local subs, s_ofset = subs_nesne(h, p.ass)
 	cevap_vals = p.val
 	cevap_btn = p.btn
 	if p.makro then
 		local m = makrolar[p.makro]
 		assert(m, "makro kayıtlı değil: " .. tostring(p.makro))
-		local sel = #p.sel > 0 and p.sel or { 1 }
-		local okk, err = pcall(m.isleme, subs, sel, sel[1] or 1)
+		-- P5 dilim V: seçim upstream selected_rows ile tam-uzay dizine
+		-- çevrilir (Info+Stiller ofseti eklenir) — makrolar subs[azenir]
+		local sel = {}
+		for _, d in ipairs(#p.sel > 0 and p.sel or { 1 }) do
+			sel[#sel + 1] = (tam_sayi(d) or 0) + s_ofset
+		end
+		if #sel == 0 then sel = { s_ofset + 1 } end
+		local okk, err = pcall(m.isleme, subs, sel, sel[1] or s_ofset + 1)
 		if not okk then
 			abi.velnosub_abi_close(h)
 			error("makro hatası: " .. tostring(err), 0)
