@@ -47,3 +47,6 @@ subprojects/hunspell-*
 subprojects/uchardet-*
 subprojects/vapoursynth
 subprojects/xxHash-*
+
+# Rust derleme kırıntıları
+velnosub-ui/target/
