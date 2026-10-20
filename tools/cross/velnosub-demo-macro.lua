@@ -44,3 +44,24 @@ end
 
 aegisub.register_macro("Ana harf", "seçili satır metnini büyük harfe çevirir", ana_harf)
 aegisub.register_macro("Form dene", "renk stişi için örnek: form + satır yazımı", form_dene)
+
+-- P5.2 devam: insert_line/delete_line yöntemleri — seçili satırın ÖNÜNE
+-- kopya ekleyip ("önce: " öneki) asıl satırı siliyor (net: önekleme)
+local function ekle_sil(subs, sel, aktif)
+	local i = sel[1] or 1
+	local l = subs[i]
+	aegisub.log(("ekle sil: %d. satır öncesi metin özeneği %s")
+	             :format(i, l.text:sub(1, 26)))
+	local kopya = {
+		text = "önce: " .. l.text,
+		start_time = l.start_time,
+		end_time = l.end_time,
+		style = nil,
+	}
+	subs:insert_line(i, kopya)
+	subs:delete_line(i + 1)
+	aegisub.log(("ekle sil: %d. satır sonrası %s, satır adeti %d")
+	             :format(i, subs[i].text:sub(1, 26), subs.n_lines))
+	aegisub.debug.out("ekle sil bitti\n")
+end
+aegisub.register_macro("Ekle sil dene", "insert_line/delete_line dumanı", ekle_sil)

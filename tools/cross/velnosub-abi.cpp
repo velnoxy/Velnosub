@@ -54,6 +54,10 @@
 // doğrudan atama yığını bozuyor; ayrıntı TU'nun baş notunda)
 extern "C" int velnosub_core_edit_line_text(AssFile &file, int idx, const char *text);
 extern "C" int velnosub_core_edit_first_text(AssFile &file, const char *text);
+extern "C" int velnosub_core_insert_line(AssFile &file, int idx, const char *metin,
+                                         const char *bas_zaman, const char *son_zaman,
+                                         const char *stil);
+extern "C" int velnosub_core_delete_line(AssFile &file, int idx);
 
 namespace {
 
@@ -351,6 +355,50 @@ static std::string stil_dizgesi(AssStyle const& s) {
 	     + "," + std::to_string(s.spacing) + "," + std::to_string(s.angle)
 	     + "|" + std::to_string(s.borderstyle) + ","
 	     + std::to_string(s.outline_w) + "," + std::to_string(s.shadow_w);
+}
+
+// P5.2 devam: satır ekleme/silme — aegisub macro pump'ının insert_line/
+// delete_line çağrıları için. idx ABI kolunda 0-taban; insert düğümü idx
+// konumunun önüne koyar (idx == adet ise sona). Zamanlar ASS dizgesi.
+// (flyweight mutasyonları core.so vekilinde — bkz. velnosub_core_edit.cpp)
+int velnosub_abi_line_insert(int h, int idx, const char *metin, const char *bas,
+                             const char *son, const char *stil) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!metin) { set_err("boş metin"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx > static_cast<int>(c.file.Events.size())) {
+			set_err("ekleme indeksi dışarıda: " + std::to_string(idx));
+			return -1;
+		}
+		if (velnosub_core_insert_line(c.file, idx, metin, bas, son, stil) != 0) {
+			set_err("ekleme indeksi dışarıda: " + std::to_string(idx));
+			return -1;
+		}
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_line_delete(int h, int idx) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		if (velnosub_core_delete_line(c.file, idx) != 0) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
 }
 
 int velnosub_abi_style_of(int h, int idx, char *buf, int buflen) {

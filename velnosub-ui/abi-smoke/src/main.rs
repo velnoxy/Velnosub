@@ -7,7 +7,7 @@
 //   ["--edit-first", "metin"] [video.mp4]
 // Marker şeridi: [AB0] init, [AB1] açıldı, [AB2] sayaçlar, [AB3] düzenlendi,
 // [AB4] kaydedildi, [AB5] tur, [AB7] tekrarlı düzenleme (P5.3 regresyon),
-// [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
+// [AB8] ekleme/silme (P5.2 devam), [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
 // [ABE] hata.
 
 use std::ffi::{c_char, c_int, CStr, CString};
@@ -27,6 +27,14 @@ extern "C" {
 	fn velnosub_abi_line_times(
 		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
 	) -> c_int;
+	fn velnosub_abi_line_meta(
+		h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_line_insert(
+		h: c_int, idx: c_int, metin: *const c_char, bas: *const c_char,
+		son: *const c_char, stil: *const c_char,
+	) -> c_int;
+	fn velnosub_abi_line_delete(h: c_int, idx: c_int) -> c_int;
 	fn velnosub_abi_edit_line(h: c_int, idx: c_int, text: *const c_char) -> c_int;
 	fn velnosub_abi_style_of(h: c_int, idx: c_int, buf: *mut c_char, buflen: c_int) -> c_int;
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
@@ -424,6 +432,55 @@ fn main() -> ExitCode {
 			return cik(h);
 		}
 		println!("[AB7] tekrarlı düzenleme: 3 tur x 4 satır birebir");
+	}
+
+	// P5.2 devam: ekleme/silme şeridi — aegisub macro pump'ının
+	// insert_line/delete_line ABI'sı (flyweight mutasyonları core.so
+	// vekilinde; bu da aynı çapraz-DSO kaygısını karşılıyor)
+	{
+		let ev0 = unsafe { velnosub_abi_event_count(h) };
+		if ev0 < 1 {
+			eprintln!("[ABE] ab8 sayaç: {ev0}");
+			return cik(h);
+		}
+		let m_c = CString::new("ab8 ekleme domatesi").unwrap();
+		let b_c = CString::new("0:00:01.00").unwrap();
+		let s_c = CString::new("0:00:02.00").unwrap();
+		let st_c = CString::new("Default").unwrap();
+		let rc = unsafe {
+			velnosub_abi_line_insert(h, 1, m_c.as_ptr(), b_c.as_ptr(), s_c.as_ptr(), st_c.as_ptr())
+		};
+		if rc != 0 {
+			eprintln!("[ABE] ab8 insert: {}", last_error());
+			return cik(h);
+		}
+		let ev1 = unsafe { velnosub_abi_event_count(h) };
+		let ilk = match line_text(h, 1) {
+			Ok(t) => t,
+			Err(e) => {
+				eprintln!("[ABE] ab8 okuma: {e}");
+				return cik(h);
+			}
+		};
+		let zaman = line_times(h, 1);
+		if ev1 != ev0 + 1 || ilk != "ab8 ekleme domatesi"
+			|| zaman != "0:00:01.00 / 0:00:02.00"
+		{
+			eprintln!("[ABE] ab8 doğrulama: {ev0}→{ev1} metin '{ilk}' zaman '{zaman}'");
+			return cik(h);
+		}
+		println!("[AB8] eklendi: {}→{} satır, içerik+birebir zaman", ev0, ev1);
+		let rc = unsafe { velnosub_abi_line_delete(h, 1) };
+		if rc != 0 {
+			eprintln!("[ABE] ab8 delete: {}", last_error());
+			return cik(h);
+		}
+		let ev2 = unsafe { velnosub_abi_event_count(h) };
+		if ev2 != ev0 {
+			eprintln!("[ABE] ab8 silme doğrulama: {ev1}→{ev2}");
+			return cik(h);
+		}
+		println!("[AB8] silindi: {ev1}→{ev2} satır — şerit tamam");
 	}
 
 	// P4.5 stil şeridi: stil dizgesi + ad/boyut düzenleme + kalıcılık

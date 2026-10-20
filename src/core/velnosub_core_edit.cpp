@@ -31,3 +31,39 @@ extern "C" int velnosub_core_edit_first_text(AssFile &file, const char *text) {
 	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_TEXT);
 	return 0;
 }
+
+// P5.2 devam: satır ekleme — idx 0-taban; düğüm idx konumunun ÖNÜNE girer
+// (idx == size → sona). Zaman dizgeleri ASS biçimi ("0:00:01.00"); boşsa
+// varsayılan (Start 0, End 5000) kalır. Text/Style flyweight yazımı bu
+// TU'da (F1 kolu), yukarıdaki kök neden notuna bak.
+extern "C" int velnosub_core_insert_line(AssFile &file, int idx, const char *metin,
+                                         const char *bas_zaman, const char *son_zaman,
+                                         const char *stil) {
+	if (idx < 0 || idx > static_cast<int>(file.Events.size()))
+		return -1;
+	AssDialogue *d = new AssDialogue;
+	d->Text = metin ? std::string(metin) : std::string();
+	if (bas_zaman && *bas_zaman)
+		d->Start = agi::Time(std::string(bas_zaman));
+	if (son_zaman && *son_zaman)
+		d->End = agi::Time(std::string(son_zaman));
+	if (stil && *stil)
+		d->Style = stil;
+	auto pos = idx >= static_cast<int>(file.Events.size())
+	               ? file.Events.end()
+	               : std::next(file.Events.begin(), idx);
+	file.Events.insert(pos, *d);
+	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_ADDREM);
+	return 0;
+}
+
+extern "C" int velnosub_core_delete_line(AssFile &file, int idx) {
+	if (idx < 0 || idx >= static_cast<int>(file.Events.size()))
+		return -1;
+	auto it = std::next(file.Events.begin(), idx);
+	AssDialogue *d = &*it;
+	file.Events.erase(it); // intrusive: düğümü listeden söker; sahiplik bizde
+	delete d;
+	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_ADDREM);
+	return 0;
+}

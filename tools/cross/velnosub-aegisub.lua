@@ -17,6 +17,8 @@ int velnosub_abi_style_count(int h);
 int velnosub_abi_line_text(int h, int idx, char *buf, int buflen);
 int velnosub_abi_line_times(int h, int idx, char *buf, int buflen);
 int velnosub_abi_line_meta(int h, int idx, char *buf, int buflen);
+int velnosub_abi_line_insert(int h, int idx, const char *metin, const char *bas, const char *son, const char *stil);
+int velnosub_abi_line_delete(int h, int idx);
 int velnosub_abi_edit_line(int h, int idx, const char *text);
 int velnosub_abi_save(int h, const char *out_path);
 int velnosub_abi_close(int h);
@@ -105,6 +107,44 @@ local function subs_nesne(h)
 	local proxy = newproxy(true)
 	local mt = getmetatable(proxy)
 	mt.__index = function(_, i)
+		-- P5.2 devam: yöntem/özellik düz adlar (auto4 subtitle nesnesi)
+		if type(i) == "string" then
+			if i == "insert_line" then
+				return function(_, konum, satir)
+					local p0 = tam_sayi(konum)
+					if not p0 or p0 < 1 or p0 > adet + 1 then
+						error(("insert_line konum dışarıda: %s (satır %d)")
+						      :format(tostring(konum), adet), 2)
+					end
+					if type(satir) ~= "table" or satir.text == nil then
+						error("insert_line: satır tablosu .text gerekli", 2)
+					end
+					if abi.velnosub_abi_line_insert(h, p0 - 1,
+					   tostring(satir.text),
+					   satir.start_time and tostring(satir.start_time) or "",
+					   satir.end_time and tostring(satir.end_time) or "",
+					   satir.style and tostring(satir.style) or "") ~= 0 then
+						error(hatasi("insert_line"), 2)
+					end
+					adet = adet + 1
+				end
+			elseif i == "delete_line" then
+				return function(_, konum)
+					local p0 = tam_sayi(konum)
+					if not p0 or p0 < 1 or p0 > adet then
+						error(("delete_line konum dışarıda: %s (satır %d)")
+						      :format(tostring(konum), adet), 2)
+					end
+					if abi.velnosub_abi_line_delete(h, p0 - 1) ~= 0 then
+						error(hatasi("delete_line"), 2)
+					end
+					adet = adet - 1
+				end
+			elseif i == "n_lines" then
+				return adet
+			end
+			return nil
+		end
 		local i0 = tam_sayi(i)
 		if not i0 or i0 < 1 or i0 > adet then
 			error(("satır aralık dışı: %s (satır %d)"):format(tostring(i), adet), 2)
