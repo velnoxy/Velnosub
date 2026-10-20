@@ -56,6 +56,10 @@ CC="$CCX" ./configure \
     --enable-protocol=file \
     > "$WORK/ffmpeg-configure-$mode.log" 2>&1) || { tail -20 "$WORK/ffmpeg-configure-$mode.log"; exit 1; }
 
+(cp tools/cross/ffversion-fast.sh "$BUILD/ffbuild/version.sh" 2>/dev/null &&
+  chmod +x "$BUILD/ffbuild/version.sh" &&
+  "$BUILD/ffbuild/version.sh" "$BUILD" "$BUILD/libavutil/ffversion.h") || true
+
 (cd "$BUILD" && make -j"$JOBS" -s >/dev/null && make -s install >/dev/null)
 
 echo "ffmpeg $mode hazır: $PREFIX"
