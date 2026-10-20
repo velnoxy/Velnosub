@@ -77,3 +77,14 @@ if audio_probe_deps.found() and audio_swr_deps.found()
                        dependency('libavutil', required: true)],
         install: true)
 endif
+
+# P3.4: oboe oynatma dumanı. oboe.pc meson pkg_config_libdir hattına düşer
+# (oboe install çıktısı + elle yanına yazılan oboe.pc); masa kolunda sistem
+# oboe yok → hedef bilinçli atlanır.
+play_oboe_dep = dependency('oboe', required: false)
+if play_oboe_dep.found()
+    velnosub_audio_play = executable('velnosub-audio-play', 'velnosub-audio-play.cpp',
+        include_directories: [deps_inc, version_inc],
+        dependencies: [play_oboe_dep],
+        install: true)
+endif
