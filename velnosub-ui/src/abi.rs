@@ -57,6 +57,15 @@ extern "C" {
 		h: c_int, kare: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
 	fn velnosub_abi_video_close(h: c_int);
+	// P4.6 dilim 1 ABI: libass önizleme (C özneli; alfa deposit dilim 2)
+	fn velnosub_abi_render_open(
+		h: c_int, gen: c_int, yuk: c_int,
+		yol_font: *const c_char, aile_font: *const c_char,
+	) -> c_int;
+	fn velnosub_abi_render_frame(
+		h: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_render_close(h: c_int) -> c_int;
 	fn velnosub_abi_audio_open(
 		path: *const c_char, rate: c_int, ch: c_int,
 	) -> c_int;
@@ -209,10 +218,44 @@ pub struct VideoSection {
 	handle: c_int,
 	w: usize,
 	hgt: usize,
+	fps: f64,
 	kareler: i32,
 	frame: i32,
 	info: String,
 	dok: Option<egui::TextureHandle>,
+}
+
+/// P4.6 dilim 2: ASS önizleme kolu — altyazı kolu başına libass şartı,
+/// kare zamanı tabloyu/video fps ile çevrilir; deposit egui saydam dokusu
+/// olur (C kompoziti artık dizgi alfa tutuyor).
+pub struct Oniz {
+	h: c_int,
+	gen: usize,
+	yuk: usize,
+	acik: bool,
+	denendi: bool,
+	son_ms: i32,
+	etki: i32,
+	tampon: Vec<u8>,
+	dok: Option<egui::TextureHandle>,
+	hata: Option<String>,
+}
+
+impl Default for Oniz {
+	fn default() -> Self {
+		Self {
+			h: -1,
+			gen: 0,
+			yuk: 0,
+			acik: false,
+			denendi: false,
+			son_ms: -1,
+			etki: 0,
+			tampon: Vec::new(),
+			dok: None,
+			hata: None,
+		}
+	}
 }
 
 /// P4.4: açılı ses kolu + dalga formu peak kovaları (sabit 512 kova).
@@ -471,6 +514,8 @@ pub struct GridApp {
 	audio: Option<AudioSection>,
 	stiller: Vec<StyleRow>,
 	dialog: Option<DialogSection>,
+	// P4.6 dilim 2: ASS önizleme (video üstünde saydam dokuya binen kare)
+	oniz: Oniz,
 	// P4.6 dilim 2: arayüz düzeni — ilk girişte seçim ekranı (`Secim`),
 	// seçim ayar dosyasına yazılır (`velnosub-ui.json`; VELNOSUB_UI_JSON
 	// ortam değişkeniyle yol geçilebilir), Ayarlar bölümünden değiştirilir
@@ -624,6 +669,7 @@ impl GridApp {
 			duzen: Duzen::Secim,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
+			oniz: Oniz::default(),
 		};
 		match ayar_yukle().duzen.as_deref() {
 			Some("mobil") => app.duzen = Duzen::Mobil,
@@ -775,6 +821,7 @@ impl GridApp {
 			handle: h,
 			w,
 			hgt,
+			fps,
 			kareler,
 			frame: 0,
 			info: format!("fps:{fps:.3} {bilgi}"),
@@ -832,9 +879,100 @@ impl GridApp {
 	// ---- şerit gövdeleri: masaüstü panel ve mobil sekme AYNI gövdeyi paylaşır;
 	// `mobil` bayrağı yalnız dokunma hedefi boyunu ve satır düzenini değiştirir ----
 
+	/// P4.6 dilim 2: ASS önizleme kolu — şart ömrü altyazı kolunu izler;
+	/// kareler video fps ile ms'e çevrilir; her ms değişiminde bir render.
+	fn oniz_cek(
+		&mut self, ctx: &egui::Context, h: c_int,
+		gen: usize, yuk: usize, hiz: f64, kare: i32,
+	) {
+		if self.oniz.h != h {
+			// altyazı kolu değişti: C tarafı abi_close ile şartı zaten
+			// yumlatır; burada yalnız durum sıfır küsur
+			let mut taze = Oniz::default();
+			taze.h = h;
+			taze.gen = gen;
+			taze.yuk = yuk;
+			self.oniz = taze;
+		} else if self.oniz.gen != gen || self.oniz.yuk != yuk {
+			if self.oniz.acik {
+				unsafe { velnosub_abi_render_close(h); }
+			}
+			let mut taze = Oniz::default();
+			taze.h = h;
+			taze.gen = gen;
+			taze.yuk = yuk;
+			self.oniz = taze;
+		}
+		if !self.oniz.denendi {
+			self.oniz.denendi = true;
+			let yol = std::env::var("VELNOSUB_FONT")
+				.unwrap_or_else(|_| "./DejaVuSans.ttf".into());
+			match CString::new(yol.clone()) {
+				Ok(y_c) => {
+					let a_c = CString::new("Default").unwrap_or_default();
+					let rc = unsafe {
+						velnosub_abi_render_open(
+							h, gen as c_int, yuk as c_int,
+							y_c.as_ptr(), a_c.as_ptr(),
+						)
+					};
+					if rc == 0 {
+						self.oniz.acik = true;
+						self.oniz.tampon = vec![0u8; gen * yuk * 4];
+						self.oniz.son_ms = -1;
+						self.oniz.hata = None;
+					} else {
+						self.oniz.hata = Some(format!(
+							"önizleme açılamadı: {}",
+							last_error()
+						));
+					}
+				}
+				Err(e) => {
+					self.oniz.hata =
+						Some(format!("font yolu kodlanamadı: {e}"))
+				}
+			}
+		}
+		if !self.oniz.acik || hiz <= 0.0 || kare < 0 {
+			return;
+		}
+		let ms = (kare as f64 * 1000.0 / hiz).round() as i32;
+		if ms != self.oniz.son_ms {
+			let n = self.oniz.gen * self.oniz.yuk * 4;
+			if self.oniz.tampon.len() != n {
+				self.oniz.tampon = vec![0u8; n];
+				self.oniz.son_ms = -1;
+			}
+			let rc = unsafe {
+				velnosub_abi_render_frame(
+					h, ms,
+					self.oniz.tampon.as_mut_ptr(),
+					n as c_int,
+				)
+			};
+			if rc < 0 {
+				self.oniz.hata =
+					Some(format!("önizleme karesi: {}", last_error()));
+				return;
+			}
+			self.oniz.son_ms = ms;
+			self.oniz.etki = rc;
+			let img = egui::ColorImage::from_rgba_unmultiplied(
+				[self.oniz.gen, self.oniz.yuk],
+				&self.oniz.tampon,
+			);
+			let ad = format!("voniz_h{}_{}", h, ms);
+			self.oniz.dok = Some(
+				ctx.load_texture(&ad, img, egui::TextureOptions::default()),
+			);
+		}
+	}
+
 	fn video_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
 		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
 		let mut v_hata: Option<String> = None;
+		let mut oniz_dik: Option<egui::Rect> = None;
 		if let Some(v) = self.video.as_mut() {
 			if v.dok.is_none() {
 				if let Err(e) = v.cizim_cek(ui.ctx()) {
@@ -866,16 +1004,42 @@ impl GridApp {
 				)).weak());
 			});
 			if let Some(sac) = &v.dok {
-				ui.image((
+				let yanit = ui.image((
 					sac.id(),
 					egui::vec2(v.w as f32, v.hgt as f32),
 				));
+				oniz_dik = Some(yanit.rect);
 			}
 			ui.label(RichText::new(&v.info).weak());
 			ui.add_space(4.0);
 		}
 		if let Some(e) = v_hata {
 			self.note = format!("video doku hatası: {e}");
+		}
+		// P4.6 dilim 2 önizleme: şerit çiziminden sonra şartı hazırla ve
+		// video dikdörtgenine saydam dokuyu işle
+		let (h, k5) = (
+			self.handle,
+			self.video
+				.as_ref()
+				.map(|v| (v.w, v.hgt, v.fps, v.frame)),
+		);
+		if let (Some(alt_h), Some((gen, yuk, hiz, kare))) = (h, k5) {
+			self.oniz_cek(ui.ctx(), alt_h, gen, yuk, hiz, kare);
+			if let (Some(dik), Some(d)) = (oniz_dik, self.oniz.dok.as_ref()) {
+				if self.oniz.etki > 0 {
+					ui.put(
+						dik,
+						egui::Image::new((
+							d.id(),
+							egui::vec2(gen as f32, yuk as f32),
+						)),
+					);
+				}
+			}
+			if let Some(hata) = &self.oniz.hata {
+				ui.label(RichText::new(hata).weak());
+			}
 		}
 	}
 
