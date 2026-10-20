@@ -482,8 +482,9 @@ int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
 	return -1;
 }
 
-// ms içinde kare render; RGBA sekizli (r,g,b,255) yazım; dönüş glyph etki
-// pikseli (0 = boş kare, katı hata değil). n == gen*yuk*4 ister.
+// ms içinde kare render; RGBA sekizli (r,g,b,ALFA) yazım — dizgi alfa
+// (zemin 0); dönüş glyph etki pikseli (0 = boş kare, katı hata değil).
+// n == gen*yuk*4 ister.
 int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
 	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
 	RCtx &r = g_r.at(h);
@@ -495,6 +496,11 @@ int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
 	}
 	int change = 0;
 	ASS_Image *imgs = ::ass_render_frame(r.ren, r.track, ms, &change);
+	// P4.6 dilim 2: iç kare artık DİZGİ alfa tutar (0xAARRGGBB; zemin
+	// alfa 0) — egui video üstüne gerçek saydamlayış işlemiyle biner.
+	// over kompozit (dizgi alfa): out_a = sa + da*(255-sa)/255,
+	// out_rgb = (src*sa + dst*da*(255-sa)/255)/out_a. [AB9] glyph sayacı
+	// etki koşuluna bağlı olduğu için sayı birebir kalır.
 	std::vector<uint32_t> kare(static_cast<size_t>(r.gen) * r.yuk, 0u);
 	unsigned long glyphs = 0;
 	for (ASS_Image *img = imgs; img; img = img->next) {
@@ -515,12 +521,15 @@ int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
 				if (!etki) continue;
 				++glyphs;
 				uint32_t &dst = kare[static_cast<size_t>(py) * r.gen + px];
+				unsigned da = (dst >> 24) & 0xFF;
 				unsigned dr = (dst >> 16) & 0xFF, dg = (dst >> 8) & 0xFF,
 				         db = dst & 0xFF;
-				dr = (kr * etki + dr * (255u - etki)) / 255u;
-				dg = (kg * etki + dg * (255u - etki)) / 255u;
-				db = (kb * etki + db * (255u - etki)) / 255u;
-				dst = 0xFF000000u | (dr << 16) | (dg << 8) | db;
+				unsigned w1 = da * (255u - etki) / 255u;
+				unsigned oa = etki + w1;
+				dr = (kr * etki + dr * w1) / oa;
+				dg = (kg * etki + dg * w1) / oa;
+				db = (kb * etki + db * w1) / oa;
+				dst = (oa << 24) | (dr << 16) | (dg << 8) | db;
 			}
 		}
 	}
@@ -531,7 +540,7 @@ int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
 			satir[x * 4 + 0] = static_cast<unsigned char>((p >> 16) & 0xFF);
 			satir[x * 4 + 1] = static_cast<unsigned char>((p >> 8) & 0xFF);
 			satir[x * 4 + 2] = static_cast<unsigned char>(p & 0xFF);
-			satir[x * 4 + 3] = 255;
+			satir[x * 4 + 3] = static_cast<unsigned char>((p >> 24) & 0xFF);
 		}
 	}
 	return static_cast<int>(glyphs);
@@ -1390,6 +1399,11 @@ void velnosub_abi_audio_close(int h) {
 }
 
 void velnosub_abi_close(int h) {
+	// P4.6 dilim 2: altyazı kapanınca render şartı da kapanır (sızıntı yolu)
+	if (g_r.count(h)) {
+		r_close(g_r.at(h));
+		g_r.erase(h);
+	}
 	g_ctx.erase(h);
 }
 
