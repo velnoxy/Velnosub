@@ -1,12 +1,13 @@
-// velnosub Faz 4 (P4.1/P4.2) — C ABI şeridinin host dumanı: abi-smoke crate'i
-// eframe'siz koşar (GUI yığını sonraki dilimlere kalır); libvelnosub-abi.so
-// üzerinden çekirdeği sürer: init → open → sayaçlar → edit → save → reload.
-// P4.2 ekleri: satır metin/zaman okuma + satır düzenleme (grid hazırlığı).
+// velnosub Faz 4 (P4.1/P4.2/P4.3) — C ABI şeridinin host dumanı: abi-smoke
+// crate'i eframe'siz koşar (GUI yığını sonraki dilimlere kalır);
+// libvelnosub-abi.so üzerinden çekirdeği sürer: init → open → sayaçlar →
+// edit → save → reload → grid → video kolu (BGRA kare).
 //
 // Çalışma: LD_LIBRARY_PATH=<abi dizini> velnosub-abi-smoke in.ass out.ass \
-//   ["--edit-first", "metin"]
+//   ["--edit-first", "metin"] [video.mp4]
 // Marker şeridi: [AB0] init, [AB1] açıldı, [AB2] sayaçlar, [AB3] düzenlendi,
-// [AB4] kaydedildi, [AB5] tur, [AG0..AG5] P4.2 grid şeridi, [ABE] hata.
+// [AB4] kaydedildi, [AB5] tur, [AG0..AG5] P4.2 grid, [AV0..AV4] P4.3 video,
+// [ABE] hata.
 
 use std::ffi::{c_char, c_int, CStr, CString};
 use std::process::ExitCode;
@@ -28,6 +29,29 @@ extern "C" {
 	fn velnosub_abi_edit_line(h: c_int, idx: c_int, text: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
+	fn velnosub_abi_video_open(path: *const c_char) -> c_int;
+	fn velnosub_abi_video_info(
+		h: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_video_frame(
+		h: c_int, kare: c_int, buf: *mut u8, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_video_close(h: c_int);
+	fn velnosub_abi_audio_open(
+		path: *const c_char, rate: c_int, ch: c_int,
+	) -> c_int;
+	fn velnosub_abi_audio_len64(h: c_int) -> i64;
+	fn velnosub_abi_audio_info(
+		h: c_int, buf: *mut c_char, buflen: c_int,
+	) -> c_int;
+	fn velnosub_abi_audio_peaks(
+		h: c_int, d0: i64, adet: i64, kovalar: c_int,
+		minv: *mut i16, maxv: *mut i16,
+	) -> c_int;
+	fn velnosub_abi_audio_play(h: c_int, d0: i64, adet: i64) -> c_int;
+	fn velnosub_abi_audio_state(h: c_int) -> c_int;
+	fn velnosub_abi_audio_stop(h: c_int) -> c_int;
+	fn velnosub_abi_audio_close(h: c_int);
 }
 
 fn last_error() -> String {
@@ -81,6 +105,31 @@ fn line_times(h: c_int, idx: c_int) -> String {
 	s
 }
 
+/// P4.3: veri karesini ABI'den BGRA olarak çek (tampon-büyütmeli).
+fn video_kare(vh: c_int, idx: c_int) -> Result<Vec<u8>, String> {
+	let mut len: c_int = 1 << 20;
+	loop {
+		let mut buf = vec![0u8; len as usize];
+		let n = unsafe {
+			velnosub_abi_video_frame(
+				vh, idx,
+				buf.as_mut_ptr(),
+				buf.len() as c_int,
+			)
+		};
+		if n < 0 {
+			return Err(last_error());
+		}
+		if (n as usize) <= buf.len() {
+			buf.truncate(n as usize);
+			return Ok(buf);
+		}
+		if n > len {
+			len = n;
+		}
+	}
+}
+
 fn main() -> ExitCode {
 	let mut args = std::env::args().skip(1);
 	let Some(in_path) = args.next() else {
@@ -92,10 +141,13 @@ fn main() -> ExitCode {
 		return ExitCode::from(2);
 	};
 	let mut edit_text: Option<String> = None;
+	let mut video_path: Option<String> = None;
 	let mut a = args;
 	while let Some(arg) = a.next() {
 		if arg == "--edit-first" {
 			edit_text = Some(a.next().unwrap_or_default());
+		} else {
+			video_path = Some(arg);
 		}
 	}
 
@@ -229,6 +281,128 @@ fn main() -> ExitCode {
 		println!("[AG4] ikinci tutamaç kapandı");
 	}
 	println!("[AG5] grid şerit tamam");
+
+	// P4.3 video şeridi: video argümanı verildiyse BGRA kare hattını sürer
+	if let Some(vp) = video_path {
+		let vp_c = CString::new(vp.clone()).unwrap();
+		let vh = unsafe { velnosub_abi_video_open(vp_c.as_ptr()) };
+		if vh < 0 {
+			// host'ta FFmpeg sağlayıcı yoksa normal: sadece raporla
+			eprintln!("[AVE] video kolu: {} (host'ta masa taban video-EX yok)", last_error());
+		} else {
+			println!("[AV0] video açıldı (tutamaç: {vh})");
+
+			let mut ibuf = vec![0u8; 128];
+			let n = unsafe {
+				velnosub_abi_video_info(vh, ibuf.as_mut_ptr() as *mut c_char, ibuf.len() as c_int)
+			};
+			if n < 0 {
+				eprintln!("[ABE] video bilgi: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			let bilgi = unsafe {
+				CStr::from_ptr(ibuf.as_ptr() as *const c_char)
+					.to_string_lossy()
+					.into_owned()
+			};
+			println!("[AV1] video bilgi: {bilgi}");
+
+			let bir_kare = match video_kare(vh, 0) {
+				Ok(v) => v,
+				Err(e) => {
+					eprintln!("[ABE] kare 0: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			let iki_kare = match video_kare(vh, 1) {
+				Ok(v) => v,
+				Err(e) => {
+					eprintln!("[ABE] kare 1: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			if bir_kare == iki_kare {
+				eprintln!("[ABE] kare 0 ve 1 aynı — kodlamada hareket bekleniyordu");
+				return ExitCode::FAILURE;
+			}
+			println!("[AV2] kare 0 ({B} bayt) ve kare 1 farklı: BGRA akışı canlı", B = bir_kare.len());
+
+			let geri = match video_kare(vh, 0) {
+				Ok(v) => v,
+				Err(e) => {
+					eprintln!("[ABE] geri sarma karesi: {e}");
+					return ExitCode::FAILURE;
+				}
+			};
+			if geri != bir_kare {
+				eprintln!("[ABE] geri sarma: kare 0 tekrar çözümü eşleşmiyor");
+				return ExitCode::FAILURE;
+			}
+			println!("[AV3] geri sarma kanıtlandı (kare 0 birebir)");
+			unsafe { velnosub_abi_video_close(vh) };
+			println!("[AV4] video kol kapatıldı");
+		}
+	}
+
+	// P4.4/P3.5 ses şeridi: VELNOSUB_AUDIO (yol), VELNOSUB_RATE/CH env ile
+	if let Ok(ap) = std::env::var("VELNOSUB_AUDIO") {
+		let rate: c_int = std::env::var("VELNOSUB_RATE").ok()
+			.and_then(|v| v.parse().ok())
+			.unwrap_or(48000);
+		let ch: c_int = std::env::var("VELNOSUB_CH").ok()
+			.and_then(|v| v.parse().ok())
+			.unwrap_or(2);
+		let ap_c = CString::new(ap.clone()).unwrap();
+		let ah = unsafe { velnosub_abi_audio_open(ap_c.as_ptr(), rate, ch) };
+		if ah < 0 {
+			eprintln!("[AVE] ses kolu: {}", last_error());
+		} else {
+			println!("[AW0] ses açıldı (tutamaç: {ah}, rate {rate}, ch {ch})");
+			let toplam = unsafe { velnosub_abi_audio_len64(ah) };
+			let mut ibuf = vec![0u8; 128];
+			let n = unsafe {
+				velnosub_abi_audio_info(ah, ibuf.as_mut_ptr() as *mut c_char, ibuf.len() as c_int)
+			};
+			let bilgi = unsafe {
+				CStr::from_ptr(ibuf.as_ptr() as *const c_char)
+					.to_string_lossy()
+					.into_owned()
+			};
+			println!("[AW1] ses bilgi: {bilgi} (n {n})");
+
+			let mut minv = vec![0i16; 64];
+			let mut maxv = vec![0i16; 64];
+			let rc = unsafe {
+				velnosub_abi_audio_peaks(ah, 0, toplam, 64, minv.as_mut_ptr(), maxv.as_mut_ptr())
+			};
+			if rc != 0 {
+				eprintln!("[ABE] peaks: {}", last_error());
+				return ExitCode::FAILURE;
+			}
+			let dolu = (0..64).filter(|&k| maxv[k] != 0 || minv[k] != 0).count();
+			let sirali = (0..64).all(|k| minv[k] <= maxv[k]);
+			println!("[AW2] peak kovaları: 64 (boş olmayan {dolu}, min<=max {sirali})");
+
+			let oynat = unsafe { velnosub_abi_audio_play(ah, 0, toplam.min(rate as i64)) };
+			if oynat != 0 {
+				println!("[AVE] oynatma bu kolda yok: {}", last_error());
+			} else {
+				let mut son_durum = -1;
+				for _ in 0..12 {
+					std::thread::sleep(std::time::Duration::from_millis(100));
+					son_durum = unsafe { velnosub_abi_audio_state(ah) };
+					if son_durum != 0 {
+						break;
+					}
+				}
+				println!("[AW3] oynatma durumu: {son_durum} (0 oynatılıyor, 1 boşalma, 2 hata)");
+				unsafe { velnosub_abi_audio_stop(ah) };
+				println!("[AW4] oynatma kesildi");
+			}
+			unsafe { velnosub_abi_audio_close(ah) };
+			println!("[AW5] ses kol kapandı — şerit tamam");
+		}
+	}
 
 	unsafe { velnosub_abi_close(h) };
 	ExitCode::SUCCESS

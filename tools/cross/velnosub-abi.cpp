@@ -26,8 +26,20 @@
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
+#ifdef VELNOSUB_ABI_OBOE
+#include <oboe/Oboe.h>
+#endif
+
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <thread>
+#include <vector>
+
 #include <cstring>
 #include <cstdio>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -58,6 +70,60 @@ void set_err(std::string s) { g_last_error = std::move(s); }
 
 std::map<int, std::unique_ptr<VideoProvider>> g_video;
 int g_vnext = 0;
+
+// ---- P4.4/P3.5 omurgası: ses kanalı (s16 PCM + peak haritası + Oboe) --
+
+struct AudioWave {
+	std::string yol;                      // ham s16 PCM yolu (oynatma yeniden açar)
+	int rate = 48000, ch = 2;
+	int64_t toplam_ornek = 0;             // kare sayısı (her kare ch örnek)
+	int64_t kova_ornekleme = 256;         // harita parçacığı (kare)
+	std::vector<int16_t> kova_min, kova_max;
+};
+
+std::map<int, std::unique_ptr<AudioWave>> g_audio;
+int g_anext = 0;
+
+#ifdef VELNOSUB_ABI_OBOE
+// Oboe oynatma: dosya imlecinden akan geri çağrım; kurulum ARKA İPLİKTE —
+// kısıtlı ortamlarda (proot binder) açım engellenebilir, çağıran iplik
+// asla bloke olmamalı.
+struct AudioPlayer final : oboe::AudioStreamDataCallback, oboe::AudioStreamErrorCallback {
+	std::FILE *f = nullptr;
+	std::string yol;              // kurulum ipliği bu yoldan açar
+	int rate = 48000, ch_c = 2;
+	int64_t d0 = 0, adet = 0;     // oynatma aralığı (kare)
+	std::atomic<int> kurulma{-1}; // -1 hazırlanıyor, 0 tamam, 2 hata
+	int64_t kalan = 0;            // kalan kare
+	std::atomic<int> durum{0};    // 0 oynatılıyor, 1 boşalma, 2 hata
+	std::atomic<bool> kes{false};
+
+	oboe::DataCallbackResult onAudioReady(oboe::AudioStream *akis, void *veri, int32_t kare) override {
+		(void)akis;
+		if (kes.load() || kalan <= 0) {
+			if (durum.load() == 0)
+				durum.store(1);
+			return oboe::DataCallbackResult::Stop;
+		}
+		auto *cik = static_cast<int16_t *>(veri);
+		int32_t istenen = kare < kalan ? (int32_t)kare : (int32_t)kalan;
+		size_t okunan = std::fread(cik, sizeof(int16_t), (size_t)istenen * ch_c, f);
+		int64_t goten = (int64_t)okunan / ch_c;
+		kalan -= goten;
+		for (int64_t i = goten; i < istenen; ++i)
+			for (int c = 0; c < ch_c; ++c)
+				cik[i * ch_c + c] = 0; // boşalma duruşu
+		if (kalan <= 0 && durum.load() == 0)
+			durum.store(1);
+		return oboe::DataCallbackResult::Continue;
+	}
+	void onErrorAfterClose(oboe::AudioStream *, oboe::Result hata) override {
+		(void)hata;
+		kurulma.store(2);
+		durum.store(2);
+	}
+};
+#endif
 
 } // namespace
 
@@ -289,6 +355,217 @@ int velnosub_abi_video_geom(int h, int *out_w, int *out_h, double *out_fps, int 
 
 void velnosub_abi_video_close(int h) {
 	g_video.erase(h);
+}
+
+// ---- P4.4/P3.5: ses kolu --------------------------------------------
+
+int velnosub_abi_audio_open(const char *path, int rate, int ch) {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!path || !*path) { set_err("ses yolu boş"); return -1; }
+	if (rate <= 0 || ch <= 0 || ch > 8) { set_err("geçersiz rate/kanal"); return -1; }
+	try {
+		std::FILE *f = std::fopen(path, "rb");
+		if (!f) { set_err("ses dosyası açılamadı: " + std::string(path)); return -1; }
+		std::fseek(f, 0, SEEK_END);
+		long baytlar = std::ftell(f);
+		std::fseek(f, 0, SEEK_SET);
+		int64_t toplam = (int64_t)baytlar / (2LL * ch);
+		if (toplam <= 0) {
+			std::fclose(f);
+			set_err("ses verisi yok: " + std::string(path));
+			return -1;
+		}
+		auto aw = std::make_unique<AudioWave>();
+		aw->rate = rate;
+		aw->ch = ch;
+		aw->toplam_ornek = toplam;
+		aw->yol = path;
+		// peak haritası: 256 karelik kovalar, akış-tarayıcı
+		int64_t kovalar = (toplam + aw->kova_ornekleme - 1) / aw->kova_ornekleme;
+		aw->kova_min.assign((size_t)kovalar, 32767);
+		aw->kova_max.assign((size_t)kovalar, -32768);
+		std::vector<int16_t> cane(4096);
+		int64_t reset = 0;  // imleç (kare)
+		int64_t kova_id = 0;
+		int16_t dmin = 32767, dmax = -32768;
+		size_t okunan;
+		while ((okunan = std::fread(cane.data(), sizeof(int16_t), cane.size(), f)) > 0) {
+			size_t kare = okunan / ch;
+			for (size_t i = 0; i < kare; ++i) {
+				int16_t hedef = cane[i * ch]; // tek kanal örneklemesi
+				if (hedef < dmin) dmin = hedef;
+				if (hedef > dmax) dmax = hedef;
+				++reset;
+				if (reset == aw->kova_ornekleme * (kova_id + 1)) {
+					if (kova_id < kovalar) {
+						aw->kova_min[(size_t)kova_id] = dmin;
+						aw->kova_max[(size_t)kova_id] = dmax;
+					}
+					++kova_id;
+					dmin = 32767;
+					dmax = -32768;
+				}
+			}
+		}
+		std::fclose(f);
+		// dosya imleci kapatıldı; oynatma yol'dan yeniden açar
+		int h = ++g_anext;
+		g_audio.emplace(h, std::move(aw));
+		return h;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_audio_len(int h) {
+	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
+	int64_t t = g_audio.at(h)->toplam_ornek;
+	if (t > INT32_MAX) return INT32_MAX; // kare sayısı int/64 ayrımı için üst kırpma
+	return (int)t;
+}
+
+int64_t velnosub_abi_audio_len64(int h) {
+	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
+	return g_audio.at(h)->toplam_ornek;
+}
+
+int velnosub_abi_audio_info(int h, char *buf, int buflen) {
+	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
+	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
+	AudioWave &a = *g_audio.at(h);
+	char fmt[128];
+	std::snprintf(fmt, sizeof fmt, "s16 %dHz %dk %lld örnek (%.2f sn)",
+	              a.rate, a.ch, (long long)a.toplam_ornek,
+	              a.toplam_ornek / (double)a.rate);
+	int const n = static_cast<int>(std::strlen(fmt));
+	int const m = (buflen - 1) < n ? (buflen - 1) : n;
+	std::memcpy(buf, fmt, (size_t)m);
+	buf[m] = '\0';
+	return n;
+}
+
+int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
+	                         int16_t *minv, int16_t *maxv) {
+	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
+	if (kovalar <= 0 || !minv || !maxv) { set_err("boş kova işaretçisi"); return -1; }
+	AudioWave &a = *g_audio.at(h);
+	int64_t kovalar_map = (int64_t)a.kova_min.size();
+	for (int k = 0; k < kovalar; ++k) {
+		int64_t b0 = (d0 + k * adet / kovalar) / a.kova_ornekleme;
+		int64_t b1 = (d0 + (k + 1) * adet / kovalar) / a.kova_ornekleme;
+		if (b0 < 0) b0 = 0;
+		if (b0 >= kovalar_map) b0 = kovalar_map - 1;
+		if (b1 < b0) b1 = b0;
+		if (b1 >= kovalar_map) b1 = kovalar_map - 1;
+		int16_t dmin = 32767, dmax = -32768;
+		for (int64_t b = b0; b <= b1; ++b) {
+			if (a.kova_min[(size_t)b] < dmin) dmin = a.kova_min[(size_t)b];
+			if (a.kova_max[(size_t)b] > dmax) dmax = a.kova_max[(size_t)b];
+		}
+		if (dmax < dmin) { dmin = 0; dmax = 0; }
+		minv[k] = dmin;
+		maxv[k] = dmax;
+	}
+	return 0;
+}
+
+#ifdef VELNOSUB_ABI_OBOE
+int velnosub_abi_audio_stop(int h); // aşağıda; play önce keser
+
+std::map<int, std::shared_ptr<AudioPlayer>> g_oynatici;
+std::map<int, std::weak_ptr<oboe::AudioStream>> g_akis;
+std::mutex g_oynatma_kilit;
+
+int velnosub_abi_audio_play(int h, int64_t d0, int64_t adet) {
+	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
+	AudioWave &a = *g_audio.at(h);
+	if (d0 < 0 || adet <= 0 || d0 + adet > a.toplam_ornek) {
+		set_err("oynatma aralığı dışında");
+		return -1;
+	}
+	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
+	velnosub_abi_audio_stop(h); // varsa eski akışı kes
+	if (a.yol.empty()) { set_err("ses yolu boş (kolu kapat-aç)"); return -1; }
+	std::FILE *f = std::fopen(a.yol.c_str(), "rb");
+	if (!f) { set_err("oynatma için dosya yeniden açılamadı: " + a.yol); return -1; }
+	if (std::fseek(f, (long)(d0 * 2LL * a.ch), SEEK_SET) != 0) {
+		std::fclose(f);
+		set_err("oynatma konumuna geçilemedi");
+		return -1;
+	}
+	auto pbc = std::make_shared<AudioPlayer>();
+	pbc->f = f;
+	pbc->ch_c = a.ch;
+	pbc->kalan = adet;
+
+	oboe::AudioStreamBuilder kurgu;
+	kurgu.setDirection(oboe::Direction::Output)
+	    ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
+	    ->setSharingMode(oboe::SharingMode::Shared)
+	    ->setFormat(oboe::AudioFormat::I16)
+	    ->setChannelCount(a.ch)
+	    ->setSampleRate(a.rate)
+	    ->setDataCallback(pbc.get())
+	    ->setErrorCallback(pbc.get());
+	std::shared_ptr<oboe::AudioStream> akis;
+	oboe::Result rc = kurgu.openStream(akis);
+	if (rc != oboe::Result::OK) {
+		std::fclose(f);
+		set_err("oboe akış açımı: " + std::string(oboe::convertToText(rc)));
+		return -1;
+	}
+	rc = akis->start();
+	if (rc != oboe::Result::OK) {
+		akis->close();
+		std::fclose(f);
+		set_err("oboe başlatma: " + std::string(oboe::convertToText(rc)));
+		return -1;
+	}
+	g_oynatici[h] = pbc;
+	g_akis[h] = akis;
+	return 0;
+}
+
+// durumu: -1 oynatma yok, 0 oynatılıyor, 1 boşalma, 2 hata
+int velnosub_abi_audio_state(int h) {
+	auto it = g_oynatici.find(h);
+	if (it == g_oynatici.end()) return -1;
+	return it->second->durum.load();
+}
+
+int velnosub_abi_audio_stop(int h) {
+	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
+	auto it = g_oynatici.find(h);
+	if (it == g_oynatici.end()) return 0;
+	auto pb = it->second;
+	pb->kes.store(true);
+	auto ak = g_akis.find(h);
+	if (ak != g_akis.end()) {
+		if (auto st = ak->second.lock()) {
+			st->stop();
+			st->close();
+		}
+		g_akis.erase(ak);
+	}
+	if (pb->f) { std::fclose(pb->f); pb->f = nullptr; }
+	g_oynatici.erase(h);
+	return 0;
+}
+#else
+int velnosub_abi_audio_play(int, int64_t, int64_t) {
+	set_err("oboe bu derlemede yok (masa kolu)");
+	return -1;
+}
+int velnosub_abi_audio_state(int) { return 0; }
+int velnosub_abi_audio_stop(int) { return 0; }
+#endif
+
+void velnosub_abi_audio_close(int h) {
+#ifdef VELNOSUB_ABI_OBOE
+	velnosub_abi_audio_stop(h);
+#endif
+	g_audio.erase(h);
 }
 
 void velnosub_abi_close(int h) {

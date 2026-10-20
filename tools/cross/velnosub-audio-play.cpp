@@ -52,7 +52,7 @@ public:
 		defect = true;
 	}
 
-	oboe::Result openWith(oboe::AudioAPI api, std::shared_ptr<oboe::AudioStream> &out) {
+	oboe::Result openWith(oboe::AudioApi api, std::shared_ptr<oboe::AudioStream> &out) {
 		oboe::AudioStreamBuilder builder;
 		builder.setDirection(oboe::Direction::Output)
 		    ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
@@ -62,8 +62,8 @@ public:
 		    ->setSampleRate(sample_rate)
 		    ->setDataCallback(this)
 		    ->setErrorCallback(this);
-		if (api != oboe::AudioAPI::Unspecified)
-			builder.setAudioAPI(api);
+		if (api != oboe::AudioApi::Unspecified)
+			builder.setAudioApi(api);
 		return builder.openStream(out);
 	}
 
@@ -71,19 +71,19 @@ public:
 		// Önce varsayılan yem (AAudio); ErrorInternal'de OpenSLES'e düşün
 		// (proot/kısıtlı ortamlarda AAudio yükleme yolu tıkanabilir).
 		std::shared_ptr<oboe::AudioStream> stream;
-		oboe::Result rc = openWith(oboe::AudioAPI::Unspecified, stream);
+		oboe::Result rc = openWith(oboe::AudioApi::Unspecified, stream);
 		if (rc != oboe::Result::OK) {
 			std::cerr << "[OPE] varsayılan yol açılamadı ("
 			          << oboe::convertToText(rc) << "); OpenSLES deneniyor\n";
 			stream.reset();
-			rc = openWith(oboe::AudioAPI::OpenSLES, stream);
+			rc = openWith(oboe::AudioApi::OpenSLES, stream);
 			if (rc != oboe::Result::OK) {
 				std::cerr << "[OPE] OpenSLES yolu da açılamadı: "
 				          << oboe::convertToText(rc) << "\n";
 				return false;
 			}
 		}
-		std::cout << "[OP0] akış açıldı: api " << (int)stream->getAudioAPI()
+		std::cout << "[OP0] akış açıldı: api " << (int)stream->getAudioApi()
 		          << " (2=OpenSLES), rate " << stream->getSampleRate() << ", ch "
 		          << stream->getChannelCount() << ", buffer "
 		          << stream->getBufferSizeInFrames() << " frames\n";
