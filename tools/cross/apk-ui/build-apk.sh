@@ -78,9 +78,9 @@ zipalign -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
 echo "---- 6) apksigner (alpha keystore ile aynı kimlik ailesi) ----"
 "$BT/apksigner" sign --ks ../apk-alpha/velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
-      --out velnosub-ui-0.1.0-alpha6.apk velnosub-ui-aligned.apk
+      --out velnosub-ui-0.1.0-alpha7.apk velnosub-ui-aligned.apk
 
-"$BT/apksigner" verify velnosub-ui-0.1.0-alpha6.apk && echo "APK İMZA GEÇERLİ"
+"$BT/apksigner" verify velnosub-ui-0.1.0-alpha7.apk && echo "APK İMZA GEÇERLİ"
 
 echo "---- 7) DT_NEEDED kapanış denetimi (PAKET İÇİ çözüm) ----"
 # Her lib'in NEEDED'ı paket içinde veya platform küpünde çözümlenmeli;

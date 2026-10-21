@@ -170,6 +170,15 @@ fn android_main(app: android_activity::AndroidApp) {
 	not_yaz("A1c karaskel-dene.ass tamam");
 	varlik_yaz(&app, "velnosub/DejaVuSans.ttf", &baz.join("DejaVuSans.ttf"));
 	not_yaz("A1d DejaVuSans.ttf tamam");
+	varlik_yaz(&app, "velnosub/default_config.json", &baz.join("default_config.json"));
+	not_yaz("A1e default_config.json tamam");
+	// abi.rs CWD-fallbacklerini abs yola bağla (Android'de cwd=/ = read-only);
+	// fonts/config/ayar kayıt dosyaları filesDir'den okunur/yazılır
+	std::env::set_var("VELNOSUB_CONFIG_JSON", baz.join("default_config.json"));
+	std::env::set_var("VELNOSUB_UI_JSON", baz.join("velnosub-ui.json"));
+	std::env::set_var("VELNOSUB_FONT", baz.join("DejaVuSans.ttf"));
+	std::env::set_var("VELNOSUB_SAVE", baz.join("kayit.ass"));
+	not_yaz("A1f VE env yolları set edildi");
 	// eğri dosyalar: open=sabit deneme dosyası, save=Kayıt hedefi
 	let open = Some(baz.join("karaskel-dene.ass").display().to_string());
 	let save = Some(baz.join("kayit.ass").display().to_string());
