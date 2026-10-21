@@ -1,0 +1,8 @@
+assets/
+lib/
+classes/
+classes.dex
+*.apk
+*.keystore
+velnosub-aligned.apk
+velnosub-unsigned.apk
