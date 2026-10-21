@@ -6,4 +6,4 @@ classes.dex
 *.keystore
 velnosub-aligned.apk
 velnosub-unsigned.apk
-tools/cross/apk-alpha/*.idsig
+*.idsig
