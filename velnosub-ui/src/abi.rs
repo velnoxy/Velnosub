@@ -209,7 +209,10 @@ impl VideoSection {
 }
 
 struct Row {
-	times: String,
+	// P4.8.2 aegisub kolonları: line_times'ın "S1 / S2" biçimi burada
+	// bir kez ayrıştırılır (Start/ End kolonları için)
+	bas: String,
+	son: String,
 	text: String,
 }
 
@@ -527,6 +530,8 @@ pub struct GridApp {
 	aktif: Sekme,
 	// masaüstü düzeninde Ayarlar penceresi açık mı (mobilde ayrı sekme var)
 	ayar_win: bool,
+	// P4.8.2: seçili satır (aegisub edit kutusu bu satıra bağlanır)
+	secili: Option<usize>,
 }
 
 /// Arayüz düzeni. `Secim` yalnızca ayar dosyası yokken geçerli ilk ekrandır.
@@ -673,6 +678,7 @@ impl GridApp {
 			duzen: Duzen::Masaustu,
 			zoom: 0.8,
 			ppp_base: None,
+			secili: None,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
 			oniz: Oniz::default(),
@@ -734,7 +740,15 @@ impl GridApp {
 			let times = line_times(h, i)
 				.unwrap_or_else(|e| format!("(zaman hatası: {e})"));
 			let text = line_text(h, i).unwrap_or_else(|e| format!("(hata: {e})"));
-			rows.push(Row { times, text });
+			let (bir, son) = match times.split_once(" / ") {
+			Some((b, s)) => (b.to_string(), s.to_string()),
+			None => (times.clone(), String::new()),
+		};
+		rows.push(Row {
+			bas: bir,
+			son,
+			text,
+		});
 		}
 		self.handle = Some(h);
 		self.rows = rows;
@@ -1424,6 +1438,10 @@ impl GridApp {
 		// Düzenlenip Commit tetiklenecek satırlar; ödünç çatışmasını
 		// çözmek için çerçeve sonunda işlenir (tek çerçevede tek satır).
 		let mut duzenenler: Vec<usize> = Vec::new();
+		// P4.8.2: seçim ödünçsuz — önceden kopyalanır, dokunuş çerçeve
+		// sonunda secili'ye uygulanır
+		let secili_var = self.secili;
+		let mut satir_sec: Option<usize> = None;
 		// mobil: satır dokunma yüksekliği en az 44pt (3.2x gövde yüksekliği)
 		let satir_h = ui.text_style_height(&egui::TextStyle::Body)
 			* if mobil { 3.2 } else { 2.4 };
@@ -1436,7 +1454,7 @@ impl GridApp {
 						// telefon genişliğinde reflow: zaman üstte, metin tam genişlik
 						ui.vertical(|ui| {
 							ui.label(
-								RichText::new(format!("{}", &row.times))
+								RichText::new(format!("{} → {}", &row.bas, &row.son))
 									.weak()
 									.color(Color32::from_gray(170)),
 							);
@@ -1450,24 +1468,53 @@ impl GridApp {
 							}
 						});
 					} else {
-						ui.horizontal(|ui| {
-							ui.label(
-								RichText::new(format!("{}  ", &row.times))
-									.weak()
-									.color(Color32::from_gray(170)),
-							);
-							let w = ui.available_width() * 0.62;
-							let resp = TextEdit::singleline(&mut row.text)
-								.desired_width(w)
-								.show(ui)
-								.response;
-							if resp.changed() {
-								duzenenler.push(i);
-							}
+						// P4.8.2 aegisub kolonları: # Start End Style Actor
+						// Effect Text (Style/Actor/Effect ABI hat-alanları v13
+						// için ipte); dokunma = satır seçimi (edit kutusuna)
+						ui.vertical(|su| {
+							su.horizontal(|h| {
+								h.add_sized(
+									[44.0, 18.0],
+									egui::Label::new(RichText::new(format!("{:>3}", i + 1)).weak()),
+								);
+								if h.selectable_label(
+									secili_var == Some(i),
+									RichText::new(&row.bas)
+										.color(Color32::from_rgb(130, 160, 255)),
+								)
+								.clicked()
+								{
+									satir_sec = Some(i);
+								}
+								if h.selectable_label(
+									secili_var == Some(i),
+									RichText::new(&row.son)
+										.color(Color32::from_rgb(130, 160, 255)),
+								)
+								.clicked()
+								{
+									satir_sec = Some(i);
+								}
+								h.add_sized([64.0, 18.0], egui::Label::new(RichText::new("—").weak()));
+								h.add_sized([64.0, 18.0], egui::Label::new(RichText::new("—").weak()));
+								h.add_sized([64.0, 18.0], egui::Label::new(RichText::new("—").weak()));
+								let w = h.available_width() * 0.56;
+								let resp = TextEdit::singleline(&mut row.text)
+									.desired_width(w)
+									.show(h)
+									.response;
+								if resp.changed() {
+									duzenenler.push(i);
+								}
+							});
 						});
 					}
 				}
 			});
+		// P4.8.2: dokunuşla satır seçimi — edit kutusu bu satıra bağlanır
+		if let Some(s) = satir_sec {
+			self.secili = Some(s);
+		}
 		for i in duzenenler {
 			if let (Some(row), Some(h)) = (self.rows.get(i), self.handle) {
 				match edit_line(h, i, &row.text.clone()) {
@@ -1726,6 +1773,174 @@ impl GridApp {
 
 	/// Masaüstü çerçeve: mevcut P4.2–P4.6 şerit akışı (üst paneller +
 	/// alt durum çubuğu + grid), gövdeler mobil ile aynı.
+	/// P4.8.2: uzantı listesi — VELNOSUB_EXTDIR'de (app dış filesDir;
+	/// rish ext_data_rw ile dosya konur) eşleşen dosya yolları sıralı
+	fn uzanti_listele(&self, uz: &[&str]) -> Vec<String> {
+		let Ok(yol) = std::env::var("VELNOSUB_EXTDIR") else { return Vec::new(); };
+		let mut sonuc = Vec::new();
+		let Ok(girdiler) = std::fs::read_dir(&yol) else { return sonuc; };
+		let mut kepce: Vec<_> = girdiler
+			.filter_map(|r| r.ok())
+			.map(|e| e.path())
+			.filter(|p| {
+				p.extension()
+					.and_then(|x| x.to_str())
+					.is_some_and(|x| uz.contains(&x.to_ascii_lowercase().as_str()))
+			})
+			.collect();
+		kepce.sort();
+		for p in kepce {
+			if let Some(s) = p.to_str() {
+				sonuc.push(s.to_string());
+			}
+		}
+		sonuc
+	}
+
+	/// Video/ses dosyası yükler ve notu tazeler (menü/toolbar çağrısı)
+	fn video_ac(&mut self, yol: &str) {
+		if let Err(e) = self.load_video(yol) {
+			self.note = format!("video açılamadı: {e}");
+		}
+	}
+
+	fn ses_ac(&mut self, yol: &str) {
+		if let Err(e) = self.load_audio(yol) {
+			self.note = format!("ses açılamadı: {e}");
+		}
+	}
+
+	/// P4.8.2: aegisub menü çubuğu — mevcut işlevlere bağlı öğeler gerçek,
+	/// ABI hat-alanları (v13) bekleyenler pasif gösterilir
+	fn menu_cubugu(&mut self, ui: &mut egui::Ui) {
+		let tema = tema_simdi(ui);
+		egui::MenuBar::new().ui(ui, |mb| {
+			mb.menu_button("File", |m| {
+				if m.button("Yeniden aç").clicked() {
+					if let Some(p) = self.path.clone() {
+						if let Err(e) = self.load(&p) {
+							self.note = format!("açılamadı: {e}");
+						}
+					}
+				}
+				if m.button("Kaydet").clicked() {
+					if let Some(p) = self.save_path.clone() {
+						self.save_to(&p);
+					} else {
+						self.note = "kayıt yolu verilmedi (VELNOSUB_SAVE)".into();
+					}
+				}
+			});
+			mb.menu_button("Edit", |m| {
+				m.add_enabled(false, egui::Button::new("satır ekle/çıkar (ABI v13)"));
+			});
+			mb.menu_button("Subtitle", |m| {
+				m.add_enabled(false, egui::Button::new("dosya özellikleri (ABI v13)"));
+			});
+			mb.menu_button("Timing", |m| {
+				m.add_enabled(false, egui::Button::new("shift/snap (ABI v13)"));
+			});
+			mb.menu_button("Video", |m| {
+				let liste = self.uzanti_listele(&["mp4", "webm", "mkv"]);
+				if liste.is_empty() {
+					m.label(RichText::new("ext filesDir'de video yok (rish ile kopyala)").weak());
+				}
+				for y in liste {
+					if m.button(y.clone()).clicked() {
+						self.video_ac(&y);
+					}
+				}
+			});
+			mb.menu_button("Audio", |m| {
+				let liste = self.uzanti_listele(&["mp3", "wav", "m4a", "ogg"]);
+				if liste.is_empty() {
+					m.label(RichText::new("ext filesDir'de ses yok (rish ile kopyala)").weak());
+				}
+				for y in liste {
+					if m.button(y.clone()).clicked() {
+						self.ses_ac(&y);
+					}
+				}
+			});
+			mb.menu_button("Automation", |m| {
+				m.add_enabled(false, egui::Button::new("Lua motoru (pump dilimi)"));
+			});
+			mb.menu_button("View", |m| {
+				if m.button("Mobil görünüm").clicked() {
+					self.duzen_sec(tema, Duzen::Mobil);
+				}
+				if m.button("Ölçek 1.0×").clicked() {
+					self.zoom = 1.0;
+				}
+				if m.button("Ayarlar").clicked() {
+					self.ayar_win = true;
+				}
+			});
+			mb.menu_button("Help", |m| {
+				m.label("velnosub UI — P4.8.2 v12 (aegisub yüzeyi, çift düzen)");
+			});
+		});
+	}
+
+	/// P4.8.2: aegisub subtitle-edit kutusu (grid üstü): seçili satırın
+	/// metni düzenlenebilir (commit = edit_line); Style/Actor/Effect kolonu
+	/// ABI hat-alanları (v13) gelmedikçe "—" gösterir; B/I/U/S ve \N düğmeleri
+	/// metnin SONUNA tag ekler (imleç konumu v13'te izlenecek)
+	fn duzen_kutusu(&mut self, ui: &mut egui::Ui) {
+		let Some(i) = self.secili else {
+			ui.label(RichText::new("satır seç (grid'e dokun)").weak());
+			return;
+		};
+		let metin_ilk = self.rows.get(i).map(|r| r.text.clone()).unwrap_or_default();
+		let (bk, sn) = self
+			.rows
+			.get(i)
+			.map(|r| (r.bas.clone(), r.son.clone()))
+			.unwrap_or_default();
+		let mut degisen = false;
+		let mut metin = metin_ilk.clone();
+		ui.vertical(|ev| {
+			ev.horizontal(|h| {
+				h.label(RichText::new(&bk).weak());
+				h.label(RichText::new("→").weak());
+				h.label(RichText::new(&sn).weak());
+				let harf = metin.chars().count();
+				h.label(RichText::new(format!("karakter {harf}")).weak());
+			});
+			ev.horizontal(|h| {
+				for (ad, tag) in [("B", "{\\b1}"), ("I", "{\\i1}"), ("U", "{\\u1}"),
+					("S", "{\\s1}"), ("\\N", "\\N"), ("an1", "{\\an1}"),
+					("an2", "{\\an2}"), ("an3", "{\\an3}")] {
+					if h.button(ad).clicked() {
+						metin = format!("{metin}{tag}");
+						degisen = true;
+					}
+				}
+				h.label(RichText::new("Style/Actor/Effect: ABI v13 bekliyor").weak());
+			});
+			let resp = TextEdit::multiline(&mut metin)
+				.desired_width(ev.available_width().min(520.0))
+				.show(ev)
+				.response;
+			if resp.changed() {
+				degisen = true;
+			}
+		});
+		if degisen {
+			if let Some(h) = self.handle {
+				match edit_line(h, i, &metin.clone()) {
+					Ok(()) => {
+						if let Some(r) = self.rows.get_mut(i) {
+							r.text = metin.clone();
+						}
+						self.note = format!("satır {} işlendi", i + 1);
+					}
+					Err(e) => self.note = format!("işleme hatası: {e}"),
+				}
+			}
+		}
+	}
+
 	fn masaustu_cerceve(&mut self, ui: &mut egui::Ui) {
 		// P4.8.1 aegisub-yüzeyi: ppp ölçek + her iki eksende kaydırma;
 		// default 0.8× (1220'lük ekranda ~okunur küçük), ± düğmeleriyle
@@ -1739,6 +1954,8 @@ impl GridApp {
 			egui::ScrollArea::both().show(su, |sa| {
 				sa.vertical(|top| {
 					let tema = tema_simdi(top);
+					// P4.8.2: aegisub menü çubuğu en üstte
+					self.menu_cubugu(top);
 					top.horizontal(|h| {
 						h.label("ölçek");
 						if h.button("−").clicked() {
@@ -1759,6 +1976,46 @@ impl GridApp {
 						}
 					});
 					top.add_space(4.0);
+					// P4.8.2 toolbar: sık işlemler (menünün şortcutu)
+					top.horizontal(|h| {
+						if h.button("Kaydet").clicked() {
+							if let Some(p) = self.save_path.clone() {
+								self.save_to(&p);
+							} else {
+								self.note = "kayıt yolu verilmedi (VELNOSUB_SAVE)".into();
+							}
+						}
+						if h.button("Yeniden aç").clicked() {
+							if let Some(p) = self.path.clone() {
+								if let Err(e) = self.load(&p) {
+									self.note = format!("açılamadı: {e}");
+								}
+							}
+						}
+						if h.button("Aç video").clicked() {
+							match self.uzanti_listele(&["mp4", "webm", "mkv"]).first() {
+								Some(y) => {
+									let yol = y.clone();
+									self.video_ac(&yol);
+								}
+								None => {
+									self.note = "ext filesDir'de video yok (rish ile kopyala)".into()
+								}
+							}
+						}
+						if h.button("Aç ses").clicked() {
+							match self.uzanti_listele(&["mp3", "wav", "m4a", "ogg"]).first() {
+								Some(y) => {
+									let yol = y.clone();
+									self.ses_ac(&yol);
+								}
+								None => {
+									self.note = "ext filesDir'de ses yok (rish ile kopyala)".into()
+								}
+							}
+						}
+					});
+					top.add_space(2.0);
 					if self.video.is_some() {
 						self.video_icerik(top, false);
 					}
@@ -1771,6 +2028,8 @@ impl GridApp {
 					if self.dialog.is_some() {
 						self.form_icerik(top, false);
 					}
+					// P4.8.2: aegisub subtitle-edit kutusu (grid üstü)
+					self.duzen_kutusu(top);
 					self.grid_icerik(top, false);
 					self.durum_icerik(top, false);
 				});

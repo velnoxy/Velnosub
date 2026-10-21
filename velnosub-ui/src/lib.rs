@@ -155,6 +155,9 @@ fn android_main(app: android_activity::AndroidApp) {
 		// dış filesDir: /storage/emulated/0/Android/data/<pkg>/files —
 		// termux "tüm dosyalar" izniyle proot üzerinde OKUNUR
 		let _ = EXT_YOL.set(dis.join("velnosub-boot.txt"));
+		// P4.8.2 N3: video/ses rish ile buraya konur; abi.rs menüsü bu
+		// dizini tarar (uzanti_listele)
+		std::env::set_var("VELNOSUB_EXTDIR", &dis);
 	}
 	not_yaz("A0 android_main girdi");
 	not_yaz(&format!(

@@ -1,0 +1,25 @@
+# APK'yı Actions artifact olarak yayınlar: workflow_dispatch ile tetiklenir,
+# repoya konmuş APK'yi upload-artifact@v4 ile run-a bağlar (Release YOK —
+# tek dosya, run sayfasından indirilir).
+name: apk-artifact
+on:
+  workflow_dispatch:
+    inputs:
+      apk_path:
+        description: "APK yolu (repo içinde)"
+        required: false
+        default: "apk-release/velnosub-ui-0.1.0-alpha9.apk"
+permissions:
+  contents: read
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: APK artifact yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: velnosub-ui-apk-r${{ github.run_number }}
+          path: ${{ github.event.inputs.apk_path }}
+          if-no-files-found: error
+          retention-days: 30

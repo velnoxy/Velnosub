@@ -3372,6 +3372,15 @@ name = "velnosub-abi-smoke"
 version = "0.1.0"
 
 [[package]]
+name = "velnosub-probe"
+version = "0.1.0"
+dependencies = [
+ "android-activity",
+ "eframe",
+ "winit",
+]
+
+[[package]]
 name = "velnosub-ui"
 version = "0.1.0"
 dependencies = [
