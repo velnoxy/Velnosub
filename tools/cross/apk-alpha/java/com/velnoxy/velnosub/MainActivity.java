@@ -87,9 +87,13 @@ public class MainActivity extends Activity {
         });
     }
 
-    private void log(String s) {
-        out.append(s + "\n");
-        android.util.Log.i("velnosub", s);
+    private void log(final String s) {
+        runOnUiThread(new Runnable() {
+            public void run() {
+                out.append(s + "\n");
+                android.util.Log.i("velnosub", s);
+            }
+        });
     }
 
     private void kos(String ass, String makro, String... selArgs) {

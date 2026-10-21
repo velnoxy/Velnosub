@@ -79,7 +79,7 @@ if [ ! -f velnosub-debug.keystore ]; then
 fi
 "$BT/apksigner" sign --ks velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
-      --out velnosub-0.1.0-alpha.apk velnosub-aligned.apk
+      --out velnosub-0.1.0-alpha2.apk velnosub-aligned.apk
 
 "$BT/apksigner" verify velnosub-0.1.0-alpha.apk && echo "APK İMZA GEÇERLİ"
-ls -l velnosub-0.1.0-alpha.apk
+ls -l velnosub-0.1.0-alpha2.apk
