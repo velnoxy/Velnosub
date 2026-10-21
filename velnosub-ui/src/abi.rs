@@ -516,10 +516,14 @@ pub struct GridApp {
 	dialog: Option<DialogSection>,
 	// P4.6 dilim 2: ASS önizleme (video üstünde saydam dokuya binen kare)
 	oniz: Oniz,
-	// P4.6 dilim 2: arayüz düzeni — ilk girişte seçim ekranı (`Secim`),
-	// seçim ayar dosyasına yazılır (`velnosub-ui.json`; VELNOSUB_UI_JSON
-	// ortam değişkeniyle yol geçilebilir), Ayarlar bölümünden değiştirilir
+	// P4.6 dilim 2: arayüz düzeni — varsayılan Masaustu (aegisub yüzeyi,
+	// ölçek+ kaydırmalı); Mobil ayarlardan/seçimden değiştirilir
+	// (`velnosub-ui.json`; VELNOSUB_UI_JSON ortam değişkeniyle yol geçilir)
 	duzen: Duzen,
+	// P4.8.1: masaüstü yüzeyi ölçeği — ppp = ppp_base × zoom; Mobil'e
+	// dönüşte tabana döner
+	zoom: f32,
+	ppp_base: Option<f32>,
 	aktif: Sekme,
 	// masaüstü düzeninde Ayarlar penceresi açık mı (mobilde ayrı sekme var)
 	ayar_win: bool,
@@ -666,7 +670,9 @@ impl GridApp {
 			audio: None,
 			stiller: Vec::new(),
 			dialog: None,
-			duzen: Duzen::Secim,
+			duzen: Duzen::Masaustu,
+			zoom: 0.8,
+			ppp_base: None,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
 			oniz: Oniz::default(),
@@ -1721,31 +1727,54 @@ impl GridApp {
 	/// Masaüstü çerçeve: mevcut P4.2–P4.6 şerit akışı (üst paneller +
 	/// alt durum çubuğu + grid), gövdeler mobil ile aynı.
 	fn masaustu_cerceve(&mut self, ui: &mut egui::Ui) {
-		if self.video.is_some() {
-			Panel::top("vpanel").show(ui, |su| {
-				self.video_icerik(su, false);
-			});
-		}
-		if self.audio.is_some() {
-			Panel::top("wpanel").show(ui, |su| {
-				self.ses_icerik(su, false);
-			});
-		}
-		if !self.stiller.is_empty() {
-			Panel::top("spanel").show(ui, |su| {
-				self.stil_icerik(su, false);
-			});
-		}
-		if self.dialog.is_some() {
-			Panel::top("dpanel").show(ui, |su| {
-				self.form_icerik(su, false);
-			});
-		}
-		Panel::bottom("velnosub_durum").show(ui, |su| {
-			self.durum_icerik(su, false);
-		});
+		// P4.8.1 aegisub-yüzeyi: ppp ölçek + her iki eksende kaydırma;
+		// default 0.8× (1220'lük ekranda ~okunur küçük), ± düğmeleriyle
+		// ayarlanır; set_pixels_per_point frame'den sonra etkin (egui kuralı)
+		let base = *self
+			.ppp_base
+			.get_or_insert_with(|| ui.ctx().pixels_per_point());
+		ui.ctx()
+			.set_pixels_per_point((base * self.zoom).clamp(0.35, 1.6));
 		CentralPanel::default().show_inside(ui, |su| {
-			self.grid_icerik(su, false);
+			egui::ScrollArea::both().show(su, |sa| {
+				sa.vertical(|top| {
+					let tema = tema_simdi(top);
+					top.horizontal(|h| {
+						h.label("ölçek");
+						if h.button("−").clicked() {
+							self.zoom = (self.zoom - 0.1).max(0.35);
+						}
+						if h.button("+").clicked() {
+							self.zoom = (self.zoom + 0.1).min(1.6);
+						}
+						if h.button("1.0×").clicked() {
+							self.zoom = 1.0;
+						}
+						h.label(format!("{:.1}×", self.zoom));
+						if h.button("Ayarlar").clicked() {
+							self.ayar_win = true;
+						}
+						if h.button("Mobil görünüm").clicked() {
+							self.duzen_sec(tema, Duzen::Mobil);
+						}
+					});
+					top.add_space(4.0);
+					if self.video.is_some() {
+						self.video_icerik(top, false);
+					}
+					if self.audio.is_some() {
+						self.ses_icerik(top, false);
+					}
+					if !self.stiller.is_empty() {
+						self.stil_icerik(top, false);
+					}
+					if self.dialog.is_some() {
+						self.form_icerik(top, false);
+					}
+					self.grid_icerik(top, false);
+					self.durum_icerik(top, false);
+				});
+			});
 		});
 		if self.ayar_win {
 			// masaüstü Ayarlar penceresi: mobil sekmesindeki gövde AYNI
@@ -1789,6 +1818,14 @@ impl GridApp {
 
 impl eframe::App for GridApp {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+		// ölçek tabana döner: Mobil'e masaüstü zoom'u sızmaz; Masaustu'ya
+		// her girişte ppp_base yeniden alınır (reset sonrası taban = taban)
+		if self.duzen != Duzen::Masaustu {
+			if let Some(b) = self.ppp_base.take() {
+				ui.ctx().set_pixels_per_point(b);
+				self.zoom = 0.8;
+			}
+		}
 		match self.duzen {
 			Duzen::Secim => {
 				CentralPanel::default().show_inside(ui, |su| {
