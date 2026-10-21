@@ -165,9 +165,10 @@ fn android_main(app: android_activity::AndroidApp) {
 	// filesDir'e karaskel-dene.ass + DejaVuSans.ttf kopyala
 	// (asset_manager: lib.rs:1030; ndk-0.9.0 asset.rs:47/225)
 	not_yaz("A1b asset kopyası başlıyor");
-	varlik_yaz(&app, "karaskel-dene.ass", &baz.join("karaskel-dene.ass"));
+	// asset yolları APK içinde assets/velnosub/ altında (aapt list kanıtı)
+	varlik_yaz(&app, "velnosub/karaskel-dene.ass", &baz.join("karaskel-dene.ass"));
 	not_yaz("A1c karaskel-dene.ass tamam");
-	varlik_yaz(&app, "DejaVuSans.ttf", &baz.join("DejaVuSans.ttf"));
+	varlik_yaz(&app, "velnosub/DejaVuSans.ttf", &baz.join("DejaVuSans.ttf"));
 	not_yaz("A1d DejaVuSans.ttf tamam");
 	// eğri dosyalar: open=sabit deneme dosyası, save=Kayıt hedefi
 	let open = Some(baz.join("karaskel-dene.ass").display().to_string());
@@ -177,17 +178,15 @@ fn android_main(app: android_activity::AndroidApp) {
 		.with_inner_size([440.0, 320.0])
 		.with_min_inner_size([300.0, 240.0])
 		.with_title("velnosub");
+	// eframe 0.37: android_app zorunlu alan — event-loop'u eframe kendisi
+	// builder.with_android_app(native_options.android_app) ile kurar
+	// (run.rs:47-56); bizim event_loop_builder hook'u artık çift uygulama
+	// yapardı — kaldırıldı, alan doğrudan geçilir
 	let mut options = eframe::NativeOptions {
 		viewport,
+		android_app: Some(app),
 		..Default::default()
 	};
-	// winit'in event loop'u AndroidApp'sız kurulamaz; trait:
-	// winit::platform::android::EventLoopBuilderExtAndroid
-	// (with_android_app: winit-0.30.13/src/platform/android.rs:128)
-	options.event_loop_builder = Some(Box::new(move |builder| {
-		use winit::platform::android::EventLoopBuilderExtAndroid;
-		builder.with_android_app(app);
-	}));
 	not_yaz("A2 event-loop kurulum tamam — run_native çağrılıyor");
 	kos(open, save, options);
 }
