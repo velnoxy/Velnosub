@@ -88,7 +88,7 @@ echo "---- 7) DT_NEEDED kapanış denetimi (PAKET İÇİ çözüm) ----"
 P_SISTEM="libc.so libdl.so libm.so liblog.so libz.so libandroid.so"
 HATA=0
 for f in lib/arm64-v8a/*.so; do
-    for n in $("$RE" -d "$f" | sed 's/.*(Shared library: \[\([^]]*\)\]).*/\1/'); do
+    for n in $("$RE" -d "$f" | grep NEEDED | sed 's/.*\[//;s/\].*//'); do
         if [ ! -f "lib/arm64-v8a/$n" ]; then
             case " $P_SISTEM " in
                 *" $n "*) ;;
