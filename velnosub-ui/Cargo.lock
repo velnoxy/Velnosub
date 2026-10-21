@@ -3375,7 +3375,9 @@ version = "0.1.0"
 name = "velnosub-ui"
 version = "0.1.0"
 dependencies = [
+ "android-activity",
  "eframe",
+ "winit",
 ]
 
 [[package]]
