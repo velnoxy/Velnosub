@@ -72,6 +72,8 @@ fn kos(
 #[cfg(target_os = "android")]
 static BOOT_YOL: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
 #[cfg(target_os = "android")]
+static EXT_YOL: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+#[cfg(target_os = "android")]
 static BAS: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
 // liblog.so platform kütüphanesi: MAIN buffer'a yazar — çökme sonrası
@@ -89,27 +91,37 @@ unsafe fn android_log(not: &str) {
 	let _ = __android_log_print(4, tag, fmt, mesaj.as_ptr());
 }
 
+// breadcrumb: logd + filesDir + dış filesDir (termux'a "tüm dosyalar" izni
+// verildiyse proot /mnt/sdcard/Android/data/com.velnoxy.velnosubui/files
+// içinden doğrudan okunur — logcat erişilemese bile kanıt dışarı çıkar)
 #[cfg(target_os = "android")]
 fn not_yaz(not: &str) {
 	use std::io::Write;
 	unsafe { android_log(not) };
-	let yol = match BOOT_YOL.get() {
-		Some(y) => y,
-		None => {
-			eprintln!("velnosub-not-yaz (yol yok): {not}");
-			return;
-		}
-	};
 	let ms = BAS.get().map(|b| b.elapsed().as_millis()).unwrap_or(0);
-	let satir = format!("[{ms}] {not}");
-	let sonuc = std::fs::OpenOptions::new()
-		.create(true)
-		.append(true)
-		.open(yol)
-		.and_then(|mut f| writeln!(f, "{satir}"));
-	if let Err(e) = sonuc {
-		eprintln!("velnosub breadcrumb yazılamadı: {e}");
+	let satir = format!("[{ms}] {not}\n");
+	for yol in [BOOT_YOL.get(), EXT_YOL.get()].into_iter().flatten() {
+		let sonuc = std::fs::OpenOptions::new()
+			.create(true)
+			.append(true)
+			.open(yol)
+			.and_then(|mut f| f.write_all(satir.as_bytes()));
+		if let Err(e) = sonuc {
+			eprintln!("velnosub breadcrumb yazılamadı {}: {e}", yol.display());
+		}
 	}
+}
+
+// .init_array: lib dlopen anında (android_main'den önce) tetiklenir —
+// "L0 lib yüklendi" işareti düşmezse çökme linker/DT_NEEDED katmanındadır
+#[cfg(target_os = "android")]
+#[used]
+#[link_section = ".init_array"]
+static LIB_YUKLENDI_ISARETI: extern "C" fn() = lib_yuklendi_isareti;
+
+#[cfg(target_os = "android")]
+extern "C" fn lib_yuklendi_isareti() {
+	unsafe { android_log("L0 libvelnosub_ui.so yuklendi (init_array)") };
 }
 
 #[cfg(target_os = "android")]
@@ -135,8 +147,17 @@ fn android_main(app: android_activity::AndroidApp) {
 			not_yaz(&format!("PANIC {nerede}: {info}"));
 		}));
 	}
+	if let Some(dis) = app.external_data_path() {
+		// dış filesDir: /storage/emulated/0/Android/data/<pkg>/files —
+		// termux "tüm dosyalar" izniyle proot üzerinde OKUNUR
+		let _ = EXT_YOL.set(dis.join("velnosub-boot.txt"));
+	}
 	not_yaz("A0 android_main girdi");
-	not_yaz(&format!("A1 filesDir={}", baz.display()));
+	not_yaz(&format!(
+		"A1 filesDir={} sdk={}",
+		baz.display(),
+		android_activity::AndroidApp::sdk_version()
+	));
 	// filesDir'e karaskel-dene.ass + DejaVuSans.ttf kopyala
 	// (asset_manager: lib.rs:1030; ndk-0.9.0 asset.rs:47/225)
 	varlik_yaz(&app, "karaskel-dene.ass", &baz.join("karaskel-dene.ass"));

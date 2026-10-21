@@ -74,7 +74,7 @@ zipalign -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
 echo "---- 6) apksigner (alpha keystore ile aynı kimlik ailesi) ----"
 "$BT/apksigner" sign --ks ../apk-alpha/velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
-      --out velnosub-ui-0.1.0-alpha2.apk velnosub-ui-aligned.apk
+      --out velnosub-ui-0.1.0-alpha3.apk velnosub-ui-aligned.apk
 
-"$BT/apksigner" verify velnosub-ui-0.1.0-alpha2.apk && echo "APK İMZA GEÇERLİ"
-ls -l velnosub-ui-0.1.0-alpha2.apk
+"$BT/apksigner" verify velnosub-ui-0.1.0-alpha3.apk && echo "APK İMZA GEÇERLİ"
+ls -l velnosub-ui-0.1.0-alpha3.apk
