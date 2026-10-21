@@ -155,3 +155,77 @@ local function coz_dene(subs, sel, aktif)
 	aegisub.log(("çöz: %d x %d"):format(bw, bh))
 end
 aegisub.register_macro("Çöz dene", "script_resolution dumanı (dilim 2)", coz_dene)
+
+-- P5 dilim 3: parse_karaoke_data dumanı — el-yazması beklenenden birebir
+-- karaskel-dene.ass olayları (upstream AssKaraoke forced-trace)
+local function kara_dene(subs, sel, aktif)
+	-- sel[1] = ilk olay + ofset (üzerinde prost: duman dosyası için)
+	local ofset = (aktif or sel[1]) - 1
+	local beklenen = {
+		[1] = {
+			{ d = 300, s = 0, e = 300, t = "\\k", x = "ka", xs = "ka" },
+			{ d = 200, s = 300, e = 500, t = "\\kf", x = "ra", xs = "ra" },
+			{ d = 100, s = 500, e = 600, t = "\\ko", x = "oke", xs = "oke" },
+		},
+		[2] = {
+			{ d = 0, s = 0, e = 0, t = "\\k",
+			  x = "Text before tag", xs = "Text before tag" },
+			{ d = 200, s = 0, e = 200, t = "\\k",
+			  x = "after first tag", xs = "after first tag" },
+		},
+		[3] = {
+			{ d = 0, s = 0, e = 0, t = "\\k",
+			  x = "{\\b1\\i1}boldital", xs = "boldital" },
+			{ d = 300, s = 0, e = 300, t = "\\k", x = "plain", xs = "plain" },
+			{ d = 200, s = 300, e = 500, t = "\\kf", x = "upperk", xs = "upperk" },
+		},
+		[4] = {
+			{ d = 500, s = 0, e = 500, t = "\\k",
+			  x = "{!not}comments", xs = "comments" },
+			{ d = 300, s = 500, e = 800, t = "\\k", x = "x", xs = "x" },
+		},
+		[5] = {
+			{ d = 0, s = 0, e = 0, t = "\\k",
+			  x = "no karaoke tags at all", xs = "no karaoke tags at all" },
+		},
+	}
+	local sayi = 0
+	for _, sav in ipairs(sel) do
+		local l = subs[sav]
+		if l.class == "dialogue" then
+			local evi = sav - ofset
+			local ey = beklenen[evi]
+			local kara = aegisub.parse_karaoke_data(l)
+			-- upstream kara[0] sabiti
+			assert(kara[0] and kara[0].tag == "" and kara[0].duration == 0
+			       and kara[0].start_time == 0 and kara[0].end_time == 0
+			       and kara[0].text == "" and kara[0].text_stripped == "",
+			       "kara[0] boş sibek değil")
+			assert(#kara == #ey, ("ev%d: sibek sayısı %d ≠ %d")
+			       :format(evi, #kara, #ey))
+			for i = 1, #ey do
+				local k = kara[i]
+				local b = ey[i]
+				assert(k.duration == b.d and k.start_time == b.s
+				       and k.end_time == b.e,
+				       ("ev%d sibek%d zaman %d+%d→%d ≠ %d+%d→%d")
+				       :format(evi, i, k.duration, k.start_time, k.end_time,
+				               b.d, b.s, b.e))
+				assert(k.tag == b.t, ("ev%d sibek%d tag %s ≠ %s")
+				       :format(evi, i, k.tag, b.t))
+				assert(k.text == b.x, ("ev%d sibek%d text %q ≠ %q")
+				       :format(evi, i, k.text, b.x))
+				assert(k.text_stripped == b.xs, ("ev%d sibek%d stripped %q ≠ %q")
+				       :format(evi, i, k.text_stripped, b.xs))
+				aegisub.log(("kara ev%d [%d]: %d+%d→%d %s '%s'|'%s'")
+				             :format(evi, i, k.duration, k.start_time,
+				                     k.end_time, k.tag, k.text,
+				                     k.text_stripped))
+			end
+			sayi = sayi + 1
+		end
+	end
+	aegisub.log(("kara dene: %d olay birebir"):format(sayi))
+end
+aegisub.register_macro("Kara dene", "parse_karaoke_data dumanı (dilim 3)", kara_dene)
+

@@ -821,8 +821,184 @@ aegisub.text_extents = function(st, metin)
 	end
 	return out[0], out[1], out[2], out[3]
 end
+-- ---- P5 dilim 3: aegisub.parse_karaoke_data ---------------------------
+-- upstream AssKaraoke::SetLine(dia, false, false) saflua kardeşliği:
+-- blok dolaşımı: düz metin syl.text'e; '!' yorum bloğu ve çizim devri
+-- ('\\p1'-'\\p0') ovr dürüst parçaga; k-tag (ad '\\k' öneki, büyük/küçük)
+-- yenibek: ovr kapanış '}' + \K→\kf + (dur>0||text≠"") push + tag/start/dur
+-- son push koşulsuz; auto4 kara[0] boş sibek sabitine uyar
+local function ovr_es(ovr, off, str)
+	for _, o in ipairs(ovr) do
+		if o.off == off then
+			o.str = o.str .. str
+			return
+		end
+	end
+	ovr[#ovr + 1] = { off = off, str = str }
+end
+
+local function kara_split(metin)
+	local metinDurum = type(metin) == "string" and metin or tostring(metin)
+	local sibekler = {}
+	local syl = {
+		tag = "\\k", bas = 0, sure = 0, parcalar = {}, ovr = {}, uzn = 0,
+	}
+	-- blok dolaşımı
+	local i, n = 1, #metinDurum
+	local cizim = false
+	while i <= n do
+		local vi = metinDurum:find("{", i, true)
+		if not vi then
+			-- kalan düz metin
+			local r = metinDurum:sub(i)
+			if r ~= "" then
+				if cizim then
+					ovr_es(syl.ovr, syl.uzn, r)
+				else
+					syl.parcalar[#syl.parcalar + 1] = r
+					syl.uzn = syl.uzn + #r
+				end
+			end
+			break
+		end
+		if vi > i then
+			local r = metinDurum:sub(i, vi - 1)
+			if r ~= "" then
+				if cizim then
+					ovr_es(syl.ovr, syl.uzn, r)
+				else
+					syl.parcalar[#syl.parcalar + 1] = r
+					syl.uzn = syl.uzn + #r
+				end
+			end
+		end
+		local vk = metinDurum:find("}", vi + 1, true)
+		local ic = (vk and metinDurum:sub(vi + 1, vk - 1)) or ""
+		i = (vk or n) + 1
+		if ic:sub(1, 1) == "!" then
+			-- yorum bloğu: tümü ovr (upstream COMMENT GetText '{!..}')
+			ovr_es(syl.ovr, syl.uzn, "{" .. ic .. "}")
+		elseif ic ~= "" then
+			-- tag dolaşımı; '\\' sınırları (son token blok bitişine kadar)
+			local t = {}
+			local j = ic:find("\\", 1, true)
+			while j do
+				local vj = ic:find("\\", j + 1, true)
+				local vj0 = vj or (#ic + 1)
+				t[#t + 1] = ic:sub(j, vj0 - 1)
+				j = vj
+			end
+			local chunk = nil -- {off, str}
+			for _, tk in ipairs(t) do
+				local ad = tk:match("^\\([%a]+)")
+				local adkuc = ad and ad:lower() or ""
+				if ad and adkuc:sub(1, 1) == "k" then
+					-- k-tag: '}' kapanışı, \K → \kf, push, tag set
+					if chunk then
+						ovr_es(syl.ovr, chunk.off, chunk.str .. "}")
+						chunk = nil
+					end
+					local kn = tk:match("^\\([%a]+)") -- gerçek ad
+					if kn == "K" then kn = "kf" end
+					local pv = tonumber(tk:match("^\\%a+([%-0-9]+)")) or 0
+					pv = math.floor(pv)
+					if syl.sure > 0 or syl.uzn > 0 then
+						sibekler[#sibekler + 1] = {
+							tag = syl.tag,
+							bas = syl.bas,
+							sure = syl.sure,
+							parcalar = syl.parcalar,
+							ovr = syl.ovr,
+						}
+						-- upstream push sonrası yalnız metin/ovr temizler;
+						-- sure birikimi eski değerle baş zamanı toplar
+						syl = { tag = syl.tag, bas = syl.bas, sure = syl.sure,
+						         parcalar = {}, ovr = {}, uzn = 0 }
+					end
+					syl.tag = "\\" .. kn
+					syl.bas = syl.bas + syl.sure
+					syl.sure = pv * 10
+				else
+					-- normal tag: ovr yenikur; açılış sütunundan bildiğim
+					-- upstream biçimi: "{" + tag dizileri + blockla "}"
+					if not chunk then
+						chunk = { off = syl.uzn, str = "{" }
+					end
+					chunk.str = chunk.str .. tk
+				end
+				-- çizim devri: \p1 (param ≠ 0) → düz metin ovr'a; \p0 kapar
+				if ad == "p" then
+					cizim = (tonumber(tk:match("^\\p(%-?%d+)")) or 0) ~= 0
+				end
+			end
+			if chunk then
+				ovr_es(syl.ovr, chunk.off, chunk.str .. "}")
+				chunk = nil
+			end
+		end
+	end
+	-- son sibek: koşulsuz push (upstream syls.push_back(syl))
+	sibekler[#sibekler + 1] = {
+		tag = syl.tag, bas = syl.bas, sure = syl.sure,
+		parcalar = syl.parcalar, ovr = syl.ovr,
+	}
+	-- GetText(false): düz metin + ovr Aralığı (upstream map sırası)
+	for _, sy in ipairs(sibekler) do
+		local tam = table.concat(sy.parcalar)
+		local sirali = {}
+		for _, o in ipairs(sy.ovr) do sirali[#sirali + 1] = o end
+		table.sort(sirali, function(a, b) return a.off < b.off end)
+		local wrote = {}
+		local sod = 0
+		for _, o in ipairs(sirali) do
+			if o.off > sod then
+				wrote[#wrote + 1] = tam:sub(sod + 1, o.off)
+			end
+			wrote[#wrote + 1] = o.str
+			sod = o.off
+		end
+		wrote[#wrote + 1] = tam:sub(sod + 1)
+		sy.text = table.concat(wrote)
+		sy.text_stripped = tam
+		sy.parcalar = nil
+		sy.ovr = nil
+		sy.uzn = nil
+	end
+	return sibekler
+end
+
+-- ÇALIŞMASI: satır dizin tablosundan kara kümesi; upstream auto4
+-- kara[0] BOŞ sibek + 1..n sibek; alanlar ms tamsayı (satır bağıl)
+aegisub.parse_karaoke_data = function(satir)
+	if type(satir) ~= "table" then
+		error("Can't convert a non-table value to AssEntry", 2)
+	end
+	if tostring(satir.class or ""):lower() ~= "dialogue" then
+		error("Subtitle line must be a dialogue line", 2)
+	end
+	local sibekler = kara_split(tostring(satir.text or ""))
+	local kara = {
+		[0] = {
+			duration = 0, start_time = 0, end_time = 0,
+			tag = "", text = "", text_stripped = "",
+		},
+	}
+	for ix, sy in ipairs(sibekler) do
+		kara[ix] = {
+			duration = sy.sure,
+			start_time = sy.bas,
+			end_time = sy.bas + sy.sure,
+			tag = sy.tag,
+			text = sy.text,
+			text_stripped = sy.text_stripped,
+		}
+	end
+	return kara
+end
+
 aegisub.project_properties = function()
 	print("[AUSB] proje özetleri: mobil hatta nötr değerler")
+
 	return {
 		automation_scripts = false,
 		export_filters = false,
