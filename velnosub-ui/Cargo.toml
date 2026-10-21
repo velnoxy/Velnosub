@@ -31,7 +31,7 @@ winit = { version = "0.30.13", features = ["android-native-activity"] }
 debug = false
 
 [workspace]
-members = ["abi-smoke"]
+members = ["abi-smoke", "probe"]
 
 [target.aarch64-linux-android]
 linker = "/root/velsub/ndk/r29/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"

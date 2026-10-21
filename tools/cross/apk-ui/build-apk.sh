@@ -8,6 +8,10 @@
 #            + assets: font/ass örnekleri)
 # Kapanış (DT_NEEDED zinciri, 2026-10-21 llvm-readelf ölçümü):
 #   ui → abi → (core, freetype); core → (freetype, fribidi, harfbuzz, uchardet);
+#   freetype → (png16, z);  png16 → (z)  — P4.8.1 v7: png16 paketlenir!
+#   [2026-10-21 crash-buffer kanıtı: UnsatisfiedLinkError "libpng16.so not
+#    found needed by libfreetype.so" — JDK tarafı çökme, tombstone'suz;
+#    shizuku/rish ile okundu]
 #   sistem küpü (c, dl, m, log, z) platformdadır — paketlenmez; c++_shared PAKETLENİR.
 # Çıkış: tools/cross/apk-ui/velnosub-ui-0.1.0-alpha.apk (imzalı, hizalı)
 set -e
@@ -44,7 +48,7 @@ echo "assets: $(find assets -type f | wc -l) dosya"
 echo "---- 2) lib/arm64-v8a (kapanış kopyası + strip) ----"
 rm -rf lib
 mkdir -p lib/arm64-v8a
-for ad in libvelnosub-core.so libfreetype.so libfribidi.so libharfbuzz.so libuchardet.so libc++_shared.so; do
+for ad in libvelnosub-core.so libfreetype.so libfribidi.so libharfbuzz.so libuchardet.so libpng16.so libc++_shared.so; do
     cp -f "$PKGSRC"/lib/"$ad" lib/arm64-v8a/
 done
 cp -f "$ABISO" lib/arm64-v8a/libvelnosub-abi.so
@@ -74,7 +78,25 @@ zipalign -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
 echo "---- 6) apksigner (alpha keystore ile aynı kimlik ailesi) ----"
 "$BT/apksigner" sign --ks ../apk-alpha/velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
-      --out velnosub-ui-0.1.0-alpha3.apk velnosub-ui-aligned.apk
+      --out velnosub-ui-0.1.0-alpha4.apk velnosub-ui-aligned.apk
 
-"$BT/apksigner" verify velnosub-ui-0.1.0-alpha3.apk && echo "APK İMZA GEÇERLİ"
-ls -l velnosub-ui-0.1.0-alpha3.apk
+"$BT/apksigner" verify velnosub-ui-0.1.0-alpha4.apk && echo "APK İMZA GEÇERLİ"
+
+echo "---- 7) DT_NEEDED kapanış denetimi (PAKET İÇİ çözüm) ----"
+# Her lib'in NEEDED'ı paket içinde veya platform küpünde çözümlenmeli;
+# eksik kalırsa build BAŞARISIZ bitmeli (clns UnsatisfiedLinkError'ı ölmez)
+P_SISTEM="libc.so libdl.so libm.so liblog.so libz.so libandroid.so"
+HATA=0
+for f in lib/arm64-v8a/*.so; do
+    for n in $("$RE" -d "$f" | sed 's/.*(Shared library: \[\([^]]*\)\]).*/\1/'); do
+        if [ ! -f "lib/arm64-v8a/$n" ]; then
+            case " $P_SISTEM " in
+                *" $n "*) ;;
+                *) echo "KAPANIŞ HATASI: $f → $n YOK"; HATA=1 ;;
+            esac
+        fi
+    done
+done
+[ "$HATA" -eq 0 ] && echo "KAPANIŞ DENETİMİ: TAM (arm64-v8a)"
+find lib/arm64-v8a -name "*.so" -printf "%f %s\n" | sort
+ls -l velnosub-ui-0.1.0-alpha4.apk

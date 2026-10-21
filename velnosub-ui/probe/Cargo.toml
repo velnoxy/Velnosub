@@ -1,0 +1,22 @@
+[package]
+name = "velnosub-probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "velnosub_probe"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies.eframe]
+version = "0.37"
+features = ["x11"]
+
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = "0.6"
+winit = { version = "0.30.13", features = ["android-native-activity"] }
+
+[target.aarch64-linux-android]
+linker = "/root/velsub/ndk/r29/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android29-clang"
