@@ -26,6 +26,41 @@ ABISO="${ABISO:-/root/velsub/aegisub-upstream/build-android-arm64/tools/cross/li
 UISO="${UISO:-/root/velsub/aegisub-upstream/velnosub-ui/target/aarch64-linux-android/release/libvelnosub_ui.so}"
 
 echo "---- 0) giriş denetimi ----"
+# REL=1 → release modu: versionCode 13 / versionName 0.1.0 / debuggable
+# YOK / çıktı velnosub-ui-0.1.0.apk (alpha zincirinin ÜSTÜNE kurulabilir:
+# aynı keystore). Res/mipmap-* release ikondan basılıdır (PIL kelimesi).
+if [ "${REL:-0}" = "1" ]; then
+    # DİKKAT: bu aapt porte'si -M dosyasının adının TAM "AndroidManifest.xml"
+    # olmasını istiyor (byte-aynı başka ad = "No AndroidManifest.xml found");
+    # o yüzden rel manifest ayrı DİZİN'de aynı adla basılır
+    mkdir -p rel-mod
+    sed -e 's/android:versionCode="[0-9]*"/android:versionCode="13"/' \
+        -e 's/android:versionName="[^"]*"/android:versionName="0.1.0"/' \
+        -e 's/ *android:debuggable="true"//' AndroidManifest.xml > rel-mod/AndroidManifest.xml
+    MANIFEST=rel-mod/AndroidManifest.xml
+    OUT=velnosub-ui-0.1.0.apk
+    # ikon kuralı (kullanıcı ruling): alpha çağında res/ NIGHTLY ikon;
+    # düz sürümde (REL=1) res_rel/ RENKLİ ikon basılır (ikon-release.png)
+    rm -rf res_rel
+    cp -r res res_rel
+    python3 - <<'PYEOF'
+from PIL import Image
+src = "/root/velsub/aegisub-upstream/tools/cross/apk-ui/ikon-release.png"
+res = "/root/velsub/aegisub-upstream/tools/cross/apk-ui/res_rel"
+base = Image.open(src).convert("RGBA")
+for d, px in [("mdpi",48),("hdpi",72),("xhdpi",96),("xxhdpi",144),("xxxhdpi",192)]:
+    base.resize((px,px), Image.LANCZOS).save(
+        f"{res}/mipmap-{d}/ic_launcher.png", optimize=True)
+print("ikon: release (renkli) 5 yoğunluk")
+PYEOF
+    RES=res_rel
+    echo "MOD: RELEASE (code 13, 0.1.0, debuggable yok, renkli ikon)"
+else
+    MANIFEST=AndroidManifest.xml
+    RES=res
+    OUT=velnosub-ui-0.1.0-alpha9.apk
+    echo "MOD: ALPHA (code 12, 0.1.0-ui-alpha9, debuggable true, nightly ikon)"
+fi
 for f in "$UISO" "$ABISO"; do
     [ -f "$f" ] || { echo "EKSİK: $f"; exit 1; }
 done
@@ -63,8 +98,8 @@ echo "---- 3) aapt (Debian arm64 — Google build-tools x86_64 bu hatta koşmaz)
 rm -f velnosub-ui-unsigned.apk
 aapt package -f \
       --min-sdk-version 24 --target-sdk-version 28 \
-      -M AndroidManifest.xml \
-      -S res \
+      -M "$MANIFEST" \
+      -S "$RES" \
       -I "$PF/android.jar" \
       -A assets \
       -F velnosub-ui-unsigned.apk
@@ -78,9 +113,9 @@ zipalign -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
 echo "---- 6) apksigner (alpha keystore ile aynı kimlik ailesi) ----"
 "$BT/apksigner" sign --ks ../apk-alpha/velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
-      --out velnosub-ui-0.1.0-alpha9.apk velnosub-ui-aligned.apk
+      --out "$OUT" velnosub-ui-aligned.apk
 
-"$BT/apksigner" verify velnosub-ui-0.1.0-alpha9.apk && echo "APK İMZA GEÇERLİ"
+"$BT/apksigner" verify "$OUT" && echo "APK İMZA GEÇERLİ"
 
 echo "---- 7) DT_NEEDED kapanış denetimi (PAKET İÇİ çözüm) ----"
 # Her lib'in NEEDED'ı paket içinde veya platform küpünde çözümlenmeli;
@@ -99,4 +134,4 @@ for f in lib/arm64-v8a/*.so; do
 done
 [ "$HATA" -eq 0 ] && echo "KAPANIŞ DENETİMİ: TAM (arm64-v8a)"
 find lib/arm64-v8a -name "*.so" -printf "%f %s\n" | sort
-ls -l velnosub-ui-0.1.0-alpha4.apk
+ls -l "$OUT"
