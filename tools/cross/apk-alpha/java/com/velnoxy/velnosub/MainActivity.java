@@ -85,6 +85,14 @@ public class MainActivity extends Activity {
                 kos("karaskel-dene.ass", "Kara dene", "--sel", "1", "--sel", "2", "--sel", "3", "--sel", "4", "--sel", "5");
             }
         });
+        Button kk = new Button(this);
+        kk.setText("Pump duman (Karaskel)");
+        kk.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+                kos("karaskel-dene.ass", "Karaskel dene", "--sel", "1");
+            }
+        });
+        ana.addView(kk, 3); // scrol'ün ÖNCESİNDE kalması şart — yoksa düğme ekran altında kayar
     }
 
     private void log(final String s) {
