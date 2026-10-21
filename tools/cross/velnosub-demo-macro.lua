@@ -229,3 +229,48 @@ local function kara_dene(subs, sel, aktif)
 end
 aegisub.register_macro("Kara dene", "parse_karaoke_data dumanı (dilim 3)", kara_dene)
 
+-- P5 dilim 4: karaskel vendor dumanı — collect_head + preproc üçlüsü
+local function karaskel_dene(subs, sel, aktif)
+	include("karaskel.lua")
+	local meta, stil = karaskel.collect_head(subs, false)
+	aegisub.log(("karaskel: res=%dx%d stil.n=%d vfaktör=%.3f")
+	             :format(meta.res_x, meta.res_y, stil.n,
+	                     meta.video_x_correct_factor or 1.0))
+	for i = 1, stil.n do
+		aegisub.log(("karaskel stil %d: %s (fontname=%s, yazı=%d, align=%d, marj_v=%d)")
+		             :format(i, stil[i].name, stil[i].fontname,
+		                     stil[i].fontsize, stil[i].align, stil[i].margin_v))
+	end
+	for _, sav in ipairs(sel) do
+		local l = subs[sav]
+		if l.class == "dialogue" then
+			karaskel.preproc_line_text(meta, stil, l)
+			karaskel.preproc_line_size(meta, stil, l)
+			karaskel.preproc_line_pos(meta, stil, l)
+			aegisub.log(("kl satır: stil=%s kırpık=%q kara.n=%d")
+			             :format(l.style, l.text_stripped, l.kara.n))
+			aegisub.log(("kl ölçü: g=%.2f y=%.2f derin=%.2f öncü=%.2f")
+			             :format(l.width, l.height, l.descent, l.extlead))
+			aegisub.log(("kl konum: sol=%.1f orta=%.1f sağ=%.1f x=%.1f h=%s v=%s")
+			             :format(l.left, l.center, l.right, l.x,
+			                     l.halign, l.valign))
+			aegisub.log(("kl marj: etkin=%d,%d,%d,%d (satır %d,%d,%d,%d)")
+			             :format(l.eff_margin_l, l.eff_margin_r,
+			                     l.eff_margin_t, l.eff_margin_b,
+			                     l.margin_l, l.margin_r,
+			                     l.margin_t, l.margin_b))
+			for s = 0, l.kara.n do
+				local syl = l.kara[s]
+				aegisub.log(("kl sibek %d: %q g=%.2f ön=%.2f post=%.2f")
+				             :format(s, syl.text_spacestripped or "",
+				                     syl.width or -1,
+				                     syl.prespacewidth or -1,
+				                     syl.postspacewidth or -1))
+			end
+		end
+	end
+	aegisub.log("karaskel dene bitti")
+end
+aegisub.register_macro("Karaskel dene", "karaskel vendor dumanı (dilim 4)", karaskel_dene)
+
+

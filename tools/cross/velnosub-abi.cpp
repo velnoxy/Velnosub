@@ -287,7 +287,16 @@ int velnosub_abi_line_meta(int h, int idx, char *buf, int buflen) {
 		// (upstream scriptler class=="dialogue" + comment alanına bakar;
 		// ABI olay kolları yalnız Dialogue satırı tuttukları için sınıf
 		// hep "dialogue" döner; Comment olayı comment=1)
-		std::string const t = "dialogue|" + std::string(d.Comment ? "1" : "0");
+		// P5 dilim 4: karaskel hattı alanları — upstream LuaDialogueToLua
+		// kardeşliği (auto4_lua_assfile.cpp 164-182): layer/style/actor/
+		// effect/margin_l/r/t(b=t tek slot Margin[2]) kanalları eklendi
+		std::string const t =
+			"dialogue|" + std::string(d.Comment ? "1" : "0")
+			+ "|" + std::to_string(d.Layer)
+			+ "|" + d.Style.get() + "|" + d.Actor.get() + "|" + d.Effect.get()
+			+ "|" + std::to_string(d.Margin[0])
+			+ "|" + std::to_string(d.Margin[1])
+			+ "|" + std::to_string(d.Margin[2]);
 		int const n = static_cast<int>(t.size());
 		int const m = (buflen - 1) < n ? (buflen - 1) : n;
 		std::memcpy(buf, t.data(), static_cast<size_t>(m));

@@ -128,12 +128,22 @@ local function satir_oku(h, i0)
 	local meta = oku(abi.velnosub_abi_line_meta, h, i0)
 	if not meta then error(hatasi("line_meta"), 2) end
 	local mhaneler = hata_ayikla(meta)
+	-- P5 dilim 4: karaskel hattı alanları — upstream LuaDialogueToLua
+	-- kardeşliği; margin_b tek slot (upstream t=b, Margin[2])
 	return {
 		text = metin,
 		start_time = ms_bas,
 		end_time = ms_son,
 		class = mhaneler[1] or "dialogue",
 		comment = mhaneler[2] == "1",
+		layer = tonumber(mhaneler[3] or 0) or 0,
+		style = mhaneler[4] or "",
+		actor = mhaneler[5] or "",
+		effect = mhaneler[6] or "",
+		margin_l = tonumber(mhaneler[7] or 0) or 0,
+		margin_r = tonumber(mhaneler[8] or 0) or 0,
+		margin_t = tonumber(mhaneler[9] or 0) or 0,
+		margin_b = tonumber(mhaneler[9] or 0) or 0,
 	}
 end
 
@@ -489,6 +499,193 @@ local function subs_nesne(h, dosya_yolu)
 	return proxy, ofset, nev
 end
 
+-- P5 dilim 4: aegisub.util modülü — upstream automation/include/aegisub/
+-- util.moon gövdeleri birebir saf-Lua kardeşlik (upstream dağıtımda bu
+-- dosya moonscript derlemesiyle util.lua olarak paketlenir; kaynakta
+-- derlenmişi yok olduğundan require 'aegisub.util' preload ile yakalanır)
+package.preload["aegisub.util"] = function()
+	local sformat = string.format
+	local util = {}
+	local function kontrol_t(tbl)
+		if type(tbl) ~= "table" then
+			error(("tablo gerekli (%s)"):format(type(tbl)), 3)
+		end
+	end
+	local function kontrol_s(s)
+		if type(s) ~= "string" then
+			error(("dizge gerekli (%s)"):format(type(s)), 3)
+		end
+	end
+	-- sığ kopya (upstream: {k, v for k, v in pairs tbl})
+	function util.copy(tbl)
+		kontrol_t(tbl)
+		local cikti = {}
+		for k, v in pairs(tbl) do cikti[k] = v end
+		return cikti
+	end
+	-- derin kopya (dolaşımlı yapı tutarlı — upstream seen haritası)
+	function util.deep_copy(tbl)
+		kontrol_t(tbl)
+		local gorulen = {}
+		local function kopya(val)
+			if type(val) ~= "table" then return val end
+			if gorulen[val] then return gorulen[val] end
+			gorulen[val] = val
+			local c = {}
+			for k, v in pairs(val) do c[k] = kopya(v) end
+			return c
+		end
+		return kopya(tbl)
+	end
+	-- &HBBGGRR& biçimi
+	function util.ass_color(r, g, b)
+		return sformat("&H%02X%02X%02X&", b, g, r)
+	end
+	function util.ass_alpha(a) return sformat("&H%02X&", a) end
+	function util.ass_style_color(r, g, b, a)
+		return sformat("&H%02X%02X%02X%02X", a, b, g, r)
+	end
+	-- ASS renginden bileşenler (upstream üç deneme: stil/renk/alfa/HTML)
+	function util.extract_color(s)
+		kontrol_s(s)
+		local a, b, g, r
+		a, b, g, r = s:match("&H(%x%x)(%x%x)(%x%x)(%x%x)")
+		if a then
+			return tonumber(r, 16), tonumber(g, 16), tonumber(b, 16),
+			       tonumber(a, 16)
+		end
+		b, g, r = s:match("&H(%x%x)(%x%x)(%x%x)&")
+		if b then
+			return tonumber(r, 16), tonumber(g, 16), tonumber(b, 16), 0
+		end
+		a = s:match("&H(%x%x)&")
+		if a then return 0, 0, 0, tonumber(a, 16) end
+		r, g, b, a = s:match("#(%x%x)(%x?%x?)(%x?%x?)(%x?%x?)")
+		if r then
+			return tonumber(r, 16), tonumber(g, 16) or 0,
+			       tonumber(b, 16) or 0, tonumber(a, 16) or 0
+		end
+	end
+	function util.alpha_from_style(scolor)
+		kontrol_s(scolor)
+		return util.ass_alpha(select(4, util.extract_color(scolor)))
+	end
+	function util.color_from_style(scolor)
+		kontrol_s(scolor)
+		local r, g, b = util.extract_color(scolor)
+		return util.ass_color(r or 0, g or 0, b or 0)
+	end
+	-- HSV → RGB (upstream Hi indeks dalları; doygunluk 0 → gri)
+	function util.HSV_to_RGB(H, S, V)
+		local r, g, b = 0, 0, 0
+		if S == 0 then
+			r = util.clamp(V * 255, 0, 255)
+			g, b = r, r
+		else
+			H = math.abs(H) % 360
+			local Hi = math.floor(H / 60)
+			local f = H / 60.0 - Hi
+			local p = V * (1 - S)
+			local q = V * (1 - f * S)
+			local t = V * (1 - (1 - f) * S)
+			if Hi == 0 then
+				r, g, b = V * 255.0, t * 255.0, p * 255.0
+			elseif Hi == 1 then
+				r, g, b = q * 255.0, V * 255.0, p * 255.0
+			elseif Hi == 2 then
+				r, g, b = p * 255.0, V * 255.0, t * 255.0
+			elseif Hi == 3 then
+				r, g, b = p * 255.0, q * 255.0, V * 255.0
+			elseif Hi == 4 then
+				r, g, b = t * 255.0, p * 255.0, V * 255.0
+			elseif Hi == 5 then
+				r, g, b = V * 255.0, p * 255.0, q * 255.0
+			else
+				error("math.floor(H % 360 / 60) should be [0, 6), is "
+				      .. tostring(Hi) .. "?")
+			end
+		end
+		return r, g, b
+	end
+	-- HSL → RGB (Gundamn katkısı; upstream bileşen fonksiyonuyla)
+	function util.HSL_to_RGB(H, S, L)
+		local r, g, b
+		H = math.abs(H) % 360
+		S = util.clamp(S, 0, 1)
+		L = util.clamp(L, 0, 1)
+		if S == 0 then
+			r, g, b = L, L, L
+		else
+			local Q = (L < 0.5) and (L * (1.0 + S)) or (L + S - (L * S))
+			local P = 2.0 * L - Q
+			local Hk = H / 360
+			local Tr, Tg, Tb
+			if Hk < 1 / 3 then
+				Tr, Tg, Tb = Hk + 1 / 3, Hk, Hk + 2 / 3
+			elseif Hk > 2 / 3 then
+				Tr, Tg, Tb = Hk - 2 / 3, Hk, Hk - 1 / 3
+			else
+				Tr, Tg, Tb = Hk + 1 / 3, Hk, Hk - 1 / 3
+			end
+			local function bileşen(T)
+				if T < 1 / 6 then
+					return P + ((Q - P) * 6.0 * T)
+				elseif 1 / 6 <= T and T < 1 / 2 then
+					return Q
+				elseif 1 / 2 <= T and T < 2 / 3 then
+					return P + ((Q - P) * (2 / 3 - T) * 6.0)
+				else
+					return P
+				end
+			end
+			r, g, b = bileşen(Tr), bileşen(Tg), bileşen(Tb)
+		end
+		return math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5),
+		       math.floor(b * 255 + 0.5)
+	end
+	function util.trim(s)
+		kontrol_s(s)
+		return (s:gsub("^%s*(.-)%s*$", "%1"))
+	end
+	function util.headtail(s)
+		kontrol_s(s)
+		local a, b, bas, kuyruk = s:find("(.-)%s+(.*)")
+		if a then return bas, kuyruk else return s, "" end
+	end
+	function util.words(s)
+		kontrol_s(s)
+		return function()
+			if s == "" then return nil end
+			local bas, kuyruk = util.headtail(s)
+			s = kuyruk
+			return bas
+		end
+	end
+	function util.clamp(val, min, max)
+		if val < min then return min
+		elseif val > max then return max
+		else return val end
+	end
+	function util.interpolate(pct, min, max)
+		if pct <= 0 then return min
+		elseif pct >= 1 then return max
+		else return pct * (max - min) + min end
+	end
+	function util.interpolate_color(pct, first, last)
+		local r1, g1, b1 = util.extract_color(first)
+		local r2, g2, b2 = util.extract_color(last)
+		return util.ass_color(util.interpolate(pct, r1, r2),
+		                      util.interpolate(pct, g1, g2),
+		                      util.interpolate(pct, b1, b2))
+	end
+	function util.interpolate_alpha(pct, first, last)
+		return util.ass_alpha(util.interpolate(pct,
+			select(4, util.extract_color(first)),
+			select(4, util.extract_color(last))))
+	end
+	return util
+end
+
 -- ---- aegisub.dialog.display: dialog tanım tablosu → ABI mini DSL ------
 -- kurallar (faz4 P4.5 III DSL): ctl|sınıf|ad|başlik|değer[|ek] ;
 -- label 4 hücreli değersiz; intedit/floatedit ek = min,max ;
@@ -739,6 +936,71 @@ function include(ad)
 	error("include yok: " .. tostring(ad) .. " (" .. kurulu .. ")")
 end
 
+-- P5 dilim 4: unicode modülü — upstream automation/include/aegisub/
+-- unicode.moon kardeşliği (karaskel hattı); require 'aegisub.unicode'
+-- yolu package.preload ile yakalanır (unicode.lua bunu ister)
+package.preload = package.preload or {}
+package.preload["aegisub.unicode"] = function()
+	local unicode = {}
+	-- byte genişliği: s'in i'inci baytında başlayan karakterin uzunluğu
+	-- (upstream: b<128→1, <224→2, <240→3, yoksa 4; b nil→1)
+	function unicode.charwidth(s, i)
+		if type(s) ~= "string" then
+			error(("charwidth: dizge gerekli (%s)"):format(type(s)), 2)
+		end
+		local b = s:byte(i or 1)
+		if not b then return 1
+		elseif b < 128 then return 1
+		elseif b < 224 then return 2
+		elseif b < 240 then return 3
+		else return 4 end
+	end
+	-- karakter dolaşımı: (karakter, sıra) çiftleri
+	function unicode.chars(s)
+		local i, ad = 1, 0
+		return function()
+			if i > #s then return nil end
+			local j = i
+			ad = ad + 1
+			i = i + unicode.charwidth(s, i)
+			return s:sub(j, i - 1), ad
+		end
+	end
+	-- karakter sayısı (O(n))
+	function unicode.len(s)
+		local n = 0
+		for _ in unicode.chars(s) do n = n + 1 end
+		return n
+	end
+	-- ilk karakterin kod noktası (upstream naif çözüm, girdi geçerli varsayım)
+	function unicode.codepoint(s)
+		local b = s:byte(1)
+		if not b then return nil end
+		if b < 128 then return b end
+		local res, w
+		if b < 224 then
+			res, w = b - 192, 2
+		elseif b < 240 then
+			res, w = b - 224, 3
+		else
+			res, w = b - 240, 4
+		end
+		for i = 2, w do
+			res = res * 64 + (s:byte(i) or 0) - 128
+		end
+		return res
+	end
+	-- büyük/küçük katlama: upstream aegisub.__unicode_impl (FFI doğal)
+	-- mobil hatta paketlenmedi — dürüst red
+	function unicode.to_upper_case(s)
+		error("aegisub.unicode.to_upper_case: __unicode_impl doğal kolu "
+		      .. "mobil hatta paketli değil", 2)
+	end
+	unicode.to_lower_case = unicode.to_upper_case
+	unicode.to_fold_case = unicode.to_upper_case
+	return unicode
+end
+
 -- ---- yüzey monte ----------------------------------------------------
 aegisub.dialog = { display = display }
 aegisub.register_macro = register_macro
@@ -751,7 +1013,15 @@ aegisub.progress = {
 	title = function() end,
 }
 aegisub.debug = {
-	out = function(...) aegisub.log(tostring((select(1, ...)))) end,
+	out = function(...)
+		local n = select("#", ...)
+		if n >= 2 and type(select(2, ...)) == "string" then
+			local ok, cikti = pcall(string.format, select(2, ...), select(3, ...))
+			aegisub.log(ok and cikti or select(2, ...))
+		elseif n >= 1 then
+			aegisub.log(tostring(select(1, ...)))
+		end
+	end,
 	mode = function() end,
 }
 -- P5.3: geri kalan aegisub.* yüzey katmanı
