@@ -74,9 +74,25 @@ static BOOT_YOL: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::
 #[cfg(target_os = "android")]
 static BAS: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+// liblog.so platform kütüphanesi: MAIN buffer'a yazar — çökme sonrası
+// `logcat -d -s velnosub` ile okunur (crash buffer bu ortamda okunamıyor)
+#[cfg(target_os = "android")]
+extern "C" {
+	fn __android_log_print(prio: i32, tag: *const std::os::raw::c_char, fmt: *const std::os::raw::c_char, ...) -> i32;
+}
+
+#[cfg(target_os = "android")]
+unsafe fn android_log(not: &str) {
+	let tag = b"velnosub\0".as_ptr().cast::<std::os::raw::c_char>();
+	let fmt = b"%s\0".as_ptr().cast::<std::os::raw::c_char>();
+	let mesaj = std::ffi::CString::new(not).unwrap_or_default();
+	let _ = __android_log_print(4, tag, fmt, mesaj.as_ptr());
+}
+
 #[cfg(target_os = "android")]
 fn not_yaz(not: &str) {
 	use std::io::Write;
+	unsafe { android_log(not) };
 	let yol = match BOOT_YOL.get() {
 		Some(y) => y,
 		None => {
@@ -85,11 +101,12 @@ fn not_yaz(not: &str) {
 		}
 	};
 	let ms = BAS.get().map(|b| b.elapsed().as_millis()).unwrap_or(0);
+	let satir = format!("[{ms}] {not}");
 	let sonuc = std::fs::OpenOptions::new()
 		.create(true)
 		.append(true)
 		.open(yol)
-		.and_then(|mut f| writeln!(f, "[{ms}] {not}"));
+		.and_then(|mut f| writeln!(f, "{satir}"));
 	if let Err(e) = sonuc {
 		eprintln!("velnosub breadcrumb yazılamadı: {e}");
 	}

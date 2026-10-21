@@ -27,10 +27,18 @@ for f in "$UISO" "$ABISO"; do
 done
 echo "ui NEEDED:"; "$RE" -d "$UISO" | grep NEEDED
 
-echo "---- 1) assets (font + örnek ass; Lua pump UI'da YOK — ABI FFI doğrudan) ----"
+echo "---- 1) assets (font + örnek ass + GÖMÜLÜ otomasyon zinciri) ----"
+# her şey gömülü kuralı (kullanıcı ruling): Lua vendor+autos, config, shim,
+# örnek ass'ler — UI uygulaması pompaj alpha'sından bağımsız kendi içinde
+# tam otomasyon malzemesini taşır (in-app pump ayrı dilim)
 rm -rf assets res_tmp
-mkdir -p assets
-cp -f "$PKGSRC"/DejaVuSans.ttf "$PKGSRC"/karaskel-dene.ass "$PKGSRC"/res-yarim.ass assets/
+mkdir -p assets/velnosub/share
+cp -f "$PKGSRC"/default_config.json "$PKGSRC"/DejaVuSans.ttf \
+      "$PKGSRC"/ass-format-tests.ass "$PKGSRC"/karaskel-dene.ass \
+      "$PKGSRC"/res-yarim.ass assets/velnosub/
+cp -rf "$PKGSRC"/share/lua assets/velnosub/share/
+mkdir -p assets/velnosub/tools
+cp -f /root/velsub/aegisub-upstream/tools/cross/velnosub-aegisub.lua assets/velnosub/tools/
 echo "assets: $(find assets -type f | wc -l) dosya"
 
 echo "---- 2) lib/arm64-v8a (kapanış kopyası + strip) ----"
@@ -66,7 +74,7 @@ zipalign -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
 echo "---- 6) apksigner (alpha keystore ile aynı kimlik ailesi) ----"
 "$BT/apksigner" sign --ks ../apk-alpha/velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
-      --out velnosub-ui-0.1.0-alpha.apk velnosub-ui-aligned.apk
+      --out velnosub-ui-0.1.0-alpha2.apk velnosub-ui-aligned.apk
 
-"$BT/apksigner" verify velnosub-ui-0.1.0-alpha.apk && echo "APK İMZA GEÇERLİ"
-ls -l velnosub-ui-0.1.0-alpha.apk
+"$BT/apksigner" verify velnosub-ui-0.1.0-alpha2.apk && echo "APK İMZA GEÇERLİ"
+ls -l velnosub-ui-0.1.0-alpha2.apk
