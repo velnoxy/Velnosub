@@ -59,8 +59,12 @@ fn kos(
 			Ok(Box::new(abi::GridApp::new(open, save)))
 		}),
 	) {
+		#[cfg(target_os = "android")]
+		not_yaz(&format!("A3 run_native HATA: {e}"));
 		eprintln!("eframe error: {e}");
 	}
+	#[cfg(target_os = "android")]
+	not_yaz("A3 run_native kapandı");
 }
 
 // Android girişi: ANativeActivity_onCreate glue'u android-activity'nin
@@ -160,8 +164,11 @@ fn android_main(app: android_activity::AndroidApp) {
 	));
 	// filesDir'e karaskel-dene.ass + DejaVuSans.ttf kopyala
 	// (asset_manager: lib.rs:1030; ndk-0.9.0 asset.rs:47/225)
+	not_yaz("A1b asset kopyası başlıyor");
 	varlik_yaz(&app, "karaskel-dene.ass", &baz.join("karaskel-dene.ass"));
+	not_yaz("A1c karaskel-dene.ass tamam");
 	varlik_yaz(&app, "DejaVuSans.ttf", &baz.join("DejaVuSans.ttf"));
+	not_yaz("A1d DejaVuSans.ttf tamam");
 	// eğri dosyalar: open=sabit deneme dosyası, save=Kayıt hedefi
 	let open = Some(baz.join("karaskel-dene.ass").display().to_string());
 	let save = Some(baz.join("kayit.ass").display().to_string());
@@ -181,6 +188,7 @@ fn android_main(app: android_activity::AndroidApp) {
 		use winit::platform::android::EventLoopBuilderExtAndroid;
 		builder.with_android_app(app);
 	}));
+	not_yaz("A2 event-loop kurulum tamam — run_native çağrılıyor");
 	kos(open, save, options);
 }
 
@@ -196,11 +204,16 @@ fn varlik_yaz(app: &android_activity::AndroidApp, ad: &str, hedef: &std::path::P
 			.buffer()
 			.and_then(|dizi| std::fs::write(hedef, dizi)),
 		None => {
+			not_yaz(&format!("V0 asset manager'da yok: {ad}"));
 			eprintln!("velnosub: asset yok: {ad}");
 			return;
 		}
 	};
 	if let Err(e) = sonuc {
+		not_yaz(&format!(
+			"V1 asset kopyası olmaz {ad} → {}: {e}",
+			hedef.display()
+		));
 		eprintln!(
 			"velnosub: asset kopyası olmaz {ad} → {}: {e}",
 			hedef.display()
