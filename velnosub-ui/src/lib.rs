@@ -66,18 +66,60 @@ fn kos(
 // Android girişi: ANativeActivity_onCreate glue'u android-activity'nin
 // kendisinden gelir (native-activity feature, eframe zinciri üzerinden
 // etkin); burada yalnız android_main sağlanır.
+//
+// P4.8.1 teşhis: filesDir/velnosub-boot.txt'e adım-adım breadcrumb —
+// logcat erişilemezse de çökme noktası tek bakışta görülür.
+#[cfg(target_os = "android")]
+static BOOT_YOL: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+#[cfg(target_os = "android")]
+static BAS: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+fn not_yaz(not: &str) {
+	use std::io::Write;
+	let yol = match BOOT_YOL.get() {
+		Some(y) => y,
+		None => {
+			eprintln!("velnosub-not-yaz (yol yok): {not}");
+			return;
+		}
+	};
+	let ms = BAS.get().map(|b| b.elapsed().as_millis()).unwrap_or(0);
+	let sonuc = std::fs::OpenOptions::new()
+		.create(true)
+		.append(true)
+		.open(yol)
+		.and_then(|mut f| writeln!(f, "[{ms}] {not}"));
+	if let Err(e) = sonuc {
+		eprintln!("velnosub breadcrumb yazılamadı: {e}");
+	}
+}
+
 #[cfg(target_os = "android")]
 #[no_mangle]
 fn android_main(app: android_activity::AndroidApp) {
 	// --- alpha kapsam (ruling 5): asset kopyası + tek örnek açılış ---
 	// internal_data_path: android-activity-0.6.1/src/lib.rs:1272
+	let _ = BAS.set(std::time::Instant::now());
 	let baz = match app.internal_data_path() {
 		Some(y) => y,
 		None => {
-			eprintln!("velnosub: internal_data_path yok — koşum atlandı");
+			let mesaj = "internal_data_path yok — koşum atlandı";
+			eprintln!("velnosub: {mesaj}");
 			return;
 		}
 	};
+	if BOOT_YOL.set(baz.join("velnosub-boot.txt")).is_ok() {
+		std::panic::set_hook(Box::new(|info| {
+			let nerede = info
+				.location()
+				.map(|l| format!("{}:{}", l.file(), l.line()))
+				.unwrap_or_else(|| "?".to_string());
+			not_yaz(&format!("PANIC {nerede}: {info}"));
+		}));
+	}
+	not_yaz("A0 android_main girdi");
+	not_yaz(&format!("A1 filesDir={}", baz.display()));
 	// filesDir'e karaskel-dene.ass + DejaVuSans.ttf kopyala
 	// (asset_manager: lib.rs:1030; ndk-0.9.0 asset.rs:47/225)
 	varlik_yaz(&app, "karaskel-dene.ass", &baz.join("karaskel-dene.ass"));
