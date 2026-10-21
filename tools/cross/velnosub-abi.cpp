@@ -70,6 +70,10 @@ extern "C" int velnosub_core_insert_line(AssFile &file, int idx, const char *met
 extern "C" int velnosub_core_delete_line(AssFile &file, int idx);
 extern "C" int velnosub_core_set_line_times(AssFile &file, int idx,
                                             long long ms_bas, long long ms_son);
+extern "C" int velnosub_core_set_line_meta(AssFile &file, int idx,
+                                           const char *stil, const char *aktor,
+                                           const char *etki, int yorum,
+                                           int katman);
 
 namespace {
 
@@ -433,6 +437,30 @@ int velnosub_abi_line_delete(int h, int idx) {
 			return -1;
 		}
 		if (velnosub_core_delete_line(c.file, idx) != 0) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+// P5.4 gece dilimi: satır meta yazımı — stil/oyuncu/etki/yorum/katman.
+// NULL dizge = alan dokunulmaz; yorum/katman -1 = dokunulmaz.
+int velnosub_abi_line_meta_set(int h, int idx, const char *stil,
+                               const char *aktor, const char *etki,
+                               int yorum, int katman) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+			set_err("satır dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		if (velnosub_core_set_line_meta(c.file, idx, stil, aktor, etki,
+		                                yorum, katman) != 0) {
 			set_err("satır dışında indeks: " + std::to_string(idx));
 			return -1;
 		}

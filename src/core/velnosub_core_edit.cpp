@@ -81,3 +81,23 @@ extern "C" int velnosub_core_set_line_times(AssFile &file, int idx,
 	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_TIME);
 	return 0;
 }
+
+// P5.4 gece dilimi: satır meta yazımı — Style/Actor/Effect flyweight
+// yazımı BU TU'da (F1 kolu; kök neden notuna bak). yorum=-1/katman=-1
+// → alan DOKUNULMAZ (kısmi yazım: UI tek alan değişirken diğerlerini
+// bozmasın).
+extern "C" int velnosub_core_set_line_meta(AssFile &file, int idx,
+                                           const char *stil, const char *aktor,
+                                           const char *etki, int yorum,
+                                           int katman) {
+	if (idx < 0 || idx >= static_cast<int>(file.Events.size()))
+		return -1;
+	auto &d = *std::next(file.Events.begin(), idx);
+	if (stil) d.Style = stil;
+	if (aktor) d.Actor = aktor;
+	if (etki) d.Effect = etki;
+	if (yorum >= 0) d.Comment = yorum != 0;
+	if (katman >= 0) d.Layer = katman;
+	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_META);
+	return 0;
+}
