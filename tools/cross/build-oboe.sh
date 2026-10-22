@@ -25,16 +25,17 @@ NDK_ROOT=${NDK_ROOT:-/root/velsub/ndk/r29}
 DL() { [ -s "$2" ] || curl -sL -o "$2" "$1"; }
 
 DL "https://github.com/google/oboe/archive/refs/tags/${OBOE_VER}.tar.gz" "$SRC/oboe-${OBOE_VER}.tar.gz"
-BUILD=$WORK/oboe-build-$mode
-[ -d "$BUILD" ] || tar -xzf "$SRC/oboe-${OBOE_VER}.tar.gz" --transform "s|oboe-${OBOE_VER}|oboe-src|" -C "$WORK" && mv -f "$WORK/oboe-src" "$BUILD" 2>/dev/null || true
+KAYNAK=$SRC/oboe-$mode
+BLD=$WORK/oboe-build-$mode
+[ -d "$KAYNAK" ] || (tar -xzf "$SRC/oboe-${OBOE_VER}.tar.gz" -C "$SRC" && mv -f "$SRC/oboe-${OBOE_VER}" "$KAYNAK")
 
-cmake -S "$SRC/oboe-src" -B "$BUILD" \
+cmake -S "$KAYNAK" -B "$BLD" \
     -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$AND_ABI" -DANDROID_PLATFORM=android-$API \
     -DCMAKE_BUILD_TYPE=Release -DOBOE_BUILD_TESTS=OFF \
     -DCMAKE_INSTALL_PREFIX="$PREFIX" -DBUILD_SHARED_LIBS=OFF
-cmake --build "$BUILD" -j"${JOBS:-$(nproc)}"
-cmake --install "$BUILD"
+cmake --build "$BLD" -j"${JOBS:-$(nproc)}"
+cmake --install "$BLD"
 
 mkdir -p "$PREFIX/lib/pkgconfig"
 cat > "$PREFIX/lib/pkgconfig/oboe.pc" <<EOF
