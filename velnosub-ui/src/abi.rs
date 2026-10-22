@@ -408,7 +408,7 @@ fn alt_tsv_okes() -> Vec<(i64, String, String)> {
 		.collect()
 }
 
-pub struct VideoSection {
+	pub struct VideoSection {
 	handle: c_int,
 	w: usize,
 	hgt: usize,
@@ -424,6 +424,8 @@ pub struct VideoSection {
 	oynat: bool,
 	son_tik: Option<std::time::Instant>,
 	birim: f32,
+	// P6.5: son kare-decode süresi — cihazhızı kanıtlanır (ms/kare)
+	coz_ms: u32,
 }
 
 /// P4.6 dilim 2: ASS önizleme kolu — altyazı kolu başına libass şartı,
@@ -1576,6 +1578,7 @@ impl GridApp {
 			oynat: false,
 			son_tik: None,
 			birim: 0.0,
+			coz_ms: 0,
 		});
 		// P6.4: iç altyazı akış taraması — YALNIZ SEÇİCİ kuralı (auto-load
 		// yok); metin kodekli akışlar sayılır, pane ComboBox'ından yüklenir
@@ -1822,9 +1825,12 @@ impl GridApp {
 					let son_kare = (v.kareler - 1).max(0);
 					if v.frame < son_kare {
 						v.frame = (v.frame + adim).min(son_kare);
+						// P6.5: kare-decode süresi ölçüyü — cihaz-hızı kanıtı
+						let t0 = std::time::Instant::now();
 						if let Err(e) = v.cizim_cek(ui.ctx()) {
 							v_hata = Some(e);
 						}
+						v.coz_ms = t0.elapsed().as_millis() as u32;
 					}
 					if v.frame >= son_kare {
 						v.oynat = false;
@@ -1852,7 +1858,12 @@ impl GridApp {
 				let yanit = ui.image((sac.id(), boy));
 				oniz_dik = Some(yanit.rect);
 			}
-			ui.label(RichText::new(&v.info).weak());
+			ui.label(RichText::new(if v.oynat || v.coz_ms > 0 {
+				// P6.5: oynatma/decode kanıtı — kare ilerliyorsa görünür
+				format!("{} · oynatma: {} ms/kare", &v.info, v.coz_ms)
+			} else {
+				v.info.clone()
+			}).weak());
 			// P6.4: iç altyazı akışı seçici — YALNIZ SEÇİCİ (auto-load yok);
 			// seçim aks_sec'e yazılır, v-blok sonrası alt_yukle işler
 			if !v.akslar.is_empty() {
