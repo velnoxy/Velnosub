@@ -1713,10 +1713,17 @@ impl GridApp {
 				)).weak());
 			});
 			if let Some(sac) = &v.dok {
-				let yanit = ui.image((
-					sac.id(),
-					egui::vec2(v.w as f32, v.hgt as f32),
-				));
+				// P6.1 masaüstü: pane genişliğine sığdır (aegisub kuralı —
+				// video pane taşmaz, kaydırma olmaz; mobil ham boyutta kalır)
+				let boy = if mobil {
+					egui::vec2(v.w as f32, v.hgt as f32)
+				} else {
+					let maks = ui.available_width();
+					// oran küçültme — kare oranı bozulmaz; büyümez (≤1)
+					let k = (maks / (v.w.max(1) as f32)).min(1.0);
+					egui::vec2(v.w as f32 * k, v.hgt as f32 * k)
+				};
+				let yanit = ui.image((sac.id(), boy));
 				oniz_dik = Some(yanit.rect);
 			}
 			ui.label(RichText::new(&v.info).weak());
@@ -2196,6 +2203,38 @@ impl GridApp {
 		// mobil: satır dokunma yüksekliği en az 44pt (3.2x gövde yüksekliği)
 		let satir_h = ui.text_style_height(&egui::TextStyle::Body)
 			* if mobil { 3.2 } else { 2.4 };
+		if !mobil {
+			// P6.2: aegisub kolon başlığı — satır widget yarı genişlikleri
+			//yle eş (36/78/78/88/86/80), tıklanamaz soluk şerit
+			ui.horizontal(|ub| {
+				ub.add_sized(
+					[36.0, 16.0],
+					egui::Label::new(RichText::new("#").weak()),
+				);
+				ub.add_sized(
+					[78.0, 16.0],
+					egui::Label::new(RichText::new("Başla").weak()),
+				);
+				ub.add_sized(
+					[78.0, 16.0],
+					egui::Label::new(RichText::new("Bitiş").weak()),
+				);
+				ub.add_sized(
+					[88.0, 16.0],
+					egui::Label::new(RichText::new("Stil").weak()),
+				);
+				ub.add_sized(
+					[86.0, 16.0],
+					egui::Label::new(RichText::new("Oyuncu").weak()),
+				);
+				ub.add_sized(
+					[80.0, 16.0],
+					egui::Label::new(RichText::new("Etki").weak()),
+				);
+				ub.label(RichText::new("Metin").weak());
+			});
+			ui.add_space(3.0);
+		}
 		ScrollArea::vertical()
 			.auto_shrink(false)
 			.show_rows(ui, satir_h, self.rows.len(), |ui, aralık| {
@@ -2236,11 +2275,19 @@ impl GridApp {
 									let v = row.yorum;
 									yazi.push(Yazi::Yorum(i, v));
 								}
+								let yorum_renk = if row.yorum {
+									// P6.2 aegisub yorum stili: checkbox'lı satır
+									// mavi tinta (açık/koyu temada AA uyumlu ton)
+									Some(Color32::from_rgb(100, 150, 235))
+								} else {
+									None
+								};
 								if h.add_sized(
 									[78.0, 18.0],
 									TextEdit::singleline(&mut row.bas)
 										.desired_width(76.0)
-										.font(egui::TextStyle::Monospace),
+										.font(egui::TextStyle::Monospace)
+										.text_color_opt(yorum_renk),
 								).changed() {
 									yazi.push(Yazi::Bas(i));
 								}
@@ -2248,7 +2295,8 @@ impl GridApp {
 									[78.0, 18.0],
 									TextEdit::singleline(&mut row.son)
 										.desired_width(76.0)
-										.font(egui::TextStyle::Monospace),
+										.font(egui::TextStyle::Monospace)
+										.text_color_opt(yorum_renk),
 								).changed() {
 									yazi.push(Yazi::Son(i));
 								}
@@ -2281,9 +2329,11 @@ impl GridApp {
 								).changed() {
 									yazi.push(Yazi::Etki(i));
 								}
-								let w = h.available_width() * 0.42;
+								// P6.2 metin kolonu KALAN tam genişlik — kolonlar
+								// satırlar halinde sabit hizalanır (aegisub h-.)
 								let resp = TextEdit::singleline(&mut row.text)
-									.desired_width(w)
+									.desired_width(h.available_width())
+									.text_color_opt(yorum_renk)
 									.show(h)
 									.response;
 								if resp.changed() {
@@ -2898,10 +2948,24 @@ impl GridApp {
 			});
 			// P5.4 gece: metin kutusu ÖNCE — imleci bu çerçeveden alır;
 			// tag şeridi ALTA (başparmak kolu: antislop-layoutmobile)
-			let out = TextEdit::multiline(&mut metin)
-				.desired_width(ev.available_width().min(if mobil { 10_000.0 } else { 620.0 }))
-				.desired_rows(4)
-				.show(ev);
+			let out = if mobil {
+				TextEdit::multiline(&mut metin)
+					.desired_width(ev.available_width().min(10_000.0))
+					.desired_rows(4)
+					.show(ev)
+			} else {
+				// P6.2: düzen kutusu SABİT bant — uzun metin iç-alanda kayar
+				// (aegisub edit-pane kuralı; pencere kaydırması yok)
+				egui::ScrollArea::vertical()
+					.auto_shrink(false)
+					.show(ev, |se| {
+						TextEdit::multiline(&mut metin)
+							.desired_width(se.available_width().min(620.0))
+							.desired_rows(4)
+							.show(se)
+					})
+					.inner
+			};
 			let mut imlec: usize = out
 				.cursor_range
 				.map(|cr| cr.primary.index.min(cr.secondary.index).0)
@@ -2961,7 +3025,7 @@ const TAGS: [(&str, &str); 8] = [
 
 impl GridApp {
 	fn masaustu_cerceve(&mut self, ui: &mut egui::Ui) {
-		// P4.8.1 aegisub-yüzeyi: ppp ölçek + her iki eksende kaydırma;
+		// P4.8.1 aegisub-yüzeyi: ppp ölçek; P6.1: kaydırmasız panel yapısı;
 		// default 0.8× (1220'lük ekranda ~okunur küçük), ± düğmeleriyle
 		// ayarlanır; set_pixels_per_point frame'den sonra etkin (egui kuralı)
 		let base = *self
@@ -2970,11 +3034,16 @@ impl GridApp {
 		ui.ctx()
 			.set_pixels_per_point((base * self.zoom).clamp(0.35, 1.6));
 		CentralPanel::default().show_inside(ui, |su| {
-			egui::ScrollArea::both().show(su, |sa| {
-				sa.vertical(|top| {
-					let tema = tema_simdi(top);
-					// P4.8.2: aegisub menü çubuğu en üstte
-					self.menu_cubugu(top);
+			// P6.1 kaydırmasız masaüstü: aegisub pencere yapısı — pencere
+			// SABİT panellerden örüldü (tavan: menü+öçe+taşımegut; video;
+			// ses; alt: düzen kutusu + durum; merkez: grid). Tüm pencereyi
+			// saran ScrollArea::both kaldırıldı — kaydırma yalnız grid'in
+			// satır-virtualizasyonunda (show_rows); aegisub kuralı.
+			let tum_yuk = su.available_height();
+			egui::Panel::top("masaustu-tavan").show_inside(su, |top| {
+				let tema = tema_simdi(top);
+				// P4.8.2: aegisub menü çubuğu en üstte
+				self.menu_cubugu(top);
 					top.horizontal(|h| {
 						h.label("ölçek");
 						if h.button("−").clicked() {
@@ -3035,23 +3104,36 @@ impl GridApp {
 						}
 					});
 					top.add_space(2.0);
-					if self.video.is_some() {
-						self.video_icerik(top, false);
-					}
-					if self.audio.is_some() {
-						self.ses_icerik(top, false);
-					}
-					if !self.stiller.is_empty() {
-						self.stil_icerik(top, false);
-					}
-					if self.dialog.is_some() {
-						self.form_icerik(top, false);
-					}
-					// P4.8.2: aegisub subtitle-edit kutusu (grid üstü)
-					self.duzen_kutusu(top, false);
-					self.grid_icerik(top, false);
-					self.durum_icerik(top, false);
-				});
+			}); // tavan şeridi kapanır (menü+öçe+toolbar içeride)
+			if self.video.is_some() {
+				// Aegisub: video pane — genişliğe sığar, kalanın %44'ünü
+				// aşmaz (üst panelin altına oturur; kaydırma olmaz)
+				egui::Panel::top("masaustu-video")
+				.size_range(egui::Rangef::new(20.0, (tum_yuk * 0.44).max(120.0)))
+					.show_inside(su, |v| self.video_icerik(v, false));
+			}
+			if self.audio.is_some() {
+				// Aegisub: dalga şeridi videonun altında SABİT
+				egui::Panel::top("masaustu-ses")
+				.size_range(egui::Rangef::new(20.0, (tum_yuk * 0.22).max(150.0)))
+					.show_inside(su, |s| self.ses_icerik(s, false));
+			}
+			// İlk eklenen bottom en dış kenara oturur: durum EN ALTA
+			egui::Panel::bottom("masaustu-durum")
+				.show_inside(su, |d| self.durum_icerik(d, false));
+			// Aegisub: düzen kutusu (subtitle edit) durumun üstünde SABİT
+			egui::Panel::bottom("masaustu-duzen")
+				.show_inside(su, |d| self.duzen_kutusu(d, false));
+			// Merkez: stil/form şeritleri varsa grid'i sektirir; grid'in tek
+			// kaydırma alanı show_rows'lu satır listesi
+			egui::CentralPanel::default().show(su, |merkez| {
+				if !self.stiller.is_empty() {
+					self.stil_icerik(merkez, false);
+				}
+				if self.dialog.is_some() {
+					self.form_icerik(merkez, false);
+				}
+				self.grid_icerik(merkez, false);
 			});
 		});
 		self.diyaloglar(ui);
