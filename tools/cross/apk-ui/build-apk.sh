@@ -16,11 +16,14 @@
 # Çıkış: tools/cross/apk-ui/velnosub-ui-0.1.0-alpha.apk (imzalı, hizalı)
 set -e
 cd "$(dirname "$0")"
-BT=/root/velsub/android-sdk/bt/android-14
-PF=/root/velsub/android-sdk/pf/android-34
-NDKBIN=$(echo /root/velsub/ndk/r29/toolchains/llvm/prebuilt/*/bin | head -1)
+BT=${BT:-/root/velsub/android-sdk/bt/android-14}
+PF=${PF:-/root/velsub/android-sdk/pf/android-34}
+NDKBIN=${NDKBIN:-$(echo /root/velsub/ndk/r29/toolchains/llvm/prebuilt/*/bin | head -1)}
 STRIP="$NDKBIN/llvm-strip"
 RE="$NDKBIN/llvm-readelf"
+AAPT="${AAPT:-$(command -v aapt || echo "$BT/aapt")}"
+ZIPALIGN="${ZIPALIGN:-$(command -v zipalign || echo "$BT/zipalign")}"
+APKSIGNER="${APKSIGNER:-$(command -v apksigner || echo "$BT/apksigner")}"
 PKGSRC="${PKGSRC:-/root/velsub/device-pkg}"
 ABISO="${ABISO:-/root/velsub/aegisub-upstream/build-android-arm64/tools/cross/libvelnosub-abi.so}"
 UISO="${UISO:-/root/velsub/aegisub-upstream/velnosub-ui/target/aarch64-linux-android/release/libvelnosub_ui.so}"
@@ -58,8 +61,8 @@ PYEOF
 else
     MANIFEST=AndroidManifest.xml
     RES=res
-    OUT=velnosub-ui-0.1.1-alpha10.apk
-    echo "MOD: ALPHA (code 12, 0.1.1-ui-alpha10, debuggable true, nightly ikon)"
+    OUT=velnosub-ui-0.1.1-alpha11.apk
+    echo "MOD: ALPHA (code 15, 0.1.1-ui-alpha11, debuggable true, nightly ikon)"
 fi
 for f in "$UISO" "$ABISO"; do
     [ -f "$f" ] || { echo "EKSİK: $f"; exit 1; }
@@ -96,7 +99,7 @@ ls -l lib/arm64-v8a | awk '{print $5, $9}'
 
 echo "---- 3) aapt (Debian arm64 — Google build-tools x86_64 bu hatta koşmaz) ----"
 rm -f velnosub-ui-unsigned.apk
-aapt package -f \
+"$AAPT" package -f \
       --min-sdk-version 24 --target-sdk-version 28 \
       -M "$MANIFEST" \
       -S "$RES" \
@@ -108,14 +111,14 @@ echo "---- 4) lib ekleme (dex yok: hasCode=false) ----"
 zip -q -rg velnosub-ui-unsigned.apk lib
 
 echo "---- 5) zipalign (Debian arm64) ----"
-zipalign -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
+"$ZIPALIGN" -f 4 velnosub-ui-unsigned.apk velnosub-ui-aligned.apk
 
 echo "---- 6) apksigner (alpha keystore ile aynı kimlik ailesi) ----"
-"$BT/apksigner" sign --ks ../apk-alpha/velnosub-debug.keystore \
+"$APKSIGNER" sign --ks ../apk-alpha/velnosub-debug.keystore \
       --ks-key-alias velnosubdebug --ks-pass pass:velnosub \
       --out "$OUT" velnosub-ui-aligned.apk
 
-"$BT/apksigner" verify "$OUT" && echo "APK İMZA GEÇERLİ"
+"$APKSIGNER" verify "$OUT" && echo "APK İMZA GEÇERLİ"
 
 echo "---- 7) DT_NEEDED kapanış denetimi (PAKET İÇİ çözüm) ----"
 # Her lib'in NEEDED'ı paket içinde veya platform küpünde çözümlenmeli;

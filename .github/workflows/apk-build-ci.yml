@@ -1,0 +1,78 @@
+# APK'yı GitHub Actions'ta bağımsız derler: deps (cache'li) → meson+ninja →
+# rust cdylib → build-apk.sh paketleme → artifact (Release YOK).
+name: apk-build-ci
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature]
+    paths:
+      - 'src/**'
+      - 'libaegisub/**'
+      - 'subprojects/**'
+      - 'tools/cross/**'
+      - 'velnosub-ui/**'
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_NOLOGO: "1"
+
+jobs:
+  deps:
+    runs-on: ubuntu-latest
+    outputs:
+      hit: ${{ steps.cache.outputs.cache-hit || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: NDK r29 kur (root beklenen konum)
+        run: |
+          sudo mkdir -p /root/velsub/ndk && sudo chown -R $USER /root/velsub
+          test -d /root/velsub/ndk/r29 || \
+            (curl -sL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o /tmp/ndk.zip \
+             && unzip -q /tmp/ndk.zip -d /root/velsub/ndk \
+             && mv /root/velsub/ndk/android-ndk-r29* /root/velsub/ndk/r29)
+      - uses: actions/cache@v4
+        id: cache
+        with:
+          path: /root/velsub/ndk-deps/arm64-v8a
+          key: ndk-deps-arm64-v3-${{ hashFiles('tools/cross/build-deps.sh', 'tools/cross/build-ffmpeg.sh', 'tools/cross/build-luajit.sh', 'tools/cross/build-oboe.sh') }}
+      - name: bağımlılıklar (ICU+Boost+ffmpeg+luajit+oboe)
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: PHASE=deps bash tools/cross/apk-ui/ci-setup.sh
+
+  apk:
+    runs-on: ubuntu-latest
+    needs: deps
+    steps:
+      - uses: actions/checkout@v4
+      - name: NDK r29 kur (root beklenen konum)
+        run: |
+          sudo mkdir -p /root/velsub/ndk && sudo chown -R $USER /root/velsub
+          test -d /root/velsub/ndk/r29 || \
+            (curl -sL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o /tmp/ndk.zip \
+             && unzip -q /tmp/ndk.zip -d /root/velsub/ndk \
+             && mv /root/velsub/ndk/android-ndk-r29* /root/velsub/ndk/r29)
+      - uses: actions/cache@v4
+        with:
+          path: /root/velsub/ndk-deps/arm64-v8a
+          key: ndk-deps-arm64-v3-${{ hashFiles('tools/cross/build-deps.sh', 'tools/cross/build-ffmpeg.sh', 'tools/cross/build-luajit.sh', 'tools/cross/build-oboe.sh') }}
+      - name: rust toolchain (aarch64-linux-android)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: native (meson + ninja)
+        run: PHASE=native bash tools/cross/apk-ui/ci-setup.sh
+      - name: rust cdylib
+        run: PHASE=rust bash tools/cross/apk-ui/ci-setup.sh
+      - name: apk paketle
+        run: PHASE=apk bash tools/cross/apk-ui/ci-setup.sh
+      - name: artifact yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: velnosub-ui-apk-ci-r${{ github.run_number }}
+          path: |
+            tools/cross/apk-ui/velnosub-ui-*.apk
+          if-no-files-found: error
+          retention-days: 30

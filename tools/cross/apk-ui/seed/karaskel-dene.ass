@@ -1,0 +1,19 @@
+[Script Info]
+Title: velnosub karaskel dumani
+ScriptType: v4.00+
+WrapStyle: 0
+ScaledBorderAndShadow: yes
+Video File: /tmp/velnosub/x.mp4
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,20,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1
+Style: Kara,Arial,24,&H0000FFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,2,2,10,10,10,1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+Dialogue: 0,0:00:01.00,0:00:03.50,Kara,,0,0,0,,{\k30}ka{\kf20}ra{\ko10}oke
+Dialogue: 0,0:00:04.00,0:00:06.00,Default,,0,0,0,,Text before tag{\k20}after first tag
+Dialogue: 0,0:00:06.00,0:00:08.00,Default,,0,0,0,,{\b1\i1}boldital{\k30}plain{\K20}upperk
+Dialogue: 0,0:00:08.00,0:00:10.00,Default,,0,0,0,,{\k50}{!not}comments{\k30}x
+Dialogue: 0,0:00:10.00,0:00:12.00,Default,,0,0,0,,no karaoke tags at all

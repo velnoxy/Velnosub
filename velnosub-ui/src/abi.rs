@@ -78,6 +78,7 @@ extern "C" {
 	fn velnosub_abi_audio_open(
 		path: *const c_char, rate: c_int, ch: c_int,
 	) -> c_int;
+	fn velnosub_abi_audio_file_open(path: *const c_char) -> c_int;
 	fn velnosub_abi_audio_len64(h: c_int) -> i64;
 	fn velnosub_abi_audio_info(
 		h: c_int, buf: *mut c_char, buflen: c_int,
@@ -653,6 +654,45 @@ fn load_dialog(yolu: &str) -> Result<DialogSection, String> {
 }
 
 /// P4.2 uygulama durumu: tek açık tutamaç + satır önbelleği.
+/// P5.5: dosya seçici — SAF'siz read_dir tarayıcı; READ_EXTERNAL_STORAGE ile
+/// /sdcard ağacı okunur (izin smoke.sh `pm grant` ile verilir). İçerik:
+/// dizin gezinti + uzantı süzgeci + tek-dokunuş seçim + AÇ onayı.
+#[derive(Clone, Copy, PartialEq)]
+enum SecimTur {
+	Altyazi,
+	Video,
+	Ses,
+}
+
+#[derive(Clone)]
+struct Tarayici {
+	acik: bool,
+	tur: SecimTur,
+	yol: std::path::PathBuf,
+	secili: Option<String>,
+	hata: Option<String>,
+}
+
+impl Tarayici {
+	fn yeni() -> Self {
+		Self {
+			acik: false,
+			tur: SecimTur::Altyazi,
+			yol: std::path::PathBuf::from("/storage/emulated/0"),
+			secili: None,
+			hata: None,
+		}
+	}
+
+	fn uzantilar(&self) -> &'static [&'static str] {
+		match self.tur {
+			SecimTur::Altyazi => &["ass", "ssa", "srt", "txt"],
+			SecimTur::Video => &["mkv", "mp4", "webm", "avi", "mov", "m4v", "ts"],
+			SecimTur::Ses => &["mp3", "m4a", "aac", "flac", "opus", "ogg", "wav", "mka", "wv"],
+		}
+	}
+}
+
 pub struct GridApp {
 	handle: Option<c_int>,
 	rows: Vec<Row>,
@@ -661,6 +701,8 @@ pub struct GridApp {
 	note: String,
 	video: Option<VideoSection>,
 	audio: Option<AudioSection>,
+	// P5.5: kendi dosyalarını açma — uygulamaiçi tarayıcı
+	tarayici: Tarayici,
 	stiller: Vec<StyleRow>,
 	dialog: Option<DialogSection>,
 	// P4.6 dilim 2: ASS önizleme (video üstünde saydam dokuya binen kare)
@@ -831,6 +873,7 @@ impl GridApp {
 			note: "açık dosya yok".into(),
 			video: None,
 			audio: None,
+			tarayici: Tarayici::yeni(),
 			stiller: Vec::new(),
 			dialog: None,
 			duzen: Duzen::Masaustu,
@@ -1153,7 +1196,138 @@ impl GridApp {
 
 	// ---------------- P5.4 gece: paylaşımlı diyalog pencereleri ---------
 	// masaüstü + mobil aynı; Ayarlar penceresi de buraya taşındı
+	/// P5.5: tarayıcıyı istenen türle açar
+	fn tarayici_ac(&mut self, tur: SecimTur) {
+		self.tarayici = Tarayici {
+			acik: true,
+			tur,
+			yol: std::path::PathBuf::from("/storage/emulated/0"),
+			secili: None,
+			hata: None,
+		};
+	}
+
+	/// P5.5: tarayıcı penceresi (diyaloglar'dan çizilir — iki yüzeyde ortak)
+	fn tarayici_pencere(&mut self, ui: &mut egui::Ui) {
+		if !self.tarayici.acik {
+			return;
+		}
+		let mut ap = self.tarayici.acik;
+		egui::Window::new("Dosya seç")
+			.open(&mut ap)
+			.resizable(true)
+			.default_width(430.0)
+			.default_height(370.0)
+			.show(ui.ctx(), |p| {
+				p.horizontal(|h| {
+					// hızlı köprüler
+					for (ad, ks) in [
+						("Ana", "/storage/emulated/0"),
+						("Download", "/storage/emulated/0/Download"),
+						("Filmler", "/storage/emulated/0/Movies"),
+						("Müzik", "/storage/emulated/0/Music"),
+						("DCIM", "/storage/emulated/0/DCIM"),
+					] {
+						if h.small_button(ad).clicked() {
+							self.tarayici.yol = std::path::PathBuf::from(ks);
+							self.tarayici.secili = None;
+							self.tarayici.hata = None;
+						}
+					}
+					if h.button("yukarı").clicked() {
+						self.tarayici.yol.pop();
+						self.tarayici.secili = None;
+					}
+				});
+				p.label(
+					RichText::new(self.tarayici.yol.display().to_string())
+						.weak()
+						.size(11.0),
+				);
+				p.add_space(2.0);
+				let uz = self.tarayici.uzantilar();
+				let mut girdiler: Vec<(std::path::PathBuf, bool)> = Vec::new();
+				match std::fs::read_dir(&self.tarayici.yol) {
+					Ok(gk) => {
+						for g in gk.flatten() {
+							girdiler.push((g.path(), g.path().is_dir()));
+						}
+					}
+					Err(e) => {
+						self.tarayici.hata = Some(format!(
+							"{} okunamadı: {}",
+							self.tarayici.yol.display(),
+							e
+						));
+					}
+				}
+				girdiler.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+				egui::ScrollArea::vertical().show(p, |s| {
+					for (yolq, dizin) in &girdiler {
+						let ad = yolq
+							.file_name()
+							.map(|f| f.to_string_lossy().into_owned())
+							.unwrap_or_else(|| yolq.display().to_string());
+						if *dizin {
+							if s.button(RichText::new(format!("{}/", ad)).strong())
+								.clicked()
+							{
+								self.tarayici.yol = yolq.clone();
+								self.tarayici.secili = None;
+							}
+						} else {
+							let uyum = yolq
+								.extension()
+								.and_then(|x| x.to_str())
+								.is_some_and(|x| uz.contains(&x.to_ascii_lowercase().as_str()));
+							if uyum {
+								if s.button(ad.clone()).clicked() {
+									self.tarayici.secili =
+										Some(yolq.to_string_lossy().into_owned());
+								}
+							} else {
+								s.label(RichText::new(ad).weak().size(11.0));
+							}
+						}
+					}
+				});
+				p.add_space(3.0);
+				let tur_ad = match self.tarayici.tur {
+					SecimTur::Altyazi => "AÇ (altyazı)",
+					SecimTur::Video => "AÇ (video)",
+					SecimTur::Ses => "AÇ (ses)",
+				};
+				p.horizontal(|h| {
+					if h.add(
+						egui::Button::new(tur_ad).min_size(egui::vec2(120.0, 36.0)),
+					)
+					.clicked()
+					{
+						if let Some(yolc) = self.tarayici.secili.clone() {
+							match self.tarayici.tur {
+								SecimTur::Altyazi => {
+									if let Err(e) = self.load(&yolc) {
+										self.note = format!("açılamadı: {e}");
+									}
+								}
+								SecimTur::Video => self.video_ac(&yolc),
+								SecimTur::Ses => self.ses_ac(&yolc),
+							}
+							self.tarayici.acik = false;
+						} else {
+							self.tarayici.hata = Some("önce listeden dosya seç".into());
+						}
+					}
+					if let Some(ht) = &self.tarayici.hata {
+						h.label(RichText::new(ht.clone()).color(egui::Color32::ORANGE).size(12.0));
+					}
+				});
+			});
+		self.tarayici.acik = ap;
+	}
+
 	fn diyaloglar(&mut self, ui: &mut egui::Ui) {
+		self.tarayici_pencere(ui);
 		if self.ara_win {
 			let mut ap = self.ara_win;
 			egui::Window::new("Ara-Bul")
@@ -1357,7 +1531,22 @@ impl GridApp {
 			unsafe { velnosub_abi_audio_close(a.handle) };
 		}
 		let yolu = CString::new(ender.to_string()).map_err(|e| e.to_string())?;
-		let h = unsafe { velnosub_abi_audio_open(yolu.as_ptr(), 48000, 2) };
+		// P5.5: uzantı dağıtımı — kutu dosyalar (mp3/mkv/m4a…) çekirdek
+		// ffmpeg hattıyla decode edilir (audio_file_open); ham s16 PCM
+		// mevcut audio_open hattından geçer
+		let uz = ender
+			.rsplit_once('.')
+			.map(|(_, k)| k.to_ascii_lowercase())
+			.unwrap_or_default();
+		const KUTULAR: &[&str] = &[
+			"mp3", "m4a", "aac", "flac", "opus", "ogg", "wma", "wv",
+			"wav", "mka", "mkv", "webm", "mp4", "avi", "mov", "ts",
+		];
+		let h = if KUTULAR.contains(&uz.as_str()) {
+			unsafe { velnosub_abi_audio_file_open(yolu.as_ptr()) }
+		} else {
+			unsafe { velnosub_abi_audio_open(yolu.as_ptr(), 48000, 2) }
+		};
 		if h < 0 {
 			return Err(last_error());
 		}
@@ -1870,6 +2059,24 @@ impl GridApp {
 	}
 
 	fn durum_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+		// P5.5: kendi dosyalarını açma — iki yüzeyde de erişilir dokunuşlar
+		ui.horizontal(|uh| {
+			let boy = if mobil { 15.0 } else { 13.0 };
+			if uh.button(RichText::new("Altyazı aç…").size(boy)).clicked() {
+				self.tarayici_ac(SecimTur::Altyazi);
+			}
+			if uh.button(RichText::new("Video aç…").size(boy)).clicked() {
+				self.tarayici_ac(SecimTur::Video);
+			}
+			if uh.button(RichText::new("Ses aç…").size(boy)).clicked() {
+				self.tarayici_ac(SecimTur::Ses);
+			}
+		});
+		if mobil {
+			ui.add_space(4.0);
+		} else {
+			ui.add_space(2.0);
+		}
 		if !mobil {
 			ui.add_space(6.0);
 			ui.horizontal(|ui| {
@@ -2485,6 +2692,9 @@ impl GridApp {
 		let tema = tema_simdi(ui);
 		egui::MenuBar::new().ui(ui, |mb| {
 			mb.menu_button("File", |m| {
+				if m.button("Aç (seçici)…").clicked() {
+					self.tarayici_ac(SecimTur::Altyazi);
+				}
 				if m.button("Yeniden aç").clicked() {
 					if let Some(p) = self.path.clone() {
 						if let Err(e) = self.load(&p) {

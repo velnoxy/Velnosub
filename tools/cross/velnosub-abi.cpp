@@ -28,6 +28,15 @@
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
+// P5.5: kutu-sesi — çekirdeğin avformat/avcodec/swresample'ı core.so'dan
+// dışa açıktır; paket-içi sembol kapanışı (build-apk.sh 8. adım) bu bağları
+// build-time yakalar
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/samplefmt.h>
+#include <libswresample/swresample.h>
+
 #ifdef VELNOSUB_ABI_OBOE
 #include <oboe/Oboe.h>
 #endif
@@ -1223,63 +1232,173 @@ void velnosub_abi_video_close(int h) {
 
 // ---- P4.4/P3.5: ses kolu --------------------------------------------
 
+// ---- P5.5: ham s16 PCM'i AudioWave olarak kaydet (peak haritası taranır;
+// audio_open ham-PCM hem kutu-decode hattı da SONUNDA BURADAN geçer) ----
+static int ses_pcm_kayit_ekle(const char *path, int rate, int ch) {
+	std::FILE *f = std::fopen(path, "rb");
+	if (!f) { set_err("ses dosyası açılamadı: " + std::string(path)); return -1; }
+	std::fseek(f, 0, SEEK_END);
+	long baytlar = std::ftell(f);
+	std::fseek(f, 0, SEEK_SET);
+	int64_t toplam = (int64_t)baytlar / (2LL * ch);
+	if (toplam <= 0) {
+		std::fclose(f);
+		set_err("ses verisi yok: " + std::string(path));
+		return -1;
+	}
+	auto aw = std::make_unique<AudioWave>();
+	aw->rate = rate;
+	aw->ch = ch;
+	aw->toplam_ornek = toplam;
+	aw->yol = path;
+	// peak haritası: 256 karelik kovalar, akış-tarayıcı
+	int64_t kovalar = (toplam + aw->kova_ornekleme - 1) / aw->kova_ornekleme;
+	aw->kova_min.assign((size_t)kovalar, 32767);
+	aw->kova_max.assign((size_t)kovalar, -32768);
+	std::vector<int16_t> cane(4096);
+	int64_t reset = 0;  // imleç (kare)
+	int64_t kova_id = 0;
+	int16_t dmin = 32767, dmax = -32768;
+	size_t okunan;
+	while ((okunan = std::fread(cane.data(), sizeof(int16_t), cane.size(), f)) > 0) {
+		size_t kare = okunan / ch;
+		for (size_t i = 0; i < kare; ++i) {
+			int16_t hedef = cane[i * ch]; // tek kanal örneklemesi
+			if (hedef < dmin) dmin = hedef;
+			if (hedef > dmax) dmax = hedef;
+			++reset;
+			if (reset == aw->kova_ornekleme * (kova_id + 1)) {
+				if (kova_id < kovalar) {
+					aw->kova_min[(size_t)kova_id] = dmin;
+					aw->kova_max[(size_t)kova_id] = dmax;
+				}
+				++kova_id;
+				dmin = 32767;
+				dmax = -32768;
+			}
+		}
+	}
+	std::fclose(f);
+	// dosya imleci kapatıldı; oynatma yol'dan yeniden açar
+	int h = ++g_anext;
+	g_audio.emplace(h, std::move(aw));
+	return h;
+}
+
 int velnosub_abi_audio_open(const char *path, int rate, int ch) {
 	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
 	if (!path || !*path) { set_err("ses yolu boş"); return -1; }
 	if (rate <= 0 || ch <= 0 || ch > 8) { set_err("geçersiz rate/kanal"); return -1; }
-	try {
-		std::FILE *f = std::fopen(path, "rb");
-		if (!f) { set_err("ses dosyası açılamadı: " + std::string(path)); return -1; }
-		std::fseek(f, 0, SEEK_END);
-		long baytlar = std::ftell(f);
-		std::fseek(f, 0, SEEK_SET);
-		int64_t toplam = (int64_t)baytlar / (2LL * ch);
-		if (toplam <= 0) {
-			std::fclose(f);
-			set_err("ses verisi yok: " + std::string(path));
-			return -1;
+	return ses_pcm_kayit_ekle(path, rate, ch);
+}
+
+// P5.5: kutu-sesi (mp3/m4a/flac/mkv/mp4 …) — çekirdek ffmpeg hattıyla İLK ses
+// akışını s16 stereo 48000'e çözer, önbellek dosyasına (VELNOSUB_CACHE altı)
+// yazar; AudioWave kaydı o önbellekten kurulur → peak/oynatma hattı aynen
+// kalır (Oboe dosyadan akar). Çok kanallı girişler kanonik stereo'ya düşer.
+extern "C" int velnosub_abi_audio_file_open(const char *in_path) {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!in_path || !*in_path) { set_err("ses yolu boş"); return -1; }
+	const int hedef_rate = 48000, hedef_ch = 2;
+	std::string onbellek;
+	if (const char *cb = std::getenv("VELNOSUB_CACHE"); cb && *cb)
+		onbellek = std::string(cb) + "/user-ses.pcm";
+	else if (const char *ex = std::getenv("VELNOSUB_EXTDIR"); ex && *ex)
+		onbellek = std::string(ex) + "/user-ses.pcm";
+	else
+		onbellek = "user-ses.pcm";
+	AVFormatContext *fmt = nullptr;
+	AVCodecContext *cc = nullptr;
+	SwrContext *swr = nullptr;
+	AVPacket *pkt = nullptr;
+	AVFrame *frm = nullptr;
+	std::FILE *cik = nullptr;
+	bool tamam = false;
+	do {
+		if (avformat_open_input(&fmt, in_path, nullptr, nullptr) < 0 || !fmt) {
+			avformat_free_context(fmt);
+			set_err("kutu açılamadı (ffmpeg): " + std::string(in_path));
+			break;
 		}
-		auto aw = std::make_unique<AudioWave>();
-		aw->rate = rate;
-		aw->ch = ch;
-		aw->toplam_ornek = toplam;
-		aw->yol = path;
-		// peak haritası: 256 karelik kovalar, akış-tarayıcı
-		int64_t kovalar = (toplam + aw->kova_ornekleme - 1) / aw->kova_ornekleme;
-		aw->kova_min.assign((size_t)kovalar, 32767);
-		aw->kova_max.assign((size_t)kovalar, -32768);
-		std::vector<int16_t> cane(4096);
-		int64_t reset = 0;  // imleç (kare)
-		int64_t kova_id = 0;
-		int16_t dmin = 32767, dmax = -32768;
-		size_t okunan;
-		while ((okunan = std::fread(cane.data(), sizeof(int16_t), cane.size(), f)) > 0) {
-			size_t kare = okunan / ch;
-			for (size_t i = 0; i < kare; ++i) {
-				int16_t hedef = cane[i * ch]; // tek kanal örneklemesi
-				if (hedef < dmin) dmin = hedef;
-				if (hedef > dmax) dmax = hedef;
-				++reset;
-				if (reset == aw->kova_ornekleme * (kova_id + 1)) {
-					if (kova_id < kovalar) {
-						aw->kova_min[(size_t)kova_id] = dmin;
-						aw->kova_max[(size_t)kova_id] = dmax;
-					}
-					++kova_id;
-					dmin = 32767;
-					dmax = -32768;
-				}
+		if (avformat_find_stream_info(fmt, nullptr) < 0) {
+			set_err("akış bilgisi çıkarılamadı: " + std::string(in_path));
+			break;
+		}
+		int si = -1;
+		for (unsigned i = 0; i < fmt->nb_streams && si < 0; ++i)
+			if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) si = (int)i;
+		if (si < 0) { set_err("ses akışı yok: " + std::string(in_path)); break; }
+		AVStream *st = fmt->streams[si];
+		const AVCodec *co = avcodec_find_decoder(st->codecpar->codec_id);
+		if (!co) {
+			set_err("ses çözücüsü yok: codec " +
+			        std::to_string((int)st->codecpar->codec_id));
+			break;
+		}
+		cc = avcodec_alloc_context3(co);
+		if (!cc || avcodec_parameters_to_context(cc, st->codecpar) < 0) {
+			set_err("çözücü bağlamı kurulamadı");
+			break;
+		}
+		if (avcodec_open2(cc, co, nullptr) < 0) {
+			set_err(std::string("çözücü açılamadı: ") + co->name);
+			break;
+		}
+		// kanonik giriş düzeni: N kanal → varsayılan N-maske (mono/stereo/5.1)
+		int64_t in_layout =
+		    av_get_default_channel_layout(cc->channels > 0 ? cc->channels : 2);
+		swr = swr_alloc_set_opts(nullptr, AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16,
+		                         hedef_rate, in_layout, cc->sample_fmt,
+		                         cc->sample_rate, 0, nullptr);
+		if (!swr || swr_init(swr) < 0) {
+			set_err("resamplama kurulumu başarısız");
+			break;
+		}
+		cik = std::fopen(onbellek.c_str(), "wb");
+		if (!cik) { set_err("önbellek yazılamaz: " + onbellek); break; }
+		pkt = av_packet_alloc();
+		frm = av_frame_alloc();
+		if (!pkt || !frm) { set_err("ffmpeg tamponları kurulamadı"); break; }
+		std::vector<uint8_t> tampon(1 << 16);
+		const int kare_bayt = hedef_ch * 2;
+		while (av_read_frame(fmt, pkt) >= 0) {
+			if (pkt->stream_index != si) { av_packet_unref(pkt); continue; }
+			if (avcodec_send_packet(cc, pkt) < 0) { av_packet_unref(pkt); continue; }
+			while (avcodec_receive_frame(cc, frm) == 0) {
+				const uint8_t *gir[8] = {};
+				for (int c = 0; c < 8; ++c) gir[c] = frm->data[c];
+				uint8_t *cikis[1] = { tampon.data() };
+				// tek çağrı yeter: kalan örnekler swr içi tampona düşer (boşalt sıfır-örnekle)
+				int alind = swr_convert(swr, cikis, (int)(tampon.size() / kare_bayt),
+				                        gir, frm->nb_samples);
+				if (alind > 0)
+					std::fwrite(tampon.data(), kare_bayt, alind, cik);
+				av_frame_unref(frm);
 			}
+			av_packet_unref(pkt);
 		}
-		std::fclose(f);
-		// dosya imleci kapatıldı; oynatma yol'dan yeniden açar
-		int h = ++g_anext;
-		g_audio.emplace(h, std::move(aw));
-		return h;
+		{ // swr içi işlenmemiş örnekleri boşalt
+			uint8_t *cikis[1] = { tampon.data() };
+			int alind;
+			while ((alind = swr_convert(swr, cikis, (int)(tampon.size() / kare_bayt),
+			                            nullptr, 0)) > 0)
+				std::fwrite(tampon.data(), kare_bayt, alind, cik);
+		}
+		std::fclose(cik);
+		cik = nullptr;
+		tamam = true;
+	} while (false);
+	av_frame_free(&frm);
+	av_packet_free(&pkt);
+	swr_free(&swr);
+	if (cc) avcodec_free_context(&cc);
+	avformat_close_input(&fmt);
+	if (cik) std::fclose(cik);
+	if (!tamam) {
+		std::remove(onbellek.c_str());
+		return -1;
 	}
-	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
-	catch (std::exception const& e) { set_err(e.what()); }
-	return -1;
+	return ses_pcm_kayit_ekle(onbellek.c_str(), hedef_rate, hedef_ch);
 }
 
 int velnosub_abi_audio_len(int h) {

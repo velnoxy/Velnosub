@@ -159,6 +159,8 @@ fn android_main(app: android_activity::AndroidApp) {
 		// dizini tarar (uzanti_listele)
 		std::env::set_var("VELNOSUB_EXTDIR", &dis);
 	}
+	// P5.5: kutu-sesi decode önbelleği (abi: audio_file_open → user-ses.pcm)
+	std::env::set_var("VELNOSUB_CACHE", &baz);
 	not_yaz("A0 android_main girdi");
 	not_yaz(&format!(
 		"A1 filesDir={} sdk={}",

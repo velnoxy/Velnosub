@@ -50,8 +50,19 @@ endif
 # (-DVELNOSUB_ABI_OBOE=1); masa/host-check kollarında oboe yoktur.
 # P4.6 dilim 1: libass bağlanır — ABI render kolü (önizleme karesi).
 abi_oboe_dep = dependency('oboe', required: false)
+# P5.5: kutu-sesi decode hattı — abi, ffmpeg'i DOĞRUDAN bağlar
+# (core.so'dan sembol sızmasına dayanmaz: lld, core'un avformat_* nur
+# dışa-açık isticaret ettiğinin teyidiyle; statik .a link ettirmede birim
+# hata çıktısı çözüldü). build-ffmpeg.sh çıktısındaki .pc hattı besler.
+abi_avformat_dep = dependency('libavformat', required: false)
 abi_cpp_args = ['-DAGI_CORE']
 abi_deps = [boost_dep, velnosub_libass_dep, velnosub_ft2_dep]
+if abi_avformat_dep.found()
+    abi_deps += [abi_avformat_dep,
+                 dependency('libavcodec', required: true),
+                 dependency('libswresample', required: true),
+                 dependency('libavutil', required: true)]
+endif
 if abi_oboe_dep.found()
     abi_cpp_args += ['-DVELNOSUB_ABI_OBOE=1']
     abi_deps += [abi_oboe_dep]
