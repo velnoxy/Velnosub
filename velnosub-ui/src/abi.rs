@@ -3491,21 +3491,23 @@ impl GridApp {
 	/// Mobil çerçeve: alt sekme çubuğu + tek bölme içerik. Sekmeler yalnız
 	/// yüklenen içeriğe oyulur; boş sekme yok.
 	fn mobil_cerceve(&mut self, ui: &mut egui::Ui) {
-		let mut etiketler: Vec<(Sekme, &'static str)> =
-			vec![(Sekme::Altyazi, "Altyazı")];
+		let mut etiketler: Vec<(Sekme, String)> = vec![(
+			Sekme::Altyazi,
+			format!("{} Altyazı", ikon::SUBTITLES),
+		)];
 		if self.video.is_some() {
-			etiketler.push((Sekme::Video, "Video"));
+			etiketler.push((Sekme::Video, format!("{} Video", ikon::VIDEO)));
 		}
 		if self.audio.is_some() {
-			etiketler.push((Sekme::Ses, "Ses"));
+			etiketler.push((Sekme::Ses, format!("{} Ses", ikon::AUDIO)));
 		}
 		if !self.stiller.is_empty() {
-			etiketler.push((Sekme::Stil, "Stil"));
+			etiketler.push((Sekme::Stil, format!("{} Stil", ikon::PALETTE)));
 		}
 		if self.dialog.is_some() {
-			etiketler.push((Sekme::Form, "Form"));
+			etiketler.push((Sekme::Form, format!("{} Form", ikon::TUNE)));
 		}
-		etiketler.push((Sekme::Ayarlar, "Ayarlar"));
+		etiketler.push((Sekme::Ayarlar, format!("{} Ayarlar", ikon::SETTINGS)));
 		if !etiketler.iter().any(|(s, _)| *s == self.aktif) {
 			self.aktif = Sekme::Altyazi;
 		}
@@ -3523,7 +3525,7 @@ impl GridApp {
 				for (s, ad) in &etiketler {
 					let metin_boyu = (gen * 0.22).clamp(9.0, 15.5);
 					if k.add(
-						egui::Button::new(RichText::new(*ad).size(metin_boyu))
+						egui::Button::new(RichText::new(ad).size(metin_boyu))
 							.min_size(egui::vec2(gen, 44.0))
 							.selected(self.aktif == *s),
 					).clicked() {
@@ -4243,6 +4245,33 @@ impl eframe::App for GridApp {
 			if let Some(b) = self.ppp_base.take() {
 				ui.ctx().set_pixels_per_point(b);
 				self.zoom = 0.8;
+			}
+		}
+		// P8.1: Aegisub kısayolları (metin kutusu odakta değilken):
+		// Ctrl+Z geri, Ctrl+Y / Ctrl+Shift+Z ileri, Ctrl+S kaydet
+		if ui.ctx().memory(|m| m.focused().is_none()) {
+			let (geri, ileri, kaydet) = ui.input(|i| {
+				(
+					i.modifiers.command
+						&& !i.modifiers.shift
+						&& i.key_pressed(egui::Key::Z),
+					i.modifiers.command
+						&& (i.key_pressed(egui::Key::Y)
+							|| (i.modifiers.shift
+								&& i.key_pressed(egui::Key::Z))),
+					i.modifiers.command && i.key_pressed(egui::Key::S),
+				)
+			});
+			if geri {
+				self.geri_al();
+			}
+			if ileri {
+				self.ileri_al();
+			}
+			if kaydet {
+				if let Some(p) = self.save_path.clone() {
+					self.save_to(&p);
+				}
 			}
 		}
 		match self.duzen {
