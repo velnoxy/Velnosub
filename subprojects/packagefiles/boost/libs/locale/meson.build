@@ -57,6 +57,10 @@ if host_machine.system() == 'windows'
         'src/boost/locale/win32/lcid.cpp',
     ])
     locale_args += '-DBOOST_LOCALE_NO_POSIX_BACKEND=1'
+elif host_machine.system() == 'android'
+    # velnosub: bionic<header'sız> monetary.h yok — posix backend çıkarılır;
+    # std backend yeterli (aegisub çekirdeği locale provider'a doymuyor)
+    locale_args += '-DBOOST_LOCALE_NO_POSIX_BACKEND=1'
 else
     locale_sources += files([
         'src/boost/locale/posix/collate.cpp',
