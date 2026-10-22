@@ -57,7 +57,7 @@ phase_deps() {
 
 phase_native() {
     command -v meson >/dev/null || \
-        (sudo apt-get update -y && sudo apt-get install -y meson ninja-build pkg-config)
+        (sudo apt-get update -y && sudo apt-get install -y meson ninja-build pkg-config libfontconfig1-dev)
     # güvenlik: wrap kaynakları taze checkout'ta eksikse çek
     meson subprojects download 2>/dev/null || true
     if [ ! -f build-android-arm64/build.ninja ]; then
