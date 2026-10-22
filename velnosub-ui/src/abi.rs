@@ -876,6 +876,8 @@ pub struct GridApp {
 	// P8.1: tam stil yöneticisi penceresi + seçili stil
 	stil_win: bool,
 	stil_sec: usize,
+	// P8.1: dosya özellikleri (Aegisub File → Properties portu)
+	ozellik_win: bool,
 }
 
 /// Arayüz düzeni. `Secim` yalnızca ayar dosyası yokken geçerli ilk ekrandır.
@@ -1036,6 +1038,7 @@ impl GridApp {
 			shift_tum: true,
 			stil_win: false,
 			stil_sec: 0,
+			ozellik_win: false,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
 			oniz: Oniz::default(),
@@ -1546,6 +1549,70 @@ impl GridApp {
 			self.ayar_win = ap;
 		}
 		self.stil_penceresi(ui);
+		self.ozellik_penceresi(ui);
+	}
+
+	/// P8.1: dosya özellikleri — yol/satır/stil/video/ses özeti (Aegisub
+	/// File → Properties portu; ABI'de özellik setter'ı olmadığından salt okur).
+	fn ozellik_penceresi(&mut self, ui: &mut egui::Ui) {
+		if !self.ozellik_win {
+			return;
+		}
+		let mut acik = self.ozellik_win;
+		egui::Window::new(format!("{} Dosya Özellikleri", ikon::INFO))
+			.open(&mut acik)
+			.default_width(380.0)
+			.resizable(false)
+			.show(ui.ctx(), |su| {
+				egui::Grid::new("ozellik_grid")
+					.num_columns(2)
+					.spacing([12.0, 4.0])
+					.show(su, |g| {
+						g.label("dosya");
+						g.label(
+							self.path
+								.clone()
+								.unwrap_or_else(|| "—".into()),
+						);
+						g.end_row();
+						g.label("satır");
+						g.label(format!("{}", self.rows.len()));
+						g.end_row();
+						g.label("stil");
+						g.label(format!("{}", self.stiller.len()));
+						g.end_row();
+						if let Some(v) = self.video.as_ref() {
+							g.label("video");
+							g.label(format!(
+								"{}×{} · {:.3} fps · {} kare",
+								v.w, v.hgt, v.fps, v.kareler
+							));
+							g.end_row();
+							g.label("medya");
+							g.label(v.info.clone());
+							g.end_row();
+						}
+						if let Some(a) = self.audio.as_ref() {
+							g.label("ses");
+							g.label(format!(
+								"{} Hz · {} kanal · {} örnek",
+								a.rate, a.ch, a.toplam
+							));
+							g.end_row();
+							g.label("ses bilgisi");
+							g.label(a.info.clone());
+							g.end_row();
+						}
+						g.label("kayıt");
+						g.label(
+							self.save_path
+								.clone()
+								.unwrap_or_else(|| "—".into()),
+						);
+						g.end_row();
+					});
+			});
+		self.ozellik_win = acik;
 	}
 
 	/// P8.1: seçili satırın baş/bitişini video kare ızgarasına oturt
@@ -2324,8 +2391,8 @@ impl GridApp {
 					v_hata = Some(e);
 				}
 			}
-			let mut geri = egui::Button::new("◀ geri");
-			let mut ileri = egui::Button::new("ileri ▶");
+			let mut geri = egui::Button::new(format!("{} geri", ikon::SKIP_PREV));
+			let mut ileri = egui::Button::new(format!("ileri {}", ikon::SKIP_NEXT));
 			if mobil {
 				geri = geri.min_size(egui::vec2(0.0, 44.0));
 				ileri = ileri.min_size(egui::vec2(0.0, 44.0));
@@ -2346,9 +2413,9 @@ impl GridApp {
 				// P6.4: oynat/dur tekili; ses hattı varsa bayrak COMBO ile
 				// v-blok sonrası berabence işlenir
 				let mut oynat = egui::Button::new(if v.oynat {
-					"⏸ dur"
+					format!("{} dur", ikon::PAUSE)
 				} else {
-					"▶ oynat"
+					format!("{} oynat", ikon::PLAY)
 				});
 				if mobil {
 					oynat = oynat.min_size(egui::vec2(0.0, 44.0));
@@ -2615,6 +2682,12 @@ impl GridApp {
 				RichText::new(format!("Stiller ({})", self.stiller.len()))
 					.strong(),
 			);
+			if ui
+				.button(format!("{} Stil Yöneticisi…", ikon::PALETTE))
+				.clicked()
+			{
+				self.stil_win = true;
+			}
 			let kopya = self.stiller.clone();
 			for (i, r) in kopya.iter().enumerate() {
 				ui.horizontal(|ui| {
@@ -3602,6 +3675,13 @@ impl GridApp {
 				}
 				if m.button(format!("{} Ses aç…", ikon::AUDIO)).clicked() {
 					self.tarayici_ac(SecimTur::Ses);
+				}
+				m.separator();
+				if m
+					.button(format!("{} Dosya özellikleri…", ikon::INFO))
+					.clicked()
+				{
+					self.ozellik_win = true;
 				}
 				m.separator();
 				if m.button(format!("{} Yeniden aç", ikon::ARROW_BACK)).clicked() {

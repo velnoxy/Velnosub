@@ -87,6 +87,12 @@ elif host_machine.system() != 'windows' and not get_option('velnosub_mobile')
 endif
 
 cxx = meson.get_compiler('cpp')
+# Clang 21 (CI NDK): Boost 1.83 GIL eski template ayrımını HATA sayıyor;
+# cihaz clang 22'de geçiyor. Teşhisi iki tarafta sessizleştir (parite).
+add_project_arguments(
+    cxx.get_supported_arguments('-Wno-missing-template-arg-list-after-template-kw'),
+    language: 'cpp',
+)
 cc = meson.get_compiler('c')
 deps += cc.find_library('m', required: false)
 deps += cc.find_library('dl', required: false)
