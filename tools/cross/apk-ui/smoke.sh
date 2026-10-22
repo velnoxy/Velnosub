@@ -3,10 +3,19 @@
 # kurar, açar, breadcrumb + logcat + dropbox'tan kanıt kırpar. Kullanıcı
 # uyurken çalışır: tuş yok, gözlem ve (hata durumunda) rapor.
 # Kullanım: bash smoke.sh <apk-yolu>
+# Yol SHELL'in (uid 2000) OKUMA bildiği bir yer olmalı: /sdcard/... — /root
+# (proot uygulama-özel) shell'e kapalıdır.
 set -u
-APK="${1:?apk yolu verilcek}"
+RAW="${1:?apk yolu verilcek}"
 RISH=/root/rish
 PKG=com.velnoxy.velnosubui
+
+# alpha10 dersi: pm install /sdcard-FUSE yolunu da okuyamaz — APK /sdcard'dan
+# shell ile /data/local/tmp'ye taşınır, kurulum oradan yapılır
+echo "== 0) sahneleme (/data/local/tmp) =="
+STAGE=/data/local/tmp/velnosub-smoke.apk
+timeout -k 4 60 "$RISH/rish" -c "cp $RAW $STAGE" < /dev/null 2>&1 | tail -1
+APK=$STAGE
 
 echo "== 1) kurulum (rish pm install) =="
 timeout -k 4 120 "$RISH/rish" -c "pm install -r $APK" < /dev/null 2>&1 | tail -2
