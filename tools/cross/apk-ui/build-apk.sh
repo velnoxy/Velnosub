@@ -58,8 +58,8 @@ PYEOF
 else
     MANIFEST=AndroidManifest.xml
     RES=res
-    OUT=velnosub-ui-0.1.0-alpha9.apk
-    echo "MOD: ALPHA (code 12, 0.1.0-ui-alpha9, debuggable true, nightly ikon)"
+    OUT=velnosub-ui-0.1.1-alpha10.apk
+    echo "MOD: ALPHA (code 12, 0.1.1-ui-alpha10, debuggable true, nightly ikon)"
 fi
 for f in "$UISO" "$ABISO"; do
     [ -f "$f" ] || { echo "EKSİK: $f"; exit 1; }
@@ -132,6 +132,32 @@ for f in lib/arm64-v8a/*.so; do
         fi
     done
 done
-[ "$HATA" -eq 0 ] && echo "KAPANIŞ DENETİMİ: TAM (arm64-v8a)"
+[ "$HATA" -eq 0 ] && echo "DT_NEEDED KAPANIŞ DENETİMİ: TAM (arm64-v8a)"
+
+echo "---- 8) SEMBOL kapanış denetimi (UND → paket içinde tanım) ----"
+# DT_NEEDED tek başına YETMEZ (P5.4 ikinci kanıt: abi.so 'velnosub_core_set_line_meta'
+# istedi ama paketteki core eskiydi → dlopen UnsatisfiedLinkError proses-öldürücü).
+# Kural: gerçek-proje sembol uzayları (velnosub_*, ass_*) için her UND paketteki
+# BİR .so'da FUNC tanımlı olmalı; yoksa build BAŞARISIZ.
+# NB: readelf kolonları: Num: Value Size Type Bind Vis Ndx Name → UND sütunu
+# Bind ($) DEĞİL Ndx'tedir; llvm-li okumada $5 Bind olduğu için $5!="UND"
+# hep-yanlış-geçoneliydi; doğrusu $(NF-1) (Ndx).
+DEFD=$(for f in lib/arm64-v8a/*.so; do
+    "$RE" --dyn-syms "$f" 2>/dev/null | awk '$4=="FUNC" && $(NF-1)!="UND" {print $NF}'
+done | sed 's/@.*//' | sort -u)
+for f in lib/arm64-v8a/*.so; do
+    for n in $("$RE" --dyn-syms "$f" 2>/dev/null \
+        | awk '$4=="FUNC" && $(NF-1)=="UND" {print $NF}' \
+        | sed 's/@.*//' | sort -u); do
+        case "$n" in
+            velnosub_*|ass_*) : ;;
+            *) continue ;;
+        esac
+        if ! printf '%s\n' "$DEFD" | grep -qx "$n"; then
+            echo "SEMBOL KAPANIŞ HATASI: $f istenen $n pakette YOK"; HATA=1
+        fi
+    done
+done
+[ "$HATA" -eq 0 ] && echo "SEMBOL KAPANIŞ DENETİMİ: TAM (velnosub_/ass_ uzayı)"
 find lib/arm64-v8a -name "*.so" -printf "%f %s\n" | sort
 ls -l "$OUT"
