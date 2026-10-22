@@ -61,8 +61,8 @@ PYEOF
 else
     MANIFEST=AndroidManifest.xml
     RES=res
-    OUT=velnosub-ui-0.1.1-alpha11.apk
-    echo "MOD: ALPHA (code 15, 0.1.1-ui-alpha11, debuggable true, nightly ikon)"
+    OUT=velnosub-ui-0.1.1-alpha12.apk
+    echo "MOD: ALPHA (code 16, 0.1.1-ui-alpha12, debuggable true, nightly ikon)"
 fi
 for f in "$UISO" "$ABISO"; do
     [ -f "$f" ] || { echo "EKSİK: $f"; exit 1; }

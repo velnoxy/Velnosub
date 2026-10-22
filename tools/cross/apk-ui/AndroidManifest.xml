@@ -2,8 +2,8 @@
 <manifest
     xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.velnoxy.velnosubui"
-    android:versionCode="15"
-    android:versionName="0.1.1-ui-alpha11">
+    android:versionCode="16"
+    android:versionName="0.1.1-ui-alpha12">
     <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="28"/>
     <!-- P5.5: kendi dosyaları (.ass/.srt/.mkv…) — READ_EXTERNAL_STORAGE
          (smoke.sh pm grant ile verilir; targetSdk 28 = legacy storage) -->

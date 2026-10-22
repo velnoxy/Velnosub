@@ -1793,23 +1793,23 @@ impl GridApp {
 							r.label("biçim:");
 							let degisti = r
 								.checkbox(
-									format!("{} kalın", ikon::BOLD),
 									&mut kb,
+									format!("{} kalın", ikon::BOLD),
 								)
 								.changed()
 								| r.checkbox(
-									format!("{} italik", ikon::ITALIC),
 									&mut ki,
+									format!("{} italik", ikon::ITALIC),
 								)
 								.changed()
 								| r.checkbox(
-									format!("{} altçizgi", ikon::UNDERLINE),
 									&mut ku,
+									format!("{} altçizgi", ikon::UNDERLINE),
 								)
 								.changed()
 								| r.checkbox(
-									format!("{} üstçizgi", ikon::STRIKE),
 									&mut ks,
+									format!("{} üstçizgi", ikon::STRIKE),
 								)
 								.changed();
 							if degisti {
