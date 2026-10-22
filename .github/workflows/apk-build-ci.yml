@@ -28,6 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: NDK r29 kur (root beklenen konum)
         run: |
+          sudo chmod 0755 /root 2>/dev/null || true
           sudo mkdir -p /root/velsub/ndk && sudo chown -R $USER /root/velsub
           test -d /root/velsub/ndk/r29 || \
             (curl -sL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o /tmp/ndk.zip \
@@ -49,6 +50,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: NDK r29 kur (root beklenen konum)
         run: |
+          sudo chmod 0755 /root 2>/dev/null || true
           sudo mkdir -p /root/velsub/ndk && sudo chown -R $USER /root/velsub
           test -d /root/velsub/ndk/r29 || \
             (curl -sL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o /tmp/ndk.zip \
