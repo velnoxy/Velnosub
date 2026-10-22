@@ -79,6 +79,13 @@ extern "C" {
 		path: *const c_char, rate: c_int, ch: c_int,
 	) -> c_int;
 	fn velnosub_abi_audio_file_open(path: *const c_char) -> c_int;
+	// P6.4: kutu-içi metin altyazı — akış taraması + seçilen akışı SRT'ye çekme
+	fn velnosub_abi_subtitle_examine(path: *const c_char) -> c_int;
+	fn velnosub_abi_subtitle_extract(
+		path: *const c_char,
+		idx: c_int,
+		dest: *const c_char,
+	) -> c_int;
 	fn velnosub_abi_audio_len64(h: c_int) -> i64;
 	fn velnosub_abi_audio_info(
 		h: c_int, buf: *mut c_char, buflen: c_int,
@@ -364,6 +371,43 @@ struct Row {
 }
 
 /// P4.3: açılı video kolu ve önizleme dokusu durumu.
+/// P6.4: önbellek dizini (C hattıyla aynı kural: VELNOSUB_CACHE →
+/// VELNOSUB_EXTDIR → boş-görece)
+fn alt_onbellek_ana() -> String {
+	if let Ok(cb) = std::env::var("VELNOSUB_CACHE") {
+		return cb;
+	}
+	if let Ok(ex) = std::env::var("VELNOSUB_EXTDIR") {
+		return ex;
+	}
+	String::new()
+}
+
+/// P6.4: examine'in yazdığı vs-subtracks.tsv okuması —
+/// (akış idx, codec, dil) üçlüleri
+fn alt_tsv_okes() -> Vec<(i64, String, String)> {
+	let ana = alt_onbellek_ana();
+	let yol = if ana.is_empty() {
+		std::path::PathBuf::from("vs-subtracks.tsv")
+	} else {
+		std::path::PathBuf::from(ana).join("vs-subtracks.tsv")
+	};
+	let Ok(veri) = std::fs::read(yol) else {
+		return Vec::new();
+	};
+	let metin = String::from_utf8_lossy(&veri).into_owned();
+	metin
+		.lines()
+		.filter_map(|s| {
+			let mut dil = s.splitn(3, '\t');
+			let i = dil.next()?.parse::<i64>().ok()?;
+			let ko = dil.next()?.trim().to_string();
+			let di = dil.next().unwrap_or("-").trim().to_string();
+			Some((i, ko, di))
+		})
+		.collect()
+}
+
 pub struct VideoSection {
 	handle: c_int,
 	w: usize,
@@ -373,6 +417,13 @@ pub struct VideoSection {
 	frame: i32,
 	info: String,
 	dok: Option<egui::TextureHandle>,
+	// P6.4: medya yolu iç altyazı seçici; akslar = (stream idx, codec, dil);
+	// oynatma çiftes (kare-timer) + birim kare biriktirici
+	yol: String,
+	akslar: Vec<(i64, String, String)>,
+	oynat: bool,
+	son_tik: Option<std::time::Instant>,
+	birim: f32,
 }
 
 /// P4.6 dilim 2: ASS önizleme kolu — altyazı kolu başına libass şartı,
@@ -1520,8 +1571,25 @@ impl GridApp {
 			frame: 0,
 			info: format!("fps:{fps:.3} {bilgi}"),
 			dok: None,
+			yol: ender.to_string(),
+			akslar: Vec::new(),
+			oynat: false,
+			son_tik: None,
+			birim: 0.0,
 		});
+		// P6.4: iç altyazı akış taraması — YALNIZ SEÇİCİ kuralı (auto-load
+		// yok); metin kodekli akışlar sayılır, pane ComboBox'ından yüklenir
+		let sayi = unsafe { velnosub_abi_subtitle_examine(yolu.as_ptr()) };
 		self.note = format!("video açıldı: {w}x{hgt}, {kareler} kare");
+		if sayi > 0 {
+			let akslar = alt_tsv_okes();
+			if let Some(v) = self.video.as_mut() {
+				v.akslar = akslar;
+			}
+			self.note = format!(
+				"video açıldı: {w}x{hgt}, {kareler} kare — {sayi} metin altyazı akışı (pane'de seç)"
+			);
+		}
 		Ok(())
 	}
 
@@ -1682,6 +1750,11 @@ impl GridApp {
 		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
 		let mut v_hata: Option<String> = None;
 		let mut oniz_dik: Option<egui::Rect> = None;
+		// P6.4: oynat/dur/akış seçimi bayrakları — v-ödünç kapanışının
+		// DIŞINDA ustalıkla işlenir (self çift-borçlanma yok)
+		let mut oynat_istek = false;
+		let mut dur_istek = false;
+		let mut aks_sec: Option<i64> = None;
 		if let Some(v) = self.video.as_mut() {
 			if v.dok.is_none() {
 				if let Err(e) = v.cizim_cek(ui.ctx()) {
@@ -1707,11 +1780,64 @@ impl GridApp {
 						v_hata = Some(e);
 					}
 				}
+				// P6.4: oynat/dur tekili; ses hattı varsa bayrak COMBO ile
+				// v-blok sonrası berabence işlenir
+				let mut oynat = egui::Button::new(if v.oynat {
+					"⏸ dur"
+				} else {
+					"▶ oynat"
+				});
+				if mobil {
+					oynat = oynat.min_size(egui::vec2(0.0, 44.0));
+				}
+				if su.add(oynat).clicked() {
+					if v.oynat {
+						v.oynat = false;
+						v.son_tik = None;
+						dur_istek = true;
+					} else {
+						v.oynat = true;
+						v.son_tik = Some(std::time::Instant::now());
+						oynat_istek = true;
+					}
+				}
 				su.label(RichText::new(format!(
 					"kare {}/{}",
 					v.frame + 1, v.kareler
 				)).weak());
 			});
+			// P6.4: oynatma tick — fps-timer; kare başına bir decode; cihaz
+			// yeterli hızda değilse adım kendiliğinden yavaşlar (gerçek
+			// senkron yok: kare süresine göre ilerletme)
+			if v.oynat {
+				let simdi = std::time::Instant::now();
+				let ds = v
+					.son_tik
+					.map_or(0.0f32, |s| simdi.duration_since(s).as_secs_f32());
+				v.son_tik = Some(simdi);
+				v.birim += ds * v.fps as f32;
+				let adim = v.birim.floor() as i32;
+				if adim > 0 {
+					v.birim -= adim as f32;
+					let son_kare = (v.kareler - 1).max(0);
+					if v.frame < son_kare {
+						v.frame = (v.frame + adim).min(son_kare);
+						if let Err(e) = v.cizim_cek(ui.ctx()) {
+							v_hata = Some(e);
+						}
+					}
+					if v.frame >= son_kare {
+						v.oynat = false;
+						v.son_tik = None;
+						dur_istek = true;
+					}
+				}
+				let tık = if v.fps > 0.5 { 1.0 / v.fps } else { 0.125 };
+				ui.ctx()
+					.request_repaint_after(std::time::Duration::from_secs_f64(
+						tık.clamp(0.033, 0.25),
+					));
+			}
 			if let Some(sac) = &v.dok {
 				// P6.1 masaüstü: pane genişliğine sığdır (aegisub kuralı —
 				// video pane taşmaz, kaydırma olmaz; mobil ham boyutta kalır)
@@ -1727,10 +1853,57 @@ impl GridApp {
 				oniz_dik = Some(yanit.rect);
 			}
 			ui.label(RichText::new(&v.info).weak());
+			// P6.4: iç altyazı akışı seçici — YALNIZ SEÇİCİ (auto-load yok);
+			// seçim aks_sec'e yazılır, v-blok sonrası alt_yukle işler
+			if !v.akslar.is_empty() {
+				let akslar = v.akslar.clone();
+				ui.horizontal(|ha| {
+					ha.label(RichText::new("altyazı akışı:").weak());
+					egui::ComboBox::from_id_salt("ic-altyazi-akisi")
+						.selected_text(RichText::new("seç…").weak())
+						.show_ui(ha, |c| {
+							for (i, ko, di) in &akslar {
+								if c
+									.selectable_label(
+										true,
+										format!("akış {i}: {ko} {di}"),
+									)
+									.clicked()
+								{
+									aks_sec = Some(*i);
+								}
+							}
+						});
+				});
+			}
 			ui.add_space(4.0);
 		}
 		if let Some(e) = v_hata {
 			self.note = format!("video doku hatası: {e}");
+		}
+		// P6.4: berabence — oynat/dur tetikleri SES hattına da dokunur
+		// (aynı çerçeve; senkron garantisi yok — fare-deneysel kural)
+		if dur_istek {
+			if let Some(a) = self.audio.as_ref() {
+				unsafe {
+					velnosub_abi_audio_stop(a.handle);
+				}
+			}
+		}
+		if oynat_istek {
+			if let Some(a) = self.audio.as_mut() {
+				let adet = a.toplam.min((a.rate as i64) * 5);
+				let rc = unsafe { velnosub_abi_audio_play(a.handle, 0, adet) };
+				a.oynatma_denendi = true;
+				a.ses_durum = if rc == 0 {
+					"oynatma istendi".into()
+				} else {
+					format!("oynatma olmadı: {}", last_error())
+				};
+			}
+		}
+		if let Some(aks) = aks_sec {
+			self.alt_yukle(aks);
 		}
 		// P4.6 dilim 2 önizleme: şerit çiziminden sonra şartı hazırla ve
 		// video dikdörtgenine saydam dokuyu işle
@@ -2734,6 +2907,52 @@ impl GridApp {
 		if let Err(e) = self.load_audio(yol) {
 			self.note = format!("ses açılamadı: {e}");
 		}
+	}
+
+	/// P6.4: seçilen iç altyazı akışını SRT'ye çeker ve yükler —
+	/// seçici hattı; yüklenen .srt doğrudan düzen/mevcut satır-görünümüne
+	/// girer (menüdeki Aç ile aynı boru)
+	fn alt_yukle(&mut self, aks: i64) {
+		if aks < 0 || aks > i32::MAX as i64 {
+			self.note = "akış numarası geçersiz".into();
+			return;
+		}
+		let Some(yol) = self.video.as_ref().map(|v| v.yol.clone()) else {
+			return;
+		};
+		let cik = {
+			let ana = alt_onbellek_ana();
+			if ana.is_empty() {
+				"user-alt.srt".to_string()
+			} else {
+				format!("{ana}/user-alt.srt")
+			}
+		};
+		let yolu = CString::new(yol).map_err(|e| e.to_string());
+		let srit = CString::new(cik.clone()).map_err(|e| e.to_string());
+		let (yolu, srit) = match (yolu, srit) {
+			(Ok(a), Ok(b)) => (a, b),
+			(Err(e), _) | (_, Err(e)) => {
+				self.note = format!("yol CString: {e}");
+				return;
+			}
+		};
+		let son = unsafe {
+			velnosub_abi_subtitle_extract(
+				yolu.as_ptr(),
+				aks as c_int,
+				srit.as_ptr(),
+			)
+		};
+		if son < 0 {
+			self.note = format!("altyazı akışı çıkarılamadı: {}", last_error());
+			return;
+		}
+		if let Err(e) = self.load(&cik) {
+			self.note = format!("altyazı yüklenemedi: {e}");
+			return;
+		}
+		self.note = format!("iç altyazı akışı {aks}: {son} olay SRT'ye döşendi");
 	}
 
 	/// P4.8.2: aegisub menü çubuğu — mevcut işlevlere bağlı öğeler gerçek,

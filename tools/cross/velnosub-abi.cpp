@@ -1405,6 +1405,221 @@ extern "C" int velnosub_abi_audio_file_open(const char *in_path) {
 	return ses_pcm_kayit_ekle(onbellek.c_str(), hedef_rate, hedef_ch);
 }
 
+// ---- P6.4: kutu-İÇİ metin altyazı (MKV S_TEXT/*, MP4 mov_text …) ------
+// (1) examine: medyadaki METİN altyazı akışlarını listeler ve
+//     <VELNOSUB_CACHE>/vs-subtracks.tsv'ye yazar (uidx\tcodec\tlang);
+//     bitmap/PGS vb. resimli akışlar listede YOK (metinçevrilmez).
+// (2) extract: seçilen akışı çözer; olay hızları pkt.pts + display
+//     ofsetlerinden SRT satırlarına döşer; ass rect'lerin {…} imleri
+//     yumuşar. Dönen değer: yazılan olay sayısı.
+// NOT: ass/ssa/mov_text/webvtt decoder'ları (P6.4) build-ffmpeg.sh'a
+// eklendi — ffmpeg yeniden derlemesi sonrası tam kapsamçok.
+
+static bool alt_metin_kodek(int id) {
+	switch (id) {
+	case AV_CODEC_ID_SUBRIP:
+	case AV_CODEC_ID_SSA:
+	case AV_CODEC_ID_ASS:
+	case AV_CODEC_ID_MOV_TEXT:
+	case AV_CODEC_ID_WEBVTT:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static std::string srt_saati(int64_t ms) {
+	if (ms < 0) ms = 0;
+	int64_t saniye = ms / 1000;
+	char buf[24];
+	std::snprintf(buf, sizeof buf, "%02lld:%02lld:%02lld,%03lld",
+	              (long long)(saniye / 3600), (long long)((saniye / 60) % 60),
+	              (long long)(saniye % 60), (long long)(ms % 1000));
+	return buf;
+}
+
+// ass satırından {…} bloklarını atar; \N|\n satır-bitişine döşer
+static std::string ass_pack(const char *kaynak) {
+	std::string cik;
+	if (!kaynak) return cik;
+	bool goz = true;
+	for (const char *p = kaynak; *p; ++p) {
+		if (*p == '{') {
+			goz = false;
+			continue;
+		}
+		if (*p == '}') {
+			goz = true;
+			continue;
+		}
+		if (!goz) continue;
+		if (p[0] == '\\' && (p[1] == 'N' || p[1] == 'n')) {
+			cik += '\n';
+			++p;
+			continue;
+		}
+		cik += *p;
+	}
+	while (!cik.empty() && (cik.front() == ' ' || cik.front() == '\t'))
+		cik.erase(cik.begin());
+	while (!cik.empty() && (cik.back() == ' ' || cik.back() == '\t'))
+		cik.pop_back();
+	return cik;
+}
+
+extern "C" int velnosub_abi_subtitle_examine(const char *in_path) {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!in_path || !*in_path) { set_err("medya yolu boş"); return -1; }
+	std::string tsv;
+	if (const char *cb = std::getenv("VELNOSUB_CACHE"); cb && *cb)
+		tsv = std::string(cb) + "/vs-subtracks.tsv";
+	else if (const char *ex = std::getenv("VELNOSUB_EXTDIR"); ex && *ex)
+		tsv = std::string(ex) + "/vs-subtracks.tsv";
+	else
+		tsv = "vs-subtracks.tsv";
+	AVFormatContext *fmt = nullptr;
+	std::FILE *cik = nullptr;
+	int sayi = 0;
+	do {
+		if (avformat_open_input(&fmt, in_path, nullptr, nullptr) < 0 || !fmt) {
+			avformat_free_context(fmt);
+			set_err("kutu açılamadı (ffmpeg): " + std::string(in_path));
+			break;
+		}
+		cik = std::fopen(tsv.c_str(), "wb");
+		if (!cik) {
+			set_err("akış listesi yazılamaz: " + tsv);
+			break;
+		}
+		for (unsigned i = 0; i < fmt->nb_streams; ++i) {
+			AVStream *st = fmt->streams[i];
+			if (st->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE) continue;
+			if (!alt_metin_kodek((int)st->codecpar->codec_id)) continue;
+			const AVCodecDescriptor *des =
+			    avcodec_descriptor_get(st->codecpar->codec_id);
+			const char *ko = des && des->name ? des->name : "metin";
+			const AVDictionaryEntry *dil =
+			    av_dict_get(st->metadata, "language", nullptr, 0);
+			std::fprintf(cik, "%u\t%s\t%s\n", i, ko,
+			             dil && dil->value ? dil->value : "-");
+			++sayi;
+		}
+		std::fclose(cik);
+		cik = nullptr;
+	} while (false);
+	avformat_close_input(&fmt);
+	if (cik) std::fclose(cik);
+	return sayi; // 0 = metin akışı yok; <0 = hata (set_err)
+}
+
+extern "C" int velnosub_abi_subtitle_extract(
+    const char *in_path, int rock_idx, const char *dest) {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!in_path || !*in_path || !dest || !*dest) {
+		set_err("yol boş");
+		return -1;
+	}
+	AVFormatContext *fmt = nullptr;
+	AVCodecContext *cc = nullptr;
+	AVPacket *pkt = nullptr;
+	std::FILE *cik = nullptr;
+	bool tamam = false;
+	int olay = 0;
+	do {
+		if (avformat_open_input(&fmt, in_path, nullptr, nullptr) < 0 || !fmt) {
+			avformat_free_context(fmt);
+			set_err("kutu açılamadı (ffmpeg): " + std::string(in_path));
+			break;
+		}
+		if (rock_idx < 0 || (unsigned)rock_idx >= fmt->nb_streams) {
+			set_err("akış numarası dışı");
+			break;
+		}
+		AVStream *st = fmt->streams[rock_idx];
+		if (st->codecpar->codec_type != AVMEDIA_TYPE_SUBTITLE ||
+		    !alt_metin_kodek((int)st->codecpar->codec_id)) {
+			set_err("akış metin altyazı değil");
+			break;
+		}
+		const AVCodec *co = avcodec_find_decoder(st->codecpar->codec_id);
+		if (!co) {
+			set_err(std::string("altyazı çözücüsü yok: ") +
+			        (co ? co->name : "bilinmeyen"));
+			break;
+		}
+		cc = avcodec_alloc_context3(co);
+		if (!cc || avcodec_parameters_to_context(cc, st->codecpar) < 0 ||
+		    avcodec_open2(cc, co, nullptr) < 0) {
+			set_err(std::string("altyazı çözücüsü açılamadı: ") + co->name);
+			break;
+		}
+		cik = std::fopen(dest, "wb");
+		if (!cik) {
+			set_err("srt yazılamaz: " + std::string(dest));
+			break;
+		}
+		pkt = av_packet_alloc();
+		if (!pkt) { set_err("paket tamponu kurulamadı"); break; }
+		AVRational ms_q;
+		ms_q.num = 1;
+		ms_q.den = 1000;
+		while (av_read_frame(fmt, pkt) >= 0) {
+			if (pkt->stream_index != rock_idx) {
+				av_packet_unref(pkt);
+				continue;
+			}
+			AVSubtitle sub;
+			std::memset(&sub, 0, sizeof sub);
+			int got = 0;
+			int rc =
+			    avcodec_decode_subtitle2(cc, &sub, &got, pkt);
+			if (rc >= 0 && got && sub.num_rects > 0) {
+				int64_t taban = pkt->pts != AV_NOPTS_VALUE ? pkt->pts
+				                                           : pkt->dts;
+				if (taban == AV_NOPTS_VALUE) taban = 0;
+				int64_t pkt_ms =
+				    av_rescale_q(taban, st->time_base, ms_q);
+				std::string metin;
+				for (unsigned r = 0; r < sub.num_rects; ++r) {
+					const AVSubtitleRect *d = sub.rects[r];
+					if (r > 0) metin += '\n';
+					if (d->type == SUBTITLE_TEXT && d->text)
+						metin += d->text;
+					else if (d->type == SUBTITLE_ASS && d->ass)
+						metin += ass_pack(d->ass);
+				}
+				if (!metin.empty()) {
+					int64_t bas = pkt_ms + sub.start_display_time;
+					int64_t son = pkt_ms + sub.end_display_time;
+					if (son <= bas) son = bas + 500;
+					++olay;
+					std::fprintf(cik, "%d\n%s --> %s\n%s\n\n", olay,
+					             srt_saati(bas).c_str(),
+					             srt_saati(son).c_str(), metin.c_str());
+				}
+			}
+			if (rc >= 0) avsubtitle_free(&sub);
+			av_packet_unref(pkt);
+		}
+		std::fclose(cik);
+		cik = nullptr;
+		if (olay > 0) {
+			tamam = true;
+		} else {
+			set_err("altyazı olayı çıkarılamadı (akış boş mu?)");
+		}
+	} while (false);
+	av_packet_free(&pkt);
+	if (cc) avcodec_free_context(&cc);
+	avformat_close_input(&fmt);
+	if (cik) std::fclose(cik);
+	if (!tamam) {
+		std::remove(dest);
+		return -1;
+	}
+	return olay;
+}
+
 int velnosub_abi_audio_len(int h) {
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	int64_t t = g_audio.at(h)->toplam_ornek;

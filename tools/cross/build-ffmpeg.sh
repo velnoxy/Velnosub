@@ -51,7 +51,7 @@ CC="$CCX" ./configure \
     --disable-postproc --disable-avfilter --disable-autodetect \
     --enable-swresample --enable-swscale \
     --enable-demuxer=mov,matroska,avi,ogg,flv,wav,ass,srt \
-    --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,flac,opus,vorbis,pcm_s16le,pcm_f32le,srt \
+    --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,flac,opus,vorbis,pcm_s16le,pcm_f32le,srt,ass,ssa,mov_text,webvtt \
     --enable-parser=h264,hevc,aac,vorbis,opus,flac \
     --enable-protocol=file \
     $XASM \
