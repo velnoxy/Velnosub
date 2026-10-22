@@ -26,6 +26,8 @@ jobs:
       hit: ${{ steps.cache.outputs.cache-hit || 'false' }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: NDK r29 kur (root beklenen konum)
         run: |
           sudo chmod 0755 /root 2>/dev/null || true
@@ -48,6 +50,8 @@ jobs:
     needs: deps
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - name: NDK r29 kur (root beklenen konum)
         run: |
           sudo chmod 0755 /root 2>/dev/null || true
