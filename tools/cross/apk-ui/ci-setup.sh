@@ -13,6 +13,7 @@ PHASE=${PHASE:-all}
 REPO=${REPO:-$(cd "$(dirname "$0")/../../.." && pwd)}
 ROOT=${ROOT:-/root/velsub}
 NDK_ROOT=${NDK_ROOT:-$ROOT/ndk/r29}
+export NDK_ROOT
 DEPS_ROOT=${DEPS_ROOT:-$ROOT/ndk-deps}
 API=29
 BT=${BT:-/usr/local/lib/android/sdk/build-tools/34.0.0}
