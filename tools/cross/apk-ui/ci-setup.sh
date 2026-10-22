@@ -66,7 +66,7 @@ phase_native() {
             -Dlibass:require-system-font-provider=false \
             --cross-file tools/cross/android-arm64.txt
     fi
-    ninja -C build-android-arm64 -j"$JOBS"
+    ninja -C build-android-arm64 -j"$JOBS" libvelnosub-core.so tools/cross/libvelnosub-abi.so
 }
 
 phase_rust() {
