@@ -877,6 +877,65 @@ int velnosub_abi_style_write(int h, int idx, const char *dizge) {
 	return -1;
 }
 
+// ---- P8.1: tam stil yöneticisi — yeni stil / kopya / sil ----
+// style_write (13 hücre) tek başına alan yazımını yapar; liste büyümesi için
+// ekle/sil burada. Yeni stil ilk stilin alanlarını taban alır (renk/imza
+// varsayılanları böylece dosyayla uyumlu); ad boş ya da çakışık olamaz.
+extern "C" int velnosub_abi_style_add(int h, const char *ad) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!ad || !*ad) { set_err("stil adı boş"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		for (auto const &s : c.file.Styles)
+			if (s.name == ad) {
+				set_err("stil adı zaten var: " + std::string(ad));
+				return -1;
+			}
+		AssStyle s;
+		if (!c.file.Styles.empty()) s = *c.file.Styles.begin();
+		s.name = ad;
+		if (s.font.empty()) s.font = "Arial";
+		if (s.fontsize <= 0.0) s.fontsize = 20.0;
+		s.alignment = 2;
+		s.Margin[0] = s.Margin[1] = s.Margin[2] = 10;
+		s.scalex = s.scaley = 100.0;
+		s.borderstyle = s.borderstyle == 3 ? 3 : 1;
+		s.UpdateData();
+		c.file.Styles.push_back(s);
+		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
+		return static_cast<int>(c.file.Styles.size()) - 1;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+extern "C" int velnosub_abi_style_delete(int h, int idx) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		int const n = static_cast<int>(c.file.Styles.size());
+		if (idx < 0 || idx >= n) {
+			set_err("stil dışında indeks: " + std::to_string(idx));
+			return -1;
+		}
+		if (n <= 1) { set_err("son stil silinemez"); return -1; }
+		auto it = std::next(c.file.Styles.begin(), idx);
+		// silinen stili kullanan satırlar ilk kalan stile taşınır
+		std::string kalan;
+		for (auto const &s : c.file.Styles)
+			if (&s != &*it) { kalan = s.name; break; }
+		for (auto &e : c.file.Events)
+			if (e.Style == it->name) e.Style = kalan;
+		c.file.Styles.erase(it);
+		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 // ---- P4.5 III / Faz 5 D:dialog formları omurgası (dinamik tanımlar) ----
 // mini tanım DSL: her satır "ctl|<sınıf>|<ad>|<başlık>|<değer>[|<ek>]" ya da
 // "buton|<metin>", '#' yorum. sınıflar: label edit intedit floatedit

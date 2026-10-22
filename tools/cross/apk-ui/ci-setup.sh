@@ -61,8 +61,17 @@ phase_native() {
     # güvenlik: wrap kaynakları taze checkout'ta eksikse çek
     meson subprojects download 2>/dev/null || true
     if [ ! -f build-android-arm64/build.ninja ]; then
+        # cihaz build diziniyle BİREBİR aynı özellik kümesi: kullanılmayan
+        # video/ses/spell kaynakları (ffms2, vapoursynth, bestsource, hunspell,
+        # fftw3, openal/portaudio/pulse/alsa) KAPALI — aksi halde meson auto ile
+        # subproject'leri açıyor ve cihazda hiç derlenmeyen hedefler CI'da patlıyor
         PATH=$TOOLBIN:$PATH meson setup build-android-arm64 \
             -Dvelnosub_mobile=true \
+            -Dffms2=disabled -Dvapoursynth=disabled -Dbestsource=disabled \
+            -Davisynth=disabled -Dhunspell=disabled -Dfftw3=disabled \
+            -Dalsa=disabled -Dopenal=disabled -Dportaudio=disabled \
+            -Dlibpulse=disabled -Dlocal_boost=false \
+            -Denable_update_checker=false -Dbuild_appimage=false \
             -Dlibass:require-system-font-provider=false \
             --cross-file tools/cross/android-arm64.txt
     fi

@@ -13,6 +13,53 @@ use std::sync::OnceLock;
 use eframe::egui;
 use egui::{CentralPanel, Color32, Panel, RichText, ScrollArea, TextEdit};
 
+/// P8.1: gömülü Material Icons kod noktaları (assets/MaterialIcons-Regular.ttf).
+/// egui varsayılan yazı tiplerinde bu aralık boştur; font lib.rs'te ailelere
+/// son sıradan eklenir, böylece metin glifleri bozulmadan ikonlar çözülür.
+mod ikon {
+	pub const PLAY: &str = "\u{e037}";
+	pub const PAUSE: &str = "\u{e034}";
+	pub const STOP: &str = "\u{e047}";
+	pub const SKIP_PREV: &str = "\u{e045}";
+	pub const SKIP_NEXT: &str = "\u{e044}";
+	pub const OPEN: &str = "\u{e2c8}";
+	pub const SAVE: &str = "\u{e161}";
+	pub const UNDO: &str = "\u{e166}";
+	pub const REDO: &str = "\u{e15a}";
+	pub const SEARCH: &str = "\u{e8b5}";
+	pub const SETTINGS: &str = "\u{e8b8}";
+	pub const ADD: &str = "\u{e145}";
+	pub const DELETE: &str = "\u{e872}";
+	pub const COPY: &str = "\u{e14d}";
+	pub const CLOSE: &str = "\u{e5cd}";
+	pub const PALETTE: &str = "\u{e40a}";
+	pub const SUBTITLES: &str = "\u{e048}";
+	pub const VIDEO: &str = "\u{e04b}";
+	pub const AUDIO: &str = "\u{e3a1}";
+	pub const HELP: &str = "\u{e8fd}";
+	pub const INFO: &str = "\u{e88e}";
+	pub const MOVIE: &str = "\u{e02c}";
+	pub const EQ: &str = "\u{e1de}";
+	pub const TEXT: &str = "\u{e262}";
+	pub const BOLD: &str = "\u{e238}";
+	pub const ITALIC: &str = "\u{e23f}";
+	pub const UNDERLINE: &str = "\u{e249}";
+	pub const STRIKE: &str = "\u{e23d}";
+	pub const ZOOM_IN: &str = "\u{e8ff}";
+	pub const ZOOM_OUT: &str = "\u{e900}";
+	pub const FULL: &str = "\u{e5d0}";
+	pub const FAST_FWD: &str = "\u{e01f}";
+	pub const FAST_REW: &str = "\u{e020}";
+	pub const LAYERS: &str = "\u{e53b}";
+	pub const TUNE: &str = "\u{e429}";
+	pub const EXTENSION: &str = "\u{e87b}";
+	pub const TRANSLATE: &str = "\u{e8e2}";
+	pub const VISIBILITY: &str = "\u{e8f4}";
+	pub const ARROW_BACK: &str = "\u{e5c4}";
+	pub const ARROW_FWD: &str = "\u{e5c8}";
+	pub const CHECK: &str = "\u{e5ca}";
+}
+
 extern "C" {
 	fn velnosub_abi_init(config_json_path: *const c_char) -> c_int;
 	fn velnosub_abi_open(in_path: *const c_char) -> c_int;
@@ -38,6 +85,8 @@ extern "C" {
 	fn velnosub_abi_style_edit_size(h: c_int, idx: c_int, size: f64) -> c_int;
 	fn velnosub_abi_style_edit_name(h: c_int, idx: c_int, name: *const c_char) -> c_int;
 	fn velnosub_abi_style_write(h: c_int, idx: c_int, dizge: *const c_char) -> c_int;
+	fn velnosub_abi_style_add(h: c_int, ad: *const c_char) -> c_int;
+	fn velnosub_abi_style_delete(h: c_int, idx: c_int) -> c_int;
 	fn velnosub_abi_dialog_open(spec: *const c_char) -> c_int;
 	fn velnosub_abi_dialog_count(h: c_int) -> c_int;
 	fn velnosub_abi_dialog_btncount(h: c_int) -> c_int;
@@ -534,6 +583,41 @@ fn style_of(h: c_int, idx: c_int) -> Result<String, String> {
 
 /// P4.5 devam: mevcut dizgeyi al, seçili hücreleri değiştir, ABI'ye yaz —
 /// ABI tüm alanları çözmeyen herhangi bir hücreyi reddeder (yarım durum yok)
+/// P8.1: StyleRow → 13 hücreli stil dizgesi (style_write biçimi)
+fn stil_hucreleri(s: &StyleRow) -> Vec<String> {
+	vec![
+		s.name.clone(),
+		s.font.clone(),
+		format!("{}", s.size),
+		s.primary.clone(),
+		s.secondary.clone(),
+		s.outline.clone(),
+		s.shadow.clone(),
+		s.flags.clone(),
+		s.alignment.to_string(),
+		s.margins.clone(),
+		s.encoding.to_string(),
+		s.scale.clone(),
+		s.edge.clone(),
+	]
+}
+
+/// P8.1: ASS hizalama kodu → okunur ad (1-3 alt, 4-6 orta, 7-9 üst)
+fn hiza_ad(n: i32) -> &'static str {
+	match n {
+		1 => "1 sol-alt",
+		2 => "2 orta-alt",
+		3 => "3 sağ-alt",
+		4 => "4 sol-orta",
+		5 => "5 orta-orta",
+		6 => "6 sağ-orta",
+		7 => "7 sol-üst",
+		8 => "8 orta-üst",
+		9 => "9 sağ-üst",
+		_ => "—",
+	}
+}
+
 fn stil_yaz(
 	h: c_int,
 	idx: c_int,
@@ -789,6 +873,9 @@ pub struct GridApp {
 	shift_win: bool,
 	shift_ms: i32,
 	shift_tum: bool,
+	// P8.1: tam stil yöneticisi penceresi + seçili stil
+	stil_win: bool,
+	stil_sec: usize,
 }
 
 /// Arayüz düzeni. `Secim` yalnızca ayar dosyası yokken geçerli ilk ekrandır.
@@ -947,6 +1034,8 @@ impl GridApp {
 			shift_win: false,
 			shift_ms: 1000,
 			shift_tum: true,
+			stil_win: false,
+			stil_sec: 0,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
 			oniz: Oniz::default(),
@@ -1455,6 +1544,465 @@ impl GridApp {
 					self.ayarlar_icerik(su);
 				});
 			self.ayar_win = ap;
+		}
+		self.stil_penceresi(ui);
+	}
+
+	/// P8.1: seçili satırın baş/bitişini video kare ızgarasına oturt
+	/// (Aegisub Timing menüsü karşılığı → kare = round(ms·fps/1000)).
+	fn kareye_oturt(&mut self, bas: bool, son: bool) {
+		let Some(h) = self.handle else {
+			self.note = "kareye oturt: dosya yok".into();
+			return;
+		};
+		let Some(fps) = self.video.as_ref().map(|v| v.fps) else {
+			self.note = "kareye oturt: video yok".into();
+			return;
+		};
+		let Some(i) = self.secili else {
+			self.note = "kareye oturt: satır seç".into();
+			return;
+		};
+		if fps <= 0.0 {
+			self.note = "kareye oturt: fps geçersiz".into();
+			return;
+		}
+		let Some(sat) = self.rows.get(i) else {
+			return;
+		};
+		let mb = ass_ms(&sat.bas).unwrap_or(0);
+		let ms = ass_ms(&sat.son).unwrap_or(0);
+		let cevir = |x: i64| -> i64 {
+			let kare = (x as f64 * fps / 1000.0).round();
+			(kare * 1000.0 / fps).round() as i64
+		};
+		let yb = if bas { cevir(mb) } else { mb };
+		let ys = if son { cevir(ms) } else { ms };
+		if ys <= yb {
+			self.note = "kareye oturt: geçersiz süre".into();
+			return;
+		}
+		match times_set(h, i, yb, ys) {
+			Ok(()) => {
+				self.yerles();
+				self.note = format!("kareye oturtuldu: {yb}–{ys} ms");
+			}
+			Err(e) => self.note = format!("kareye oturt: {e}"),
+		}
+	}
+
+	/// P8.1: tam stil yöneticisi — liste + 13 hücrenin tamamı (Aegisub
+	/// Stil Yöneticisi portu). Her alan değişimi style_write hattına girer.
+	fn stil_penceresi(&mut self, ui: &mut egui::Ui) {
+		if !self.stil_win {
+			return;
+		}
+		let mut acik = self.stil_win;
+		let mut sec = self.stil_sec;
+		let h = self.handle;
+		egui::Window::new(format!("{} Stil Yöneticisi", ikon::PALETTE))
+			.open(&mut acik)
+			.default_width(640.0)
+			.resizable(true)
+			.show(ui.ctx(), |su| {
+				su.horizontal(|sat| {
+					sat.vertical(|v| {
+						v.set_min_width(170.0);
+						v.label(
+							RichText::new(format!("{} stiller", ikon::SUBTITLES))
+								.strong(),
+						);
+						egui::ScrollArea::vertical()
+							.max_height(320.0)
+							.show(v, |sv| {
+								for (i, sr) in
+									self.stiller.iter().enumerate()
+								{
+									if sv.selectable_label(
+										i == sec,
+										format!("{} {}", ikon::PALETTE, sr.name),
+									)
+									.clicked()
+									{
+										sec = i;
+									}
+								}
+							});
+						v.add_space(4.0);
+						v.horizontal(|b| {
+							if b.button(format!("{} yeni", ikon::ADD)).clicked() {
+								if let Some(hh) = h {
+									let ad = format!(
+										"Yeni Stil {}",
+										self.stiller.len() + 1
+									);
+									if let Ok(c) = CString::new(ad) {
+										let rc = unsafe {
+											velnosub_abi_style_add(hh, c.as_ptr())
+										};
+										if rc >= 0 {
+											self.load_styles();
+											sec = rc as usize;
+											self.note = "yeni stil eklendi".into();
+										} else {
+											self.note = format!(
+												"stil eklenemedi: {}",
+												last_error()
+											);
+										}
+									}
+								}
+							}
+							if b.button(format!("{} kopyala", ikon::COPY)).clicked() {
+								if let (Some(hh), Some(s0)) =
+									(h, self.stiller.get(sec).cloned())
+								{
+									let ad = format!("{} kopya", s0.name);
+									if let Ok(c) = CString::new(ad.clone()) {
+										let rc = unsafe {
+											velnosub_abi_style_add(hh, c.as_ptr())
+										};
+										if rc >= 0 {
+											let mut hc = stil_hucreleri(&s0);
+											hc[0] = ad;
+											let metin = hc.join("|");
+											if let Ok(cm) = CString::new(metin) {
+												unsafe {
+													velnosub_abi_style_write(
+														hh, rc, cm.as_ptr(),
+													)
+												};
+											}
+											self.load_styles();
+											sec = rc as usize;
+											self.note = "stil kopyalandı".into();
+										} else {
+											self.note = format!(
+												"kopya eklenemedi: {}",
+												last_error()
+											);
+										}
+									}
+								}
+							}
+							if b.button(format!("{} sil", ikon::DELETE)).clicked() {
+								if let Some(hh) = h {
+									let rc = unsafe {
+										velnosub_abi_style_delete(
+											hh, sec as c_int,
+										)
+									};
+									if rc == 0 {
+										self.load_styles();
+										sec = sec.saturating_sub(1);
+										self.note = "stil silindi".into();
+									} else {
+										self.note = format!(
+											"stil silinemedi: {}",
+											last_error()
+										);
+									}
+								}
+							}
+						});
+					});
+					sat.separator();
+					sat.vertical(|v| {
+						let Some(s0) = self.stiller.get(sec).cloned() else {
+							v.label("stil seç");
+							return;
+						};
+						let mut ad = s0.name.clone();
+						v.horizontal(|r| {
+							r.label(format!("{} ad", ikon::TEXT));
+							if r.add(
+								TextEdit::singleline(&mut ad)
+									.desired_width(180.0),
+							)
+							.lost_focus()
+								&& ad != s0.name
+								&& !ad.trim().is_empty()
+							{
+								self.stil_alan_yaz(sec, 0, ad.clone());
+							}
+						});
+						let mut font = s0.font.clone();
+						v.horizontal(|r| {
+							r.label("font");
+							if r.add(
+								TextEdit::singleline(&mut font)
+									.desired_width(180.0),
+							)
+							.lost_focus()
+								&& font != s0.font
+								&& !font.trim().is_empty()
+							{
+								self.stil_alan_yaz(sec, 1, font.clone());
+							}
+						});
+						let mut boy = s0.size;
+						v.horizontal(|r| {
+							r.label("boyut");
+							if r.add(
+								egui::DragValue::new(&mut boy)
+									.speed(0.5)
+									.range(2.0f64..=9999.0)
+									.suffix(" pts"),
+							)
+							.changed()
+							{
+								self.stil_alan_yaz(
+									sec,
+									2,
+									format!("{}", boy),
+								);
+							}
+						});
+						v.horizontal(|r| {
+							r.label("renkler:");
+							for (etiket, hucre, kaynak) in [
+								("ana", 3usize, &s0.primary),
+								("ikincil", 4, &s0.secondary),
+								("kontur", 5, &s0.outline),
+								("gölge", 6, &s0.shadow),
+							] {
+								let mut c = ass_to_color32(kaynak)
+									.unwrap_or(Color32::WHITE);
+								if r.color_edit_button_srgba(&mut c)
+									.changed()
+								{
+									self.stil_alan_yaz(
+										sec,
+										hucre,
+										color32_to_ass(c),
+									);
+								}
+								r.label(RichText::new(etiket).size(10.0));
+							}
+						});
+						let bay: Vec<bool> = s0
+							.flags
+							.split(',')
+							.map(|b| b.trim() == "1")
+							.collect();
+						let mut kb = *bay.first().unwrap_or(&false);
+						let mut ki = *bay.get(1).unwrap_or(&false);
+						let mut ku = *bay.get(2).unwrap_or(&false);
+						let mut ks = *bay.get(3).unwrap_or(&false);
+						v.horizontal(|r| {
+							r.label("biçim:");
+							let degisti = r
+								.checkbox(
+									format!("{} kalın", ikon::BOLD),
+									&mut kb,
+								)
+								.changed()
+								| r.checkbox(
+									format!("{} italik", ikon::ITALIC),
+									&mut ki,
+								)
+								.changed()
+								| r.checkbox(
+									format!("{} altçizgi", ikon::UNDERLINE),
+									&mut ku,
+								)
+								.changed()
+								| r.checkbox(
+									format!("{} üstçizgi", ikon::STRIKE),
+									&mut ks,
+								)
+								.changed();
+							if degisti {
+								let f = format!(
+									"{},{},{},{}",
+									kb as u8,
+									ki as u8,
+									ku as u8,
+									ks as u8
+								);
+								self.stil_alan_yaz(sec, 7, f);
+							}
+						});
+						v.horizontal(|r| {
+							r.label("hizalama");
+							let mut hz = s0.alignment;
+							egui::ComboBox::from_id_salt("stil_hiza")
+								.selected_text(hiza_ad(hz))
+								.show_ui(r, |cb| {
+									for i in 1..=9 {
+										cb.selectable_value(
+											&mut hz,
+											i,
+											hiza_ad(i),
+										);
+									}
+								});
+							if hz != s0.alignment {
+								self.stil_alan_yaz(
+									sec,
+									8,
+									hz.to_string(),
+								);
+							}
+						});
+						let mar: Vec<i32> = s0
+							.margins
+							.split(',')
+							.map(|x| x.trim().parse().unwrap_or(0))
+							.collect();
+						let mut ml = *mar.first().unwrap_or(&0);
+						let mut mr = *mar.get(1).unwrap_or(&0);
+						let mut mv = *mar.get(2).unwrap_or(&0);
+						v.horizontal(|r| {
+							r.label("kenar L/R/D");
+							let d = r
+								.add(
+									egui::DragValue::new(&mut ml)
+										.range(0..=9999),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut mr)
+										.range(0..=9999),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut mv)
+										.range(0..=9999),
+								)
+								.changed();
+							if d {
+								self.stil_alan_yaz(
+									sec,
+									9,
+									format!("{ml},{mr},{mv}"),
+								);
+							}
+						});
+						let ol: Vec<f64> = s0
+							.scale
+							.split(',')
+							.map(|x| x.trim().parse().unwrap_or(100.0))
+							.collect();
+						let mut ox = *ol.first().unwrap_or(&100.0);
+						let mut oy = *ol.get(1).unwrap_or(&100.0);
+						let mut hr = *ol.get(2).unwrap_or(&0.0);
+						let mut ac = *ol.get(3).unwrap_or(&0.0);
+						v.horizontal(|r| {
+							r.label("ölçek/boşluk/açı");
+							let d = r
+								.add(
+									egui::DragValue::new(&mut ox)
+										.speed(1.0)
+										.range(1.0..=1000.0)
+										.suffix("%x"),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut oy)
+										.speed(1.0)
+										.range(1.0..=1000.0)
+										.suffix("%y"),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut hr)
+										.speed(0.2)
+										.range(-99.0..=99.0),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut ac)
+										.speed(0.5)
+										.suffix("°"),
+								)
+								.changed();
+							if d {
+								self.stil_alan_yaz(
+									sec,
+									11,
+									format!("{ox},{oy},{hr},{ac}"),
+								);
+							}
+						});
+						let ke: Vec<f64> = s0
+							.edge
+							.split(',')
+							.map(|x| x.trim().parse().unwrap_or(0.0))
+							.collect();
+						let mut kst = ke.first().copied().unwrap_or(1.0).max(1.0);
+						let mut kg = *ke.get(1).unwrap_or(&2.0);
+						let mut gg = *ke.get(2).unwrap_or(&2.0);
+						v.horizontal(|r| {
+							r.label("kenarlık");
+							let d = r
+								.add(
+									egui::DragValue::new(&mut kst)
+										.range(1..=3),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut kg)
+										.speed(0.2)
+										.range(0.0..=99.0)
+										.prefix("k "),
+								)
+								.changed()
+								| r.add(
+									egui::DragValue::new(&mut gg)
+										.speed(0.2)
+										.range(0.0..=99.0)
+										.prefix("g "),
+								)
+								.changed();
+							if d {
+								self.stil_alan_yaz(
+									sec,
+									12,
+									format!("{kst},{kg},{gg}"),
+								);
+							}
+						});
+						v.horizontal(|r| {
+							r.label("kodlama");
+							let mut kod = s0.encoding;
+							if r.add(
+								egui::DragValue::new(&mut kod)
+									.range(0..=255),
+							)
+							.changed()
+							{
+								self.stil_alan_yaz(
+									sec,
+									10,
+									kod.to_string(),
+								);
+							}
+						});
+					});
+				});
+			});
+		self.stil_win = acik;
+		if self.stiller.is_empty() {
+			self.stil_sec = 0;
+		} else {
+			self.stil_sec = sec.min(self.stiller.len() - 1);
+		}
+	}
+
+	/// P8.1: tek stil hücresini yaz + listeyi tazele.
+	fn stil_alan_yaz(&mut self, idx: usize, alan: usize, deger: String) {
+		let Some(h) = self.handle else {
+			self.note = "stil: açık dosya yok".into();
+			return;
+		};
+		match stil_yaz(h, idx as c_int, |hc| {
+			if let Some(hucre) = hc.get_mut(alan) {
+				*hucre = deger;
+			}
+		}) {
+			Ok(()) => self.load_styles(),
+			Err(e) => self.note = format!("stil yazılamadı: {e}"),
 		}
 	}
 
@@ -3046,17 +3594,24 @@ impl GridApp {
 		let tema = tema_simdi(ui);
 		egui::MenuBar::new().ui(ui, |mb| {
 			mb.menu_button("File", |m| {
-				if m.button("Aç (seçici)…").clicked() {
+				if m.button(format!("{} Altyazı aç…", ikon::OPEN)).clicked() {
 					self.tarayici_ac(SecimTur::Altyazi);
 				}
-				if m.button("Yeniden aç").clicked() {
+				if m.button(format!("{} Video aç…", ikon::VIDEO)).clicked() {
+					self.tarayici_ac(SecimTur::Video);
+				}
+				if m.button(format!("{} Ses aç…", ikon::AUDIO)).clicked() {
+					self.tarayici_ac(SecimTur::Ses);
+				}
+				m.separator();
+				if m.button(format!("{} Yeniden aç", ikon::ARROW_BACK)).clicked() {
 					if let Some(p) = self.path.clone() {
 						if let Err(e) = self.load(&p) {
 							self.note = format!("açılamadı: {e}");
 						}
 					}
 				}
-				if m.button("Kaydet").clicked() {
+				if m.button(format!("{} Kaydet", ikon::SAVE)).clicked() {
 					if let Some(p) = self.save_path.clone() {
 						self.save_to(&p);
 					} else {
@@ -3065,33 +3620,106 @@ impl GridApp {
 				}
 			});
 			mb.menu_button("Edit", |m| {
-				if m.button("Satır ekle").clicked() {
+				if m.button(format!("{} Satır ekle", ikon::ADD)).clicked() {
 					self.satir_ekle_tetik(false);
 				}
-				if m.button("Satır çoğalt").clicked() {
+				if m.button(format!("{} Satır çoğalt", ikon::COPY)).clicked() {
 					self.satir_ekle_tetik(true);
 				}
-				if m.button("Satır sil").clicked() {
+				if m.button(format!("{} Satır sil", ikon::DELETE)).clicked() {
 					self.satir_sil_tetik();
 				}
 				m.separator();
-				if m.button("Geri").clicked() {
+				if m.button(format!("{} Geri", ikon::UNDO)).clicked() {
 					self.geri_al();
 				}
-				if m.button("İleri (Redo)").clicked() {
+				if m.button(format!("{} İleri (Redo)", ikon::REDO)).clicked() {
 					self.ileri_al();
 				}
 				m.separator();
-				if m.button("Ara-Bul").clicked() {
+				if m.button(format!("{} Ara-Bul…", ikon::SEARCH)).clicked() {
 					self.ara_win = true;
+				}
+				if m.button(format!("{} Zaman kaydır…", ikon::LAYERS)).clicked() {
+					self.shift_win = true;
 				}
 			});
 			mb.menu_button("Subtitle", |m| {
-				m.add_enabled(false, egui::Button::new("dosya özellikleri (dilim)"));
+				if m
+					.button(format!("{} Stil Yöneticisi…", ikon::PALETTE))
+					.clicked()
+				{
+					self.stil_win = true;
+				}
+				m.separator();
+				if m
+					.button(format!(
+						"{} Seçili satırı yorum yap/çıkar",
+						ikon::TEXT
+					))
+					.clicked()
+				{
+					if let (Some(h), Some(i)) = (self.handle, self.secili) {
+						let Some(sat) = self.rows.get(i) else {
+							self.note = "satır seç".into();
+							return;
+						};
+						let st = sat.stil.clone();
+						let oy = sat.oyuncu.clone();
+						let et = sat.etki.clone();
+						let yeni = !sat.yorum;
+						match meta_set(
+							h,
+							i,
+							Some(&st),
+							Some(&oy),
+							Some(&et),
+							Some(yeni),
+							None,
+						) {
+							Ok(()) => {
+								self.yerles();
+								self.note = if yeni {
+									"satır yorum yapıldı".into()
+								} else {
+									"yorum kaldırıldı".into()
+								};
+							}
+							Err(e) => {
+								self.note = format!("yorum: {e}");
+							}
+						}
+					}
+				}
+				if m
+					.button(format!("{} Satırı sil", ikon::DELETE))
+					.clicked()
+				{
+					self.satir_sil_tetik();
+				}
 			});
 			mb.menu_button("Timing", |m| {
-				if m.button("Zaman kaydır…").clicked() {
+				if m
+					.button(format!("{} Zaman kaydır…", ikon::LAYERS))
+					.clicked()
+				{
 					self.shift_win = true;
+				}
+				m.separator();
+				if m
+					.button(format!(
+						"{} Başlangıcı kareye oturt",
+						ikon::SKIP_PREV
+					))
+					.clicked()
+				{
+					self.kareye_oturt(true, false);
+				}
+				if m
+					.button(format!("{} Bitişi kareye oturt", ikon::SKIP_NEXT))
+					.clicked()
+				{
+					self.kareye_oturt(false, true);
 				}
 			});
 			mb.menu_button("Video", |m| {
@@ -3102,6 +3730,27 @@ impl GridApp {
 				for y in liste {
 					if m.button(y.clone()).clicked() {
 						self.video_ac(&y);
+					}
+				}
+				m.separator();
+				if m.button(format!("{} Oynat / Duraklat", ikon::PLAY)).clicked() {
+					if let Some(v) = self.video.as_mut() {
+						v.oynat = !v.oynat;
+						v.son_tik = None;
+					}
+				}
+				if m.button(format!("{} Önceki kare", ikon::SKIP_PREV)).clicked() {
+					if let Some(v) = self.video.as_mut() {
+						if v.frame > 0 {
+							v.frame -= 1;
+						}
+					}
+				}
+				if m.button(format!("{} Sonraki kare", ikon::SKIP_NEXT)).clicked() {
+					if let Some(v) = self.video.as_mut() {
+						if v.frame + 1 < v.kareler {
+							v.frame += 1;
+						}
 					}
 				}
 			});
@@ -3115,23 +3764,59 @@ impl GridApp {
 						self.ses_ac(&y);
 					}
 				}
+				m.separator();
+				if m.button(format!("{} Oynat (baştan)", ikon::PLAY)).clicked() {
+					if let Some(a) = self.audio.as_ref() {
+						let adet =
+							unsafe { velnosub_abi_audio_len64(a.handle) };
+						let rc = unsafe {
+							velnosub_abi_audio_play(a.handle, 0, adet)
+						};
+						self.note = if rc == 0 {
+							"ses: oynatılıyor".into()
+						} else {
+							format!("ses oynatma hatası: {}", last_error())
+						};
+					}
+				}
+				if m.button(format!("{} Durdur", ikon::STOP)).clicked() {
+					if let Some(a) = self.audio.as_ref() {
+						unsafe { velnosub_abi_audio_stop(a.handle) };
+						self.note = "ses: durdu".into();
+					}
+				}
 			});
 			mb.menu_button("Automation", |m| {
-				m.add_enabled(false, egui::Button::new("Lua motoru (pump dilimi)"));
+				m.label(
+					RichText::new(format!(
+						"{} Lua motoru mobil derlemede kapalı",
+						ikon::EXTENSION
+					))
+					.weak(),
+				);
+				m.label(RichText::new("Faz 5'te luajit mobil hedefiyle açılacak").weak());
 			});
 			mb.menu_button("View", |m| {
-				if m.button("Mobil görünüm").clicked() {
+				if m.button(format!("{} Mobil görünüm", ikon::TEXT)).clicked() {
 					self.duzen_sec(tema, Duzen::Mobil);
 				}
-				if m.button("Ölçek 1.0×").clicked() {
+				if m.button(format!("{} Masaüstü görünüm", ikon::FULL)).clicked() {
+					self.duzen_sec(tema, Duzen::Masaustu);
+				}
+				if m.button(format!("{} Ölçek 1.0×", ikon::ZOOM_IN)).clicked() {
 					self.zoom = 1.0;
 				}
-				if m.button("Ayarlar").clicked() {
+				m.separator();
+				if m.button(format!("{} Stil Yöneticisi…", ikon::PALETTE)).clicked() {
+					self.stil_win = true;
+				}
+				if m.button(format!("{} Ayarlar…", ikon::SETTINGS)).clicked() {
 					self.ayar_win = true;
 				}
 			});
 			mb.menu_button("Help", |m| {
-				m.label("velnosub UI — P4.8.2 v12 (aegisub yüzeyi, çift düzen)");
+				m.label(format!("{} velnosub UI — P8.1 (aegisub yüzeyi)", ikon::INFO));
+				m.label("player: satır penceresi + ses/video eşleşik");
 			});
 		});
 	}

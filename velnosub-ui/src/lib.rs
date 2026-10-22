@@ -56,6 +56,26 @@ fn kos(
 				st.visuals = visuals.clone();
 				abi::stil_tamir(st, tema);
 			});
+			// P8.1: Material Icons gömülü font — tüm menü/düğme ikonları.
+			// Ailelere SON sıradan eklenir; metin glifleri DejaVu'da kalır.
+			let mut fonts = egui::FontDefinitions::default();
+			fonts.font_data.insert(
+				"material".to_owned(),
+				std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+					"../assets/MaterialIcons-Regular.ttf"
+				))),
+			);
+			for aile in [
+				egui::FontFamily::Proportional,
+				egui::FontFamily::Monospace,
+			] {
+				fonts
+					.families
+					.entry(aile)
+					.or_default()
+					.push("material".to_owned());
+			}
+			cc.egui_ctx.set_fonts(fonts);
 			Ok(Box::new(abi::GridApp::new(open, save)))
 		}),
 	) {
