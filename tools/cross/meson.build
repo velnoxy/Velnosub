@@ -67,11 +67,20 @@ if abi_oboe_dep.found()
     abi_cpp_args += ['-DVELNOSUB_ABI_OBOE=1']
     abi_deps += [abi_oboe_dep]
 endif
+# CI (r29 stable, clang 21) oboe.pc'nin -llog'unu sysroot'ta bulamıyor;
+# liblog.so sysroot API-29 dizininde VAR (zip merkez dizini doğrulandı) —
+# arama yolunu açıkça ver. Cihazda bu dizin zaten varsayılan.
+abi_link_args = []
+foreach _d : ['/root/velsub/ndk/r29/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/29',
+              '/root/velsub/ndk/r29/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android']
+    abi_link_args += ['-L' + _d]
+endforeach
 velnosub_abi = shared_library('velnosub-abi', 'velnosub-abi.cpp',
     link_with: velnosub_core_so,
     include_directories: [libaegisub_inc, deps_inc, version_inc, velnosub_src_inc],
     dependencies: abi_deps,
     cpp_args: abi_cpp_args,
+    link_args: abi_link_args,
     install: true)
 
 # P3.1: video dumanı. build-ffmpeg.sh çıktısındaki .pc'ler (pkg_config_libdir
