@@ -39,6 +39,12 @@ cd "$REPO"
 echo "== ci-setup PHASE=$PHASE (root=$ROOT) =="
 
 phase_deps() {
+    echo "---- deps: meson araçları + wrap kaynakları ----"
+    command -v meson >/dev/null || \
+        (sudo apt-get update -y && sudo apt-get install -y meson ninja-build pkg-config unzip curl)
+    # wrap'ler (luajit + alt-projeler) repoda KAYNAK barındırmaz — CI'da çekilir
+    meson subprojects download || \
+        echo "uyarı: bazı subproject kaynakları çekilemedi (repoda sabit dizin olanlar atlanır)"
     echo "---- deps: ICU+Boost ----"
     bash tools/cross/build-deps.sh arm64
     echo "---- deps: ffmpeg 6.1.2 ----"
@@ -50,6 +56,10 @@ phase_deps() {
 }
 
 phase_native() {
+    command -v meson >/dev/null || \
+        (sudo apt-get update -y && sudo apt-get install -y meson ninja-build pkg-config)
+    # güvenlik: wrap kaynakları taze checkout'ta eksikse çek
+    meson subprojects download 2>/dev/null || true
     if [ ! -f build-android-arm64/build.ninja ]; then
         PATH=$TOOLBIN:$PATH meson setup build-android-arm64 \
             -Dvelnosub_mobile=true \
