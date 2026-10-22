@@ -28,14 +28,18 @@
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
-// P5.5: kutu-sesi — çekirdeğin avformat/avcodec/swresample'ı core.so'dan
-// dışa açıktır; paket-içi sembol kapanışı (build-apk.sh 8. adım) bu bağları
-// build-time yakalar
+// P5.5: kutu-sesi — ffmpeg linki STATİK .a hattıdır (build-apk.sh 8. adım
+// sembol-kapanış denetimi build-time yakalar). DİKKAT: vendored ffmpeg
+// başlıkları extern "C" sarmalı İÇERMİYOR — sarmayı biz açıyoruz; yoksa
+// her av*/swr* referansı C++-mangle UND düşer (lld kanıtı:
+// 'undefined symbol: avformat_open_input(...)' biçimli çıktı)
+extern "C" {
 #include <libavformat/avformat.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/samplefmt.h>
 #include <libswresample/swresample.h>
+}
 
 #ifdef VELNOSUB_ABI_OBOE
 #include <oboe/Oboe.h>
