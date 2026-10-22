@@ -49,4 +49,8 @@ Version: ${OBOE_VER}
 Cflags: -I\${includedir}
 Libs: -L\${libdir} -loboe -lOpenSLES -log
 EOF
+# Android toolchain ${prefix}/lib/<abi>/ altına döker — düzleştir
+if [ -f "$PREFIX/lib/$AND_ABI/liboboe.a" ]; then
+    mv -f "$PREFIX/lib/$AND_ABI/liboboe.a" "$PREFIX/lib/liboboe.a"
+fi
 ls -l "$PREFIX/lib/liboboe.a" "$PREFIX/lib/pkgconfig/oboe.pc"
