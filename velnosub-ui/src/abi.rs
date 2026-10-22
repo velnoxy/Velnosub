@@ -423,7 +423,11 @@ fn alt_tsv_okes() -> Vec<(i64, String, String)> {
 	akslar: Vec<(i64, String, String)>,
 	oynat: bool,
 	son_tik: Option<std::time::Instant>,
+	// P7.1 aegisub player mantığı: birim = ms bekçisi (satır penceresi boyunca)
 	birim: f32,
+	// P7.1: oynat penceresi (ms) — satır başı + uzunluk; başlangıç karesi cb
+	satir_bas: i64,
+	satir_uzun: i64,
 	// P6.5: son kare-decode süresi — cihazhızı kanıtlanır (ms/kare)
 	coz_ms: u32,
 }
@@ -1578,6 +1582,8 @@ impl GridApp {
 			oynat: false,
 			son_tik: None,
 			birim: 0.0,
+			satir_bas: 0,
+			satir_uzun: 0,
 			coz_ms: 0,
 		});
 		// P6.4: iç altyazı akış taraması — YALNIZ SEÇİCİ kuralı (auto-load
@@ -1753,9 +1759,15 @@ impl GridApp {
 		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
 		let mut v_hata: Option<String> = None;
 		let mut oniz_dik: Option<egui::Rect> = None;
+		// P7.1: aegisub player penceresi (aktif satır) — v-blok ÖNCESİNDEN
+		// hesap (self ödünç çakışması yok)
+		let (_oyn_bas, oyn_son, oyn_d0, oyn_rate, oyn_toplam) =
+			self.oynat_penceresi();
 		// P6.4: oynat/dur/akış seçimi bayrakları — v-ödünç kapanışının
 		// DIŞINDA ustalıkla işlenir (self çift-borçlanma yok)
 		let mut oynat_istek = false;
+		let mut oynat_d0ornek = 0i64;
+		let mut oynat_adet = 0i64;
 		let mut dur_istek = false;
 		let mut aks_sec: Option<i64> = None;
 		if let Some(v) = self.video.as_mut() {
@@ -1799,8 +1811,35 @@ impl GridApp {
 						v.son_tik = None;
 						dur_istek = true;
 					} else {
+						// P7.1: oynat = aktif satır penceresi; başlangıç =
+						// geçerli karenin ms'i (kare-odak kuralı)
 						v.oynat = true;
 						v.son_tik = Some(std::time::Instant::now());
+						v.birim = 0.0;
+						v.satir_bas = oyn_d0;
+						v.satir_uzun = (oyn_son - oyn_d0).max(200);
+						if oyn_rate > 0 {
+							// ses örneği ofseti + adet — v-blok dışı uygulama
+							oynat_d0ornek = (oyn_d0 * oyn_rate / 1000)
+								.clamp(0, oyn_toplam.max(0));
+							oynat_adet = ((oyn_son - oyn_d0).max(200)
+								* oyn_rate
+								/ 1000)
+								.min((oyn_toplam - oynat_d0ornek).max(0));
+						}
+						// ilk kare = d0'ın karesi (senkron çapa)
+						let hk =
+							((v.fps * (oyn_d0 as f64) / 1000.0).round()
+								as i32)
+								.clamp(0, (v.kareler - 1).max(0));
+						if hk != v.frame {
+							v.frame = hk;
+							let t0 = std::time::Instant::now();
+							if let Err(e) = v.cizim_cek(su.ctx()) {
+								v_hata = Some(e);
+							}
+							v.coz_ms = t0.elapsed().as_millis() as u32;
+						}
 						oynat_istek = true;
 					}
 				}
@@ -1812,37 +1851,43 @@ impl GridApp {
 			// P6.4: oynatma tick — fps-timer; kare başına bir decode; cihaz
 			// yeterli hızda değilse adım kendiliğinden yavaşlar (gerçek
 			// senkron yok: kare süresine göre ilerletme)
+			// P7.1: aegisub player — master saat duvar; birim = ms bekçisi;
+			// kare = (satir_bas + ms)·fps/1000; satır bitince otomatik dur
 			if v.oynat {
 				let simdi = std::time::Instant::now();
-				let ds = v
+				let dsms = v
 					.son_tik
-					.map_or(0.0f32, |s| simdi.duration_since(s).as_secs_f32());
+					.map_or(0.0f32, |s| {
+						simdi.duration_since(s).as_secs_f32() * 1000.0
+					});
 				v.son_tik = Some(simdi);
-				v.birim += ds * v.fps as f32;
-				let adim = v.birim.floor() as i32;
-				if adim > 0 {
-					v.birim -= adim as f32;
-					let son_kare = (v.kareler - 1).max(0);
-					if v.frame < son_kare {
-						v.frame = (v.frame + adim).min(son_kare);
-						// P6.5: kare-decode süresi ölçüyü — cihaz-hızı kanıtı
-						let t0 = std::time::Instant::now();
-						if let Err(e) = v.cizim_cek(ui.ctx()) {
-							v_hata = Some(e);
-						}
-						v.coz_ms = t0.elapsed().as_millis() as u32;
+				v.birim += dsms;
+				let hedef_ms = v.satir_bas as f64 + v.birim as f64;
+				let hedef = ((hedef_ms * v.fps / 1000.0).round() as i32)
+					.clamp(0, (v.kareler - 1).max(0));
+				if hedef != v.frame {
+					v.frame = hedef;
+					// P6.5: kare-decode süresi ölçüyü — cihaz-hızı kanıtı
+					let t0 = std::time::Instant::now();
+					if let Err(e) = v.cizim_cek(ui.ctx()) {
+						v_hata = Some(e);
 					}
-					if v.frame >= son_kare {
-						v.oynat = false;
-						v.son_tik = None;
-						dur_istek = true;
-					}
+					v.coz_ms = t0.elapsed().as_millis() as u32;
 				}
-				let tık = if v.fps > 0.5 { 1.0 / v.fps } else { 0.125 };
-				ui.ctx()
-					.request_repaint_after(std::time::Duration::from_secs_f64(
-						tık.clamp(0.033, 0.25),
-					));
+				if v.satir_uzun > 0 && v.birim >= v.satir_uzun as f32 {
+					// satır sonu — aegisub kuralı: otomatik dur (ses kesilir)
+					v.oynat = false;
+					v.son_tik = None;
+					dur_istek = true;
+				} else {
+					let tık = if v.fps > 0.5 { 1.0 / v.fps } else { 0.125 };
+					ui.ctx()
+						.request_repaint_after(
+							std::time::Duration::from_secs_f64(
+								tık.clamp(0.033, 0.25),
+							),
+						);
+				}
 			}
 			if let Some(sac) = &v.dok {
 				// P6.1 masaüstü: pane genişliğine sığdır (aegisub kuralı —
@@ -1903,14 +1948,22 @@ impl GridApp {
 		}
 		if oynat_istek {
 			if let Some(a) = self.audio.as_mut() {
-				let adet = a.toplam.min((a.rate as i64) * 5);
-				let rc = unsafe { velnosub_abi_audio_play(a.handle, 0, adet) };
-				a.oynatma_denendi = true;
-				a.ses_durum = if rc == 0 {
-					"oynatma istendi".into()
-				} else {
-					format!("oynatma olmadı: {}", last_error())
-				};
+				// P7.1: ses = aktif satır penceresinden başlar (d0 örnek
+				// ofseti, aegisub "satırı oynat"); video karesi izler.
+				// P6.4'ün 5-sn kesiti bitti: pencere döngüde gerçek.
+				let d0 = oynat_d0ornek.min(a.toplam.max(0));
+				let adet = oynat_adet.min((a.toplam - d0).max(0));
+				if adet > 0 {
+					let rc = unsafe {
+						velnosub_abi_audio_play(a.handle, d0, adet)
+					};
+					a.oynatma_denendi = true;
+					a.ses_durum = if rc == 0 {
+						"oynatma istendi".into()
+					} else {
+						format!("oynatma olmadı: {}", last_error())
+					};
+				}
 			}
 		}
 		if let Some(aks) = aks_sec {
@@ -2964,6 +3017,27 @@ impl GridApp {
 			return;
 		}
 		self.note = format!("iç altyazı akışı {aks}: {son} olay SRT'ye döşendi");
+	}
+
+	/// P7.1: aegisub player mantığı — "aktif satırı oynat": pencere =
+	/// seçili satırın (baş, son) ms'i; seçili yoksa tüm ses süresi.
+	/// Başlangıç = geçerli karenin ms'i, pencereye kırpılır.
+	/// Dönüş: (baş_ms, son_ms, d0_ms, rate, toplam_örnek)
+	fn oynat_penceresi(&self) -> (i64, i64, i64, i64, i64) {
+		let rate = self.audio.as_ref().map(|a| a.rate as i64).unwrap_or(0);
+		let toplam = self.audio.as_ref().map(|a| a.toplam).unwrap_or(0);
+		let (bas, son) = self
+			.secili
+			.and_then(|i| self.rows.get(i))
+			.map(|r| (ass_ms(&r.bas).unwrap_or(0), ass_ms(&r.son).unwrap_or(0)))
+			.filter(|(b, s)| s > b)
+			.unwrap_or((0, if rate > 0 { toplam * 1000 / rate } else { 0 }));
+		let mevcut = self
+			.video
+			.as_ref()
+			.map(|v| (v.frame as f64 / v.fps.max(1e-6) * 1000.0) as i64)
+			.unwrap_or(0);
+		(bas, son, mevcut.clamp(bas, son), rate, toplam)
 	}
 
 	/// P4.8.2: aegisub menü çubuğu — mevcut işlevlere bağlı öğeler gerçek,
