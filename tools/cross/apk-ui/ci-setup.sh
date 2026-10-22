@@ -63,6 +63,7 @@ phase_native() {
     if [ ! -f build-android-arm64/build.ninja ]; then
         PATH=$TOOLBIN:$PATH meson setup build-android-arm64 \
             -Dvelnosub_mobile=true \
+            -Dlibass:require-system-font-provider=false \
             --cross-file tools/cross/android-arm64.txt
     fi
     ninja -C build-android-arm64 -j"$JOBS"
