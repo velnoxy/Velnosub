@@ -31,6 +31,20 @@ pub fn sec(gen: f32, yuk: f32) -> Yerlesim {
 	}
 }
 
+/// Zoom'lu egui noktalarını yerel (taban ppp) boyuta indirger.
+/// `taban` geçersizse oran uygulanmaz.
+pub fn taban_boyut(gen: f32, yuk: f32, ppp: f32, taban: f32) -> (f32, f32) {
+	let oran = if taban > 0.0 { ppp / taban } else { 1.0 };
+	(gen * oran, yuk * oran)
+}
+
+/// Yön kararını iki eksende de zoom'dan bağımsız verir; yalnız genişliği
+/// normalize etmek 1280×1024 gibi ekranlarda yatay/dikey oranı bozuyordu.
+pub fn sec_taban(gen: f32, yuk: f32, ppp: f32, taban: f32) -> Yerlesim {
+	let (gen, yuk) = taban_boyut(gen, yuk, ppp, taban);
+	sec(gen, yuk)
+}
+
 /// Aegisub üst çalışma alanı: yüksekliğin %55'i; solda video, sağda ses
 /// (%32) + düzen kutusu. Video genişliği video oranından türetilir
 /// (oran yoksa 16:9) ve ekran genişliğinin %32–%52 aralığına kırpılır.
@@ -166,5 +180,24 @@ mod tests {
 		let b = bolmeler(1280.0, 800.0, Some(2.0));
 		yakin(b.video_gen + b.sag_gen, 1280.0, "genişlik toplamı");
 		yakin(b.ses_yuk + b.duzen_yuk, b.ust_yuk, "yükseklik toplamı");
+	}
+
+	#[test]
+	fn sec_taban_zoomdan_bagimsiz() {
+		// 1280×1024 yerel ekran, 0.8× zoom: egui noktaları 1600×1280.
+		// İki eksen de taban ppp'ye indirgenince yatay oran korunur.
+		let (gen, yuk) = taban_boyut(1600.0, 1280.0, 0.8, 1.0);
+		yakin(gen, 1280.0, "taban genişlik");
+		yakin(yuk, 1024.0, "taban yükseklik");
+		assert_eq!(
+			sec_taban(1600.0, 1280.0, 0.8, 1.0),
+			Yerlesim::Aegisub
+		);
+	}
+
+	#[test]
+	fn taban_boyut_sifir_taban_korur() {
+		// Savunma: taban ppp 0/negatifse oran uygulanmaz.
+		assert_eq!(taban_boyut(100.0, 50.0, 2.0, 0.0), (100.0, 50.0));
 	}
 }

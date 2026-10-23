@@ -4364,14 +4364,18 @@ impl eframe::App for GridApp {
 		// yön değişince sonraki karede yeniden değerlendirilir.
 		let etkin = match self.duzen {
 			Duzen::Otomatik => {
-				// Zoom'lu nokta genişliği yerine yerel (taban ppp) genişliği
-				// kullan: 640–800 pt yerel yatay ekran, 0.8× masaüstü zoom'u
+				// Zoom'lu noktaları iki eksende de yerel (taban ppp)
+				// boyuta indir: 640–800 pt yerel yatay ekran, 0.8× zoom
 				// yüzünden yanlışlıkla Aegisub'a geçmesin. ppp_base yoksa
-				// (henüz masaüstüne girilmediyse) genişlik değişmez.
+				// (henüz masaüstüne girilmediyse) boyut değişmez.
 				let ppp = ui.ctx().pixels_per_point();
 				let taban = self.ppp_base.unwrap_or(ppp);
-				let gen_taban = ui.available_width() * (ppp / taban);
-				match layout::sec(gen_taban, ui.available_height()) {
+				match layout::sec_taban(
+					ui.available_width(),
+					ui.available_height(),
+					ppp,
+					taban,
+				) {
 					Yerlesim::Aegisub => Duzen::Masaustu,
 					Yerlesim::Mobil => Duzen::Mobil,
 				}
