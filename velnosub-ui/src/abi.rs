@@ -148,6 +148,11 @@ extern "C" {
 	fn velnosub_abi_audio_play(h: c_int, d0: i64, adet: i64) -> c_int;
 	fn velnosub_abi_audio_state(h: c_int) -> c_int;
 	fn velnosub_abi_audio_position(h: c_int) -> i64;
+	#[allow(dead_code)] // Task 6 spektrogram paneli bu ucu kullanacak
+	fn velnosub_abi_audio_spectrum(
+		h: c_int, d0: i64, adet: i64, cols: c_int, rows: c_int,
+		out: *mut u8,
+	) -> c_int;
 	fn velnosub_abi_audio_stop(h: c_int) -> c_int;
 	fn velnosub_abi_audio_close(h: c_int);
 }

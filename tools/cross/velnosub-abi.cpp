@@ -45,11 +45,13 @@ extern "C" {
 #include <oboe/Oboe.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <memory>
 #include <mutex>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <cstring>
@@ -123,6 +125,65 @@ struct AudioWave {
 
 std::map<int, std::unique_ptr<AudioWave>> g_audio;
 int g_anext = 0;
+
+// ---- P7.1: spektrogram FFT'si — Aegisub src/fft.cpp'nin bağımsız, 256
+// örnekli radix-2 (iteratif Cooley–Tukey) sadeleştirmesi. Dışa açılmayan
+// çekirdek sembollerine dokunmaz; tablolar ilk çağrıda bir kez kurulur. ----
+constexpr int kFftN = 256;
+constexpr double kPi = 3.14159265358979323846;
+
+struct Fft256Tablari {
+	int ters[kFftN];
+	double cosn[kFftN / 2];
+	double sinn[kFftN / 2];
+	double hann[kFftN];
+
+	Fft256Tablari() {
+		for (int i = 0; i < kFftN; ++i) {
+			int x = i, r = 0;
+			for (int b = 0; b < 8; ++b) {
+				r = (r << 1) | (x & 1);
+				x >>= 1;
+			}
+			ters[i] = r;
+		}
+		for (int i = 0; i < kFftN / 2; ++i) {
+			double const aci = -2.0 * kPi * i / kFftN;
+			cosn[i] = std::cos(aci);
+			sinn[i] = std::sin(aci);
+		}
+		for (int i = 0; i < kFftN; ++i)
+			hann[i] = 0.5 * (1.0 - std::cos(2.0 * kPi * i / (kFftN - 1)));
+	}
+};
+
+// yerinde 256'lık FFT; ger/sanal tamponları sütun döngüsü DIŞINDA ayrılır
+void fft256(double *ger, double *sanal, Fft256Tablari const &t) {
+	for (int i = 0; i < kFftN; ++i) {
+		int const j = t.ters[i];
+		if (i < j) {
+			std::swap(ger[i], ger[j]);
+			std::swap(sanal[i], sanal[j]);
+		}
+	}
+	for (int uzunluk = 2; uzunluk <= kFftN; uzunluk <<= 1) {
+		int const yarim = uzunluk / 2;
+		int const adim = kFftN / uzunluk;
+		for (int i = 0; i < kFftN; i += uzunluk) {
+			for (int j = 0; j < yarim; ++j) {
+				int const tw = j * adim;
+				double const cr = t.cosn[tw], ci = t.sinn[tw];
+				int const a = i + j, b = a + yarim;
+				double const tr = ger[b] * cr - sanal[b] * ci;
+				double const ti = ger[b] * ci + sanal[b] * cr;
+				ger[b] = ger[a] - tr;
+				sanal[b] = sanal[a] - ti;
+				ger[a] += tr;
+				sanal[a] += ti;
+			}
+		}
+	}
+}
 
 #ifdef VELNOSUB_ABI_OBOE
 // Oboe oynatma: dosya imlecinden akan geri çağrım; kurulum ARKA İPLİKTE —
@@ -1730,6 +1791,59 @@ int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
 		minv[k] = dmin;
 		maxv[k] = dmax;
 	}
+	return 0;
+}
+
+// spektrogram: d0..d0+adet aralığı cols sütuna bölünür; her sütun 256 karelik
+// pencere (soldan hizalı) okur. Satır 0 en düşük, rows-1 en yüksek frekans;
+// bin eşlemesi doğrusal: bin = row * (kFftN/2) / rows. Eksik/kısa okumalar
+// sıfır doldurulur; d0 dosya sonundaysa sütunlar sıfır kalır (çökme yok).
+int velnosub_abi_audio_spectrum(int h, int64_t d0, int64_t adet,
+                                int cols, int rows, unsigned char *out) {
+	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
+	if (cols < 1 || cols > 256 || rows < 1 || rows > 256 || !out) {
+		set_err("spektrogram boyutu geçersiz");
+		return -1;
+	}
+	if (d0 < 0 || adet <= 0) { set_err("spektrogram aralığı geçersiz"); return -1; }
+	AudioWave &a = *g_audio.at(h);
+	if (a.yol.empty()) { set_err("ses yolu boş (kolu kapat-aç)"); return -1; }
+	std::FILE *f = std::fopen(a.yol.c_str(), "rb");
+	if (!f) { set_err("ses dosyası açılamadı: " + a.yol); return -1; }
+
+	static Fft256Tablari const tablo;
+	std::vector<int16_t> ham((size_t)kFftN * (size_t)a.ch);
+	std::vector<double> ger(kFftN), sanal(kFftN);
+	for (int col = 0; col < cols; ++col) {
+		int64_t const bas = d0 + (int64_t)col * adet / cols;
+		std::fill(ham.begin(), ham.end(), (int16_t)0);
+		if (bas < a.toplam_ornek) {
+			if (std::fseek(f, (long)(bas * 2LL * a.ch), SEEK_SET) == 0)
+				std::fread(ham.data(), sizeof(int16_t),
+				           (size_t)kFftN * (size_t)a.ch, f);
+		}
+		for (int n = 0; n < kFftN; ++n) {
+			double mono = 0.0;
+			for (int c = 0; c < a.ch; ++c)
+				mono += ham[(size_t)n * a.ch + c];
+			mono /= a.ch;
+			ger[n] = mono * tablo.hann[n] / 32768.0;
+			sanal[n] = 0.0;
+		}
+		fft256(ger.data(), sanal.data(), tablo);
+		for (int row = 0; row < rows; ++row) {
+			int const bin = row * (kFftN / 2) / rows;
+			double const mag =
+			    std::sqrt(ger[bin] * ger[bin] + sanal[bin] * sanal[bin]);
+			// tek taraflı genlik (2/N); -80..0 dB → 0..255
+			double const db = 20.0 * std::log10(2.0 * mag / kFftN + 1e-9);
+			int v = (int)std::lround((db + 80.0) * (255.0 / 80.0));
+			if (v < 0) v = 0;
+			if (v > 255) v = 255;
+			out[(size_t)col * rows + row] = (unsigned char)v;
+		}
+	}
+	std::fclose(f);
 	return 0;
 }
 
