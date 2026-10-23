@@ -13,6 +13,8 @@ use std::sync::OnceLock;
 use eframe::egui;
 use egui::{CentralPanel, Color32, Panel, RichText, ScrollArea, TextEdit};
 
+use crate::layout::{self, Yerlesim};
+
 /// P8.1: gömülü Material Icons kod noktaları (assets/MaterialIcons-Regular.ttf).
 /// egui varsayılan yazı tiplerinde bu aralık boştur; font lib.rs'te ailelere
 /// son sıradan eklenir, böylece metin glifleri bozulmadan ikonlar çözülür.
@@ -848,8 +850,8 @@ pub struct GridApp {
 	dialog: Option<DialogSection>,
 	// P4.6 dilim 2: ASS önizleme (video üstünde saydam dokuya binen kare)
 	oniz: Oniz,
-	// P4.6 dilim 2: arayüz düzeni — varsayılan Masaustu (aegisub yüzeyi,
-	// ölçek+ kaydırmalı); Mobil ayarlardan/seçimden değiştirilir
+	// P4.6 dilim 2: arayüz düzeni — varsayılan Otomatik (yatayda Aegisub,
+	// dikeyde mobil); Mobil/Masaüstü ayarlardan/seçimden sabitlenir
 	// (`velnosub-ui.json`; VELNOSUB_UI_JSON ortam değişkeniyle yol geçilir)
 	duzen: Duzen,
 	// P4.8.1: masaüstü yüzeyi ölçeği — ppp = ppp_base × zoom; Mobil'e
@@ -880,9 +882,11 @@ pub struct GridApp {
 	ozellik_win: bool,
 }
 
-/// Arayüz düzeni. `Secim` yalnızca ayar dosyası yokken geçerli ilk ekrandır.
+/// Arayüz düzeni. `Otomatik` ekran yönüne göre seçer (yatay + geniş →
+/// Aegisub, aksi mobil); `Secim` yalnızca elle açılan ilk seçim ekranıdır.
 #[derive(PartialEq, Clone, Copy)]
 enum Duzen {
+	Otomatik,
 	Secim,
 	Mobil,
 	Masaustu,
@@ -915,7 +919,7 @@ pub enum Tema {
 }
 
 /// Ayar dosyasında okunan değerler; eksik alan None kalır (o alan için
-/// varsayılan kullanılır: dosya yoksa düzen seçimi sorulur, tema koyu).
+/// varsayılan kullanılır: düzen Otomatik, tema koyu).
 pub struct Ayar {
 	pub duzen: Option<String>,
 	pub tema: Option<String>,
@@ -1022,7 +1026,7 @@ impl GridApp {
 			tarayici: Tarayici::yeni(),
 			stiller: Vec::new(),
 			dialog: None,
-			duzen: Duzen::Masaustu,
+			duzen: Duzen::Otomatik,
 			zoom: 0.8,
 			ppp_base: None,
 			secili: None,
@@ -1044,6 +1048,7 @@ impl GridApp {
 			oniz: Oniz::default(),
 		};
 		match ayar_yukle().duzen.as_deref() {
+			Some("otomatik") => app.duzen = Duzen::Otomatik,
 			Some("mobil") => app.duzen = Duzen::Mobil,
 			Some("masaustu") => app.duzen = Duzen::Masaustu,
 			_ => {}
@@ -3310,9 +3315,9 @@ impl GridApp {
 		}
 	}
 
-	/// İlk giriş: ayar dosyası yokken gösterilen düzen seçim ekranı. Seçim
-	/// dosyaya yazılır; dosyaya yazılamazsa oturum seçilmiş düzenle devam
-	/// eder ve uyarı dürüstçe gösterilir.
+	/// Elle açılan düzen seçim ekranı. Seçim dosyaya yazılır; dosyaya
+	/// yazılamazsa oturum seçilmiş düzenle devam eder ve uyarı dürüstçe
+	/// gösterilir.
 	fn secim_ekrani(&mut self, ui: &mut egui::Ui) {
 		ui.add_space(24.0);
 		ui.vertical_centered(|ui| {
@@ -3365,6 +3370,7 @@ impl GridApp {
 
 	fn duzen_sec(&mut self, tema: Tema, duzen: Duzen) {
 		let kayit = match duzen {
+			Duzen::Otomatik => "otomatik",
 			Duzen::Mobil => "mobil",
 			Duzen::Masaustu => "masaustu",
 			Duzen::Secim => return,
@@ -3400,6 +3406,14 @@ impl GridApp {
 		ui.add_space(4.0);
 		let gen = ui.available_width().min(360.0);
 		if ui.add(
+			egui::Button::new(RichText::new("Otomatik").size(18.0))
+				.min_size(egui::vec2(gen, 44.0))
+				.selected(self.duzen == Duzen::Otomatik),
+		).clicked() {
+			self.duzen_sec(tema_simdi(ui), Duzen::Otomatik);
+			return;
+		}
+		if ui.add(
 			egui::Button::new(RichText::new("Mobil UI").size(18.0))
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Mobil),
@@ -3416,13 +3430,14 @@ impl GridApp {
 			return;
 		}
 		ui.label(
-			RichText::new(
-				if self.duzen == Duzen::Mobil {
-					"seçili: mobil UI"
-				} else {
-					"seçili: masaüstü UI"
-				},
-			)
+			RichText::new(match self.duzen {
+				Duzen::Otomatik => {
+					"seçili: otomatik (yatayda Aegisub, dikeyde mobil)"
+				}
+				Duzen::Mobil => "seçili: mobil UI",
+				Duzen::Masaustu => "seçili: masaüstü UI",
+				Duzen::Secim => "seçili: ilk seçim ekranı",
+			})
 			.weak(),
 		);
 		// denetim 7: açık tema seceneği — seçim anında uygulanır ve
@@ -3483,6 +3498,7 @@ impl GridApp {
 			stil_tamir(st, tema);
 		});
 		let duzen_kel = match self.duzen {
+			Duzen::Otomatik => "otomatik",
 			Duzen::Mobil => "mobil",
 			Duzen::Masaustu => "masaustu",
 			Duzen::Secim => "mobil",
@@ -4126,12 +4142,17 @@ impl GridApp {
 		ui.ctx()
 			.set_pixels_per_point((base * self.zoom).clamp(0.35, 1.6));
 		CentralPanel::default().show_inside(ui, |su| {
-			// P6.1 kaydırmasız masaüstü: aegisub pencere yapısı — pencere
-			// SABİT panellerden örüldü (tavan: menü+öçe+taşımegut; video;
-			// ses; alt: düzen kutusu + durum; merkez: grid). Tüm pencereyi
-			// saran ScrollArea::both kaldırıldı — kaydırma yalnız grid'in
-			// satır-virtualizasyonunda (show_rows); aegisub kuralı.
-			let tum_yuk = su.available_height();
+			// P9.1: aegisub geometrisi — tavan (menü+araç çubuğu) sabit,
+			// üst çalışma alanı yeniden boyutlandırılabilir, merkez grid.
+			// Bölmeler saf `layout::bolmeler` hesabından gelir.
+			let gen = su.available_width();
+			let yuk = su.available_height();
+			let video_oran = self
+				.video
+				.as_ref()
+				.filter(|v| v.w > 0 && v.hgt > 0)
+				.map(|v| v.w as f32 / v.hgt as f32);
+			let b = layout::bolmeler(gen, yuk, video_oran);
 			egui::Panel::top("masaustu-tavan").show_inside(su, |top| {
 				let tema = tema_simdi(top);
 				// P4.8.2: aegisub menü çubuğu en üstte
@@ -4196,26 +4217,54 @@ impl GridApp {
 						}
 					});
 					top.add_space(2.0);
-			}); // tavan şeridi kapanır (menü+öçe+toolbar içeride)
-			if self.video.is_some() {
-				// Aegisub: video pane — genişliğe sığar, kalanın %44'ünü
-				// aşmaz (üst panelin altına oturur; kaydırma olmaz)
-				egui::Panel::top("masaustu-video")
-				.size_range(egui::Rangef::new(20.0, (tum_yuk * 0.44).max(120.0)))
-					.show_inside(su, |v| self.video_icerik(v, false));
-			}
-			if self.audio.is_some() {
-				// Aegisub: dalga şeridi videonun altında SABİT
-				egui::Panel::top("masaustu-ses")
-				.size_range(egui::Rangef::new(20.0, (tum_yuk * 0.22).max(150.0)))
-					.show_inside(su, |s| self.ses_icerik(s, false));
-			}
+			}); // tavan şeridi kapanır (menü+ölçek+toolbar içeride)
+			// Aegisub üst çalışma alanı: varsayılan ust_yuk, kenardan
+			// boyutlandırılabilir. Solda video; sağda ses (üst %32) ve
+			// düzen kutusu (kalan %68). Çerçevesiz panel: bölme genişlikleri
+			// `bolmeler` toplamına tam oturur (çerçeve marjı yok).
+			egui::Panel::top("masaustu-ust")
+				.resizable(true)
+				// egui 0.37 birleşik Panel API'si: yükseklik `default_size`
+				.default_size(b.ust_yuk)
+				.frame(egui::Frame::NONE)
+				.show_inside(su, |ust| {
+					// Kullanıcı paneli boyutlandırdıysa bölmeler o andaki
+					// yükseklikten yeniden hesaplanır (varsayılan: ust_yuk).
+					let b = layout::bolmeler_ust(
+						ust.available_width(),
+						ust.available_height(),
+						video_oran,
+					);
+					ust.horizontal_top(|h| {
+						h.spacing_mut().item_spacing = egui::Vec2::ZERO;
+						h.allocate_ui_with_layout(
+							egui::vec2(b.video_gen, b.ust_yuk),
+							egui::Layout::top_down(egui::Align::Min),
+							|v| self.video_icerik(v, false),
+						);
+						h.allocate_ui_with_layout(
+							egui::vec2(b.sag_gen, b.ust_yuk),
+							egui::Layout::top_down(egui::Align::Min),
+							|sag| {
+								sag.spacing_mut().item_spacing =
+									egui::Vec2::ZERO;
+								sag.allocate_ui_with_layout(
+									egui::vec2(b.sag_gen, b.ses_yuk),
+									egui::Layout::top_down(egui::Align::Min),
+									|s| self.ses_icerik(s, false),
+								);
+								sag.allocate_ui_with_layout(
+									egui::vec2(b.sag_gen, b.duzen_yuk),
+									egui::Layout::top_down(egui::Align::Min),
+									|d| self.duzen_kutusu(d, false),
+								);
+							},
+						);
+					});
+				});
 			// İlk eklenen bottom en dış kenara oturur: durum EN ALTA
 			egui::Panel::bottom("masaustu-durum")
 				.show_inside(su, |d| self.durum_icerik(d, false));
-			// Aegisub: düzen kutusu (subtitle edit) durumun üstünde SABİT
-			egui::Panel::bottom("masaustu-duzen")
-				.show_inside(su, |d| self.duzen_kutusu(d, false));
 			// Merkez: stil/form şeritleri varsa grid'i sektirir; grid'in tek
 			// kaydırma alanı show_rows'lu satır listesi
 			egui::CentralPanel::default().show(su, |merkez| {
@@ -4260,9 +4309,22 @@ impl GridApp {
 
 impl eframe::App for GridApp {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+		// P9.1: Otomatik tercihi çerçeveye çevrilir — yatay + geniş ekran
+		// Aegisub, portre/dar ekran mobil. Tercih `self.duzen`de korunur;
+		// yön değişince sonraki karede yeniden değerlendirilir.
+		let etkin = match self.duzen {
+			Duzen::Otomatik => match layout::sec(
+				ui.available_width(),
+				ui.available_height(),
+			) {
+				Yerlesim::Aegisub => Duzen::Masaustu,
+				Yerlesim::Mobil => Duzen::Mobil,
+			},
+			d => d,
+		};
 		// ölçek tabana döner: Mobil'e masaüstü zoom'u sızmaz; Masaustu'ya
 		// her girişte ppp_base yeniden alınır (reset sonrası taban = taban)
-		if self.duzen != Duzen::Masaustu {
+		if etkin != Duzen::Masaustu {
 			if let Some(b) = self.ppp_base.take() {
 				ui.ctx().set_pixels_per_point(b);
 				self.zoom = 0.8;
@@ -4295,7 +4357,7 @@ impl eframe::App for GridApp {
 				}
 			}
 		}
-		match self.duzen {
+		match etkin {
 			Duzen::Secim => {
 				CentralPanel::default().show_inside(ui, |su| {
 					self.secim_ekrani(su);
@@ -4303,6 +4365,7 @@ impl eframe::App for GridApp {
 			}
 			Duzen::Mobil => self.mobil_cerceve(ui),
 			Duzen::Masaustu => self.masaustu_cerceve(ui),
+			Duzen::Otomatik => {}
 		}
 	}
 }
@@ -4311,9 +4374,9 @@ impl eframe::App for GridApp {
 mod tests {
 	use super::*;
 
-	/// İlk giriş kuralı ve seçim kaydı: dosya yoksa düzen seçimi sorulur
-	/// (Ayar.duzen None), yazım sonra birebir okunur; bilinmeyen içerik
-	/// yeniden sorar. Ekransız haberci — derleme ortamında GUI penceresi
+	/// Ayar döngüsü: dosya yoksa alanlar None kalır (uygulama varsayılanı
+	/// Otomatik/koyu), yazım sonra birebir okunur; bilinmeyen içerik yine
+	/// varsayılana düşer. Ekransız haberci — derleme ortamında GUI penceresi
 	/// açılamaz; çizim kanıtı cihaz/APK bağlamına kalmıştır.
 	#[test]
 	fn ayar_dongusu() {
