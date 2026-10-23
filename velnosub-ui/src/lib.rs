@@ -6,6 +6,7 @@
 //! kullanır, davranış birebir.
 
 pub mod abi;
+pub mod audio_timing;
 pub mod layout;
 
 use eframe::egui;
