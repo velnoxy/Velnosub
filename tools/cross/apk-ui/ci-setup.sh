@@ -23,6 +23,13 @@ TOOLBIN=$(echo "$NDK_ROOT"/toolchains/llvm/prebuilt/*/bin | head -1)
 export PATH=$TOOLBIN:$PATH
 export PKG_CONFIG_PATH=$DEPS_ROOT/arm64-v8a/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}
 
+# Geçmiş deps cache'i oboe.pc'de "-log" (tek l) taşıyor: ld bunu libog.so
+# sanıp "unable to find library -log" veriyor. Doğrusu -llog; kaynak script
+# düzeltildi, eski cache'i burada iyileştir (yeni cache'te etkisiz).
+if [ -f "$DEPS_ROOT/arm64-v8a/lib/pkgconfig/oboe.pc" ]; then
+    sed -i 's/ -log / -llog /g' "$DEPS_ROOT/arm64-v8a/lib/pkgconfig/oboe.pc"
+fi
+
 # --- /root/velsub hiyerarşisi (runner'da sudo ile kurdurulur) ---
 if [ ! -d "$ROOT" ]; then
     sudo mkdir -p "$ROOT"

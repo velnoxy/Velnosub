@@ -39,7 +39,7 @@ mod ikon {
 	pub const HELP: &str = "\u{e8fd}";
 	pub const INFO: &str = "\u{e88e}";
 	pub const MOVIE: &str = "\u{e02c}";
-	pub const EQ: &str = "\u{e1de}";
+	pub const EQ: &str = "\u{e01d}";
 	pub const TEXT: &str = "\u{e262}";
 	pub const BOLD: &str = "\u{e238}";
 	pub const ITALIC: &str = "\u{e23f}";
@@ -3038,6 +3038,8 @@ enum Yazi {
 	StilVal(usize, String),
 	OyuncuVal(usize, String),
 	EtkiVal(usize, String),
+	// P8.2: katman (Aegisub Layer alanı; meta_set üzerinden)
+	KatmanVal(usize, i32),
 }
 
 impl GridApp {
@@ -3294,6 +3296,12 @@ impl GridApp {
 				}
 				Yazi::Yorum(i, v) => {
 					meta_set(h, i, None, None, None, Some(v), None)
+				}
+				Yazi::KatmanVal(i, v) => {
+					if let Some(r) = self.rows.get_mut(i) {
+						r.katman = v;
+					}
+					meta_set(h, i, None, None, None, None, Some(v))
 				}
 			};
 			if let Err(e) = hata {
@@ -3923,6 +3931,7 @@ impl GridApp {
 		let mut etki = sat.etki.clone();
 		let yorum_sabit = sat.yorum;
 		let mut yorum = yorum_sabit;
+		let mut katman = sat.katman;
 		let stil_kata: Vec<String> =
 			self.stiller.iter().map(|s| s.name.clone()).collect();
 		let mut yazi: Vec<Yazi> = Vec::new();
@@ -3934,6 +3943,18 @@ impl GridApp {
 				// dar onaykutusu darlana (kutu mesafesi dilimi)
 				if h.checkbox(&mut yorum, "Yorum").changed() && yorum != yorum_sabit {
 					yazi.push(Yazi::Yorum(i, yorum));
+				}
+				// P8.2: Aegisub katman alanı — 0..100 tamsayı
+				h.label(RichText::new("katman").weak());
+				if h
+					.add(
+						egui::DragValue::new(&mut katman)
+							.range(0..=100)
+							.speed(0.1),
+					)
+					.changed()
+				{
+					yazi.push(Yazi::KatmanVal(i, katman));
 				}
 				let mb = ass_ms(&bas).unwrap_or(0);
 				let ms = ass_ms(&son).unwrap_or(0);

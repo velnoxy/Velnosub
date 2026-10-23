@@ -47,7 +47,7 @@ Name: oboe
 Description: Oboe low-latency audio (static)
 Version: ${OBOE_VER}
 Cflags: -I\${includedir}
-Libs: -L\${libdir} -loboe -lOpenSLES -log
+Libs: -L\${libdir} -loboe -llog -lOpenSLES -landroid
 EOF
 # Android toolchain ${prefix}/lib/<abi>/ altına döker — düzleştir
 if [ -f "$PREFIX/lib/$AND_ABI/liboboe.a" ]; then
