@@ -92,7 +92,9 @@ phase_rust() {
 phase_apk() {
     local DB=$ROOT/device-pkg
     local seed=$REPO/tools/cross/apk-ui/seed
-    local B=$ROOT/build-android-arm64
+    # meson build dizini repo kökünde (phase_native `ninja -C build-android-arm64`);
+    # $ROOT yalnızca cihaz replikası (aegisub-upstream symlink) — build orada değil.
+    local B=$REPO/build-android-arm64
     mkdir -p "$DB/lib" "$DB/share"
     cp -f "$seed"/default_config.json "$seed"/DejaVuSans.ttf \
           "$seed"/karaskel-dene.ass "$seed"/res-yarim.ass \
