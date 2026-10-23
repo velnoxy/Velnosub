@@ -522,31 +522,189 @@ impl Default for Oniz {
 	}
 }
 
-/// P4.4: açılı ses kolu + dalga formu peak kovaları (sabit 512 kova).
+/// Ses çizim modu — Aegisub "Ses → Spektrum" geçişi.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SesMod {
+	Dalga,
+	Spektrum,
+}
+
+/// P4.4: açılı ses kolu + görünür aralık dalga/spektrum durumu.
 pub struct AudioSection {
 	handle: c_int,
+	// Gerçek künye: `audio_info` dizgesinden çözülür (yoksa 48000/2).
 	rate: c_int,
 	ch: c_int,
 	toplam: i64,
-	minv: Vec<i16>,
-	maxv: Vec<i16>,
 	info: String,
 	ses_durum: String,
 	oynatma_denendi: bool,
 	konum: i64,
+	// Görünür aralık (örnek) ve imleç/seçim.
+	d0: i64,
+	adet: i64,
+	imlec: i64,
+	secim: Option<(i64, i64)>,
+	mod_: SesMod,
+	takip: bool,
+	// Spektrum önbelleği: (d0, adet, sütun, satır) anahtarı + doku.
+	spek: Option<Vec<u8>>,
+	spek_anahtar: Option<(i64, i64, i32, i32)>,
+	spek_doku: Option<egui::TextureHandle>,
+	spek_hata: Option<String>,
+	// Dalga gövdesinde seçim sürüklemesinin çıpası (örnek).
+	surukleme: Option<i64>,
+	// Satır başı/sonu tutamaçlarının sürükleme sırasındaki geçici konumu.
+	tut_bas: Option<i64>,
+	tut_son: Option<i64>,
 }
 
-fn audio_peaks_cek(h: c_int, toplam: i64) -> Result<(Vec<i16>, Vec<i16>), String> {
-	let k: c_int = 512;
+fn audio_peaks_cek(
+	h: c_int,
+	d0: i64,
+	adet: i64,
+	kovalar: c_int,
+) -> Result<(Vec<i16>, Vec<i16>), String> {
+	let k = kovalar.clamp(1, 2048);
 	let mut minv = vec![0i16; k as usize];
 	let mut maxv = vec![0i16; k as usize];
+	if adet <= 0 {
+		return Ok((minv, maxv));
+	}
 	let rc = unsafe {
-		velnosub_abi_audio_peaks(h, 0, toplam, k, minv.as_mut_ptr(), maxv.as_mut_ptr())
+		velnosub_abi_audio_peaks(
+			h, d0, adet, k, minv.as_mut_ptr(), maxv.as_mut_ptr(),
+		)
 	};
 	if rc != 0 {
 		return Err(last_error());
 	}
 	Ok((minv, maxv))
+}
+
+/// Örnek → ms (görünür aralık/oynatma konumu).
+fn ornek_ms(ornek: i64, rate: i32) -> i64 {
+	if rate <= 0 {
+		return 0;
+	}
+	((ornek as i128 * 1000) / rate as i128) as i64
+}
+
+/// ms → örnek.
+fn ms_ornek(ms: i64, rate: i32) -> i64 {
+	if rate <= 0 {
+		return 0;
+	}
+	((ms as i128 * rate as i128) / 1000) as i64
+}
+
+fn ses_gorunum(a: &AudioSection, gen: f32) -> crate::audio_timing::Gorunum {
+	crate::audio_timing::Gorunum { d0: a.d0, adet: a.adet, gen }
+}
+
+fn ses_gorunum_uygula(a: &mut AudioSection, g: crate::audio_timing::Gorunum) {
+	a.d0 = g.d0;
+	a.adet = g.adet;
+}
+
+/// Görünür aralık için 512 kovalı dalga çiz.
+fn ses_dalga_ciz(
+	painter: &egui::Painter,
+	a: &AudioSection,
+	dik: egui::Rect,
+	_g: &crate::audio_timing::Gorunum,
+) {
+	let (minv, maxv) = match audio_peaks_cek(a.handle, a.d0, a.adet, 512) {
+		Ok(v) => v,
+		Err(_) => {
+			painter.text(
+				dik.center(),
+				egui::Align2::CENTER_CENTER,
+				"dalga okunamadı",
+				egui::FontId::proportional(12.0),
+				egui::Color32::from_rgb(220, 120, 90),
+			);
+			return;
+		}
+	};
+	let orta = dik.center().y;
+	let yarim = dik.height() * 0.5 - 2.0;
+	painter.line_segment(
+		[egui::pos2(dik.left(), orta), egui::pos2(dik.right(), orta)],
+		egui::Stroke::new(1.0, egui::Color32::from_gray(60)),
+	);
+	let adim = dik.width() / minv.len().max(1) as f32;
+	let kalem = egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 180, 250));
+	for k in 0..minv.len() {
+		let x = dik.left() + adim * (k as f32 + 0.5);
+		let ymin = orta - yarim * (maxv[k] as f32 / 32768.0);
+		let ymax = orta - yarim * (minv[k] as f32 / 32768.0);
+		painter.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
+	}
+}
+
+/// Görünür aralık spektrumunu önbellekten hazırla; `(d0, adet, cols, rows)`
+/// değişmedikçe ABI yeniden çağrılmaz. Hata durumunda dalga çizimine düşülür.
+fn ses_spek_hazirla(
+	ctx: &egui::Context,
+	a: &mut AudioSection,
+	cols: i32,
+	rows: i32,
+) -> bool {
+	let cols = cols.clamp(1, 192);
+	let rows = rows.clamp(1, 256);
+	let anahtar = (a.d0, a.adet, cols, rows);
+	if a.spek_anahtar == Some(anahtar) {
+		return a.spek_doku.is_some();
+	}
+	let gecerli = a.d0 >= 0
+		&& a.adet > 0
+		&& a.d0.saturating_add(a.adet) <= a.toplam;
+	if !gecerli {
+		a.spek = None;
+		a.spek_doku = None;
+		a.spek_anahtar = Some(anahtar);
+		a.spek_hata = Some("görünür aralık ses sınırları dışında".into());
+		return false;
+	}
+	let mut ham = vec![0u8; cols as usize * rows as usize];
+	let rc = unsafe {
+		velnosub_abi_audio_spectrum(
+			a.handle,
+			a.d0,
+			a.adet,
+			cols,
+			rows,
+			ham.as_mut_ptr(),
+		)
+	};
+	if rc != 0 {
+		a.spek = None;
+		a.spek_doku = None;
+		a.spek_anahtar = Some(anahtar);
+		a.spek_hata = Some(last_error());
+		return false;
+	}
+	let mut pikseller = vec![egui::Color32::BLACK; ham.len()];
+	for col in 0..cols as usize {
+		for row in 0..rows as usize {
+			let v = ham[col * rows as usize + row] as f32 / 255.0;
+			// satır 0 = düşük frekans; görüntüde alta yerleşir (dikey çevir).
+			let pik = egui::Color32::from_rgb(
+				(255.0 * v).round() as u8,
+				(255.0 * v * v).round() as u8,
+				(30.0 + 90.0 * (1.0 - v)).round() as u8,
+			);
+			pikseller[(rows as usize - 1 - row) * cols as usize + col] = pik;
+		}
+	}
+	let img = egui::ColorImage::new([cols as usize, rows as usize], pikseller);
+	let ad = format!("ses-spek-{}-{}-{}-{}", a.d0, a.adet, cols, rows);
+	a.spek_doku = Some(ctx.load_texture(ad, img, egui::TextureOptions::LINEAR));
+	a.spek = Some(ham);
+	a.spek_anahtar = Some(anahtar);
+	a.spek_hata = None;
+	true
 }
 
 /// P4.5: ABI stil dizgesinin ayrıştırılmış bir stil satırı.
@@ -868,6 +1026,8 @@ pub struct GridApp {
 	aktif: Sekme,
 	// masaüstü düzeninde Ayarlar penceresi açık mı (mobilde ayrı sekme var)
 	ayar_win: bool,
+	// Task 6: kompakt ses şeridinden açılan tam zamanlama penceresi
+	ses_win: bool,
 	// P4.8.2: seçili satır (aegisub edit kutusu bu satıra bağlanır)
 	secili: Option<usize>,
 	// P5.4 gece: geri/ileri anlık görüntüleri + koalema zamanı
@@ -1054,6 +1214,7 @@ impl GridApp {
 			ozellik_win: false,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
+			ses_win: false,
 			oniz: Oniz::default(),
 		};
 		match ayar_yukle().duzen.as_deref() {
@@ -2273,20 +2434,33 @@ impl GridApp {
 		if toplam <= 0 {
 			return Err(last_error());
 		}
-		let (minv, maxv) = audio_peaks_cek(h, toplam)?;
+		// Task 6: süre hesabı gerçek örnekleme hızıyla yapılır. ABI künyesi
+		// "s16 48000Hz 2k ..." biçiminde; çözülemezse 48000/2 varsayılanı.
+		let (rate, ch) = crate::audio_timing::ses_kunye_coz(&bilgi);
 		self.audio = Some(AudioSection {
 			handle: h,
-			rate: 48000,
-			ch: 2,
+			rate,
+			ch,
 			toplam,
-			minv,
-			maxv,
 			info: bilgi,
 			ses_durum: "—".into(),
 			oynatma_denendi: false,
 			konum: 0,
+			d0: 0,
+			adet: toplam,
+			imlec: 0,
+			secim: None,
+			mod_: SesMod::Dalga,
+			takip: true,
+			spek: None,
+			spek_anahtar: None,
+			spek_doku: None,
+			spek_hata: None,
+			surukleme: None,
+			tut_bas: None,
+			tut_son: None,
 		});
-		self.note = format!("ses açıldı: {toplam} örnek");
+		self.note = format!("ses açıldı: {toplam} örnek · {rate} Hz · {ch} kanal");
 		Ok(())
 	}
 }
@@ -2627,90 +2801,817 @@ impl GridApp {
 	}
 
 	fn ses_icerik(&mut self, ui: &mut egui::Ui, mobil: bool, kompakt: bool) {
-		// P4.4: ses şeridi — oynatma tuşları + dalga formu (peak kovalarından)
-		// `kompakt`: kısa Aegisub üst alanı (telefon yatayı) — tek tuş satırı
-		// + 36 pt dalga formu; durum/kanal etiketleri çizilmez (durum yine
-		// içeride güncellenir). Task 6 ses panelini yeniden tasarlayacak.
-		if let Some(a) = self.audio.as_mut() {
-			if !kompakt {
-				ui.add_space(4.0);
-			}
-			let mut oynat = egui::Button::new("▶ oynat");
-			let mut kes = egui::Button::new("⏹ kes");
-			if mobil {
-				oynat = oynat.min_size(egui::vec2(0.0, 44.0));
-				kes = kes.min_size(egui::vec2(0.0, 44.0));
-			} else if kompakt {
-				oynat = oynat.min_size(egui::vec2(0.0, 18.0));
-				kes = kes.min_size(egui::vec2(0.0, 18.0));
-			}
-			ui.horizontal(|su| {
-				if su.add(oynat).clicked() {
-					let adet = a.toplam.min((a.rate as i64) * 5);
-					let rc = unsafe { velnosub_abi_audio_play(a.handle, 0, adet) };
-					a.oynatma_denendi = true;
-					a.ses_durum = if rc == 0 {
-						"oynatma istendi".into()
-					} else {
-						format!("oynatma olmadı: {}", last_error())
-					};
-				}
-				if su.add(kes).clicked() {
-					unsafe { velnosub_abi_audio_stop(a.handle) };
-					a.ses_durum = "kesildi".into();
-				}
-				if !kompakt {
-					su.label(RichText::new(&a.info).weak());
-				}
-			});
-			if a.oynatma_denendi {
-				let d = unsafe { velnosub_abi_audio_state(a.handle) };
-				let ad = match d {
-					-1 => "oynatma yok",
-					4 => "hazırlanıyor",
-					0 => "oynatılıyor",
-					1 => "boşalma",
-					2 => "hata",
-					_ => "bilinmeyen",
-				};
-				if d == 0 || d == 1 {
-					a.konum = unsafe { velnosub_abi_audio_position(a.handle) };
-				}
-				a.ses_durum = if !kompakt && (d == 0 || d == 1) && a.konum >= 0 {
-					format!(
-						"durum {d} — {ad} — {} ms",
-						a.konum * 1000 / a.rate.max(1) as i64
-					)
-				} else {
-					format!("durum {d} — {ad}")
-				};
-			}
-			if !kompakt {
-				ui.label(RichText::new(&a.ses_durum).weak());
-				ui.label(RichText::new(format!("{} kanal", a.ch)).weak());
-			}
+		// Ses paneli durumu `self.audio` içinde; satır zamanı yazımı ve video
+		// fps'i için `self`e de erişmek gerektiğinden kol geçici olarak alınır.
+		let Some(mut a) = self.audio.take() else { return };
+		self.ses_govde(ui, &mut a, mobil, kompakt);
+		self.audio = Some(a);
+	}
 
-			// dalga formu: 512 kova → duvara dik çubuklar (min..max)
-			let genislik = ui.available_width();
-			let yuk = if kompakt { 36.0f32 } else { 72.0f32 };
-			let (dik, _) =
-				ui.allocate_exact_size(egui::vec2(genislik, yuk), egui::Sense::hover());
-			let boy = a.minv.len().max(1) as f32;
-			let orta = dik.center().y;
-			let yarim = yuk * 0.5 - 2.0;
-			let adim = dik.width() / boy;
-			let kalem = egui::Stroke::new(1.0, egui::Color32::from_rgb(90, 180, 250));
-			for k in 0..a.minv.len() {
-				let x = dik.left() + adim * (k as f32 + 0.5);
-				let ymin = orta - yarim * (a.maxv[k] as f32 / 32768.0);
-				let ymax = orta - yarim * (a.minv[k] as f32 / 32768.0);
-				ui.painter()
-					.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
-			}
-			if !kompakt {
-				ui.add_space(4.0);
+	fn ses_govde(
+		&mut self,
+		ui: &mut egui::Ui,
+		a: &mut AudioSection,
+		mobil: bool,
+		kompakt: bool,
+	) {
+		if !kompakt {
+			ui.add_space(4.0);
+		}
+		let hedef = if mobil { 44.0 } else if kompakt { 18.0 } else { 24.0 };
+		let satir_zaman = self
+			.secili
+			.and_then(|i| self.rows.get(i).map(|r| (i, r.bas.clone(), r.son.clone())))
+			.and_then(|(i, b, s)| Some((i, ass_ms(&b).ok()?, ass_ms(&s).ok()?)));
+
+		self.ses_oynatma_yokla(a);
+		if a.oynatma_denendi {
+			ui.ctx()
+				.request_repaint_after(std::time::Duration::from_millis(33));
+		}
+
+		if kompakt {
+			self.ses_kompakt_cubuk(ui, a, hedef);
+		} else {
+			self.ses_arac_cubugu(ui, a, mobil, hedef, satir_zaman);
+		}
+
+		let genislik = ui.available_width().max(1.0);
+		let yuk = if kompakt {
+			36.0
+		} else if mobil {
+			104.0
+		} else {
+			84.0
+		};
+		let (rul, rul_yanit) = ui.allocate_exact_size(
+			egui::vec2(genislik, 14.0),
+			egui::Sense::click_and_drag(),
+		);
+		let (dik, yanit) = ui.allocate_exact_size(
+			egui::vec2(genislik, yuk),
+			egui::Sense::click_and_drag(),
+		);
+
+		let zemin = ui.visuals().extreme_bg_color;
+		ui.painter().rect_filled(rul, 2.0, zemin);
+		ui.painter().rect_filled(dik, 2.0, ui.visuals().faint_bg_color);
+		// cetvel çentikleri
+		for i in 0..=8 {
+			let x = rul.left() + rul.width() * (i as f32 / 8.0);
+			let uzun = if i % 2 == 0 { 5.0 } else { 3.0 };
+			ui.painter().line_segment(
+				[
+					egui::pos2(x, rul.bottom() - uzun),
+					egui::pos2(x, rul.bottom()),
+				],
+				egui::Stroke::new(1.0, egui::Color32::from_gray(90)),
+			);
+		}
+
+		// --- gezinme: cetvel sürükle = kaydır; tekerlek/pinch = imleç
+		// altında yakınlaştır ---
+		let mut g = ses_gorunum(a, genislik);
+		if rul_yanit.dragged() {
+			crate::audio_timing::kaydir(
+				&mut g,
+				rul_yanit.drag_delta().x,
+				a.toplam,
+			);
+			ses_gorunum_uygula(a, g);
+		}
+		if rul_yanit.clicked() {
+			if let Some(p) = rul_yanit.interact_pointer_pos() {
+				a.imlec = crate::audio_timing::px_to_ornek(
+					p.x - dik.left(),
+					&g,
+				);
+				a.imlec = a.imlec.clamp(0, a.toplam);
+				a.secim = None;
 			}
 		}
+		if rul_yanit.hovered() || yanit.hovered() {
+			let (zd, sd) = ui.input(|i| (i.zoom_delta(), i.smooth_scroll_delta));
+			let mut carpan = zd as f64;
+			if sd.y.abs() > 0.01 {
+				// tekerlek: yukarı = yakınlaş, aşağı = uzaklaş
+				carpan *= (sd.y as f64 * 0.0025).exp();
+			}
+			if (carpan - 1.0).abs() > 1e-4 {
+				let p = ui.input(|i| i.pointer.hover_pos());
+				let capa = p
+					.map(|p| (p.x - dik.left()).clamp(0.0, genislik))
+					.unwrap_or(genislik * 0.5);
+				crate::audio_timing::zoom_merkez(
+					&mut g,
+					carpan,
+					capa,
+					a.toplam,
+				);
+				ses_gorunum_uygula(a, g);
+			}
+		}
+
+		// --- gövde: tıkla = imleç, sürükle = seçim ---
+		let g = ses_gorunum(a, genislik);
+		if yanit.drag_started() {
+			if let Some(p) = yanit.interact_pointer_pos() {
+				let s = crate::audio_timing::px_to_ornek(
+					p.x - dik.left(),
+					&g,
+				)
+				.clamp(0, a.toplam);
+				a.surukleme = Some(s);
+				a.secim = Some((s, s));
+				a.imlec = s;
+			}
+		}
+		if yanit.dragged() {
+			if let Some(anchor) = a.surukleme {
+				if let Some(p) = yanit.interact_pointer_pos() {
+					let s = crate::audio_timing::px_to_ornek(
+						p.x - dik.left(),
+						&g,
+					)
+					.clamp(0, a.toplam);
+					a.secim = Some(crate::audio_timing::secim_normalize(anchor, s));
+					a.imlec = s;
+				}
+			}
+		}
+		if yanit.drag_stopped() {
+			a.surukleme = None;
+			if let Some((b, s)) = a.secim {
+				if s <= b {
+					a.secim = None;
+				}
+			}
+		}
+		if yanit.clicked() {
+			if let Some(p) = yanit.interact_pointer_pos() {
+				a.imlec = crate::audio_timing::px_to_ornek(
+					p.x - dik.left(),
+					&g,
+				)
+				.clamp(0, a.toplam);
+				a.secim = None;
+			}
+		}
+
+		// --- seçili satırın başlangıç/bitiş tutamaçları (bırakınca yaz) ---
+		if let Some((idx, bas_ms, son_ms)) = satir_zaman {
+			let bas_sabit = ms_ornek(bas_ms, a.rate).clamp(0, a.toplam);
+			let son_sabit = ms_ornek(son_ms, a.rate).clamp(0, a.toplam);
+			let bas_konum = a.tut_bas.unwrap_or(bas_sabit);
+			let son_konum = a.tut_son.unwrap_or(son_sabit);
+			let bx = dik.left() + crate::audio_timing::ornek_to_px(bas_konum, &g);
+			let sx = dik.left() + crate::audio_timing::ornek_to_px(son_konum, &g);
+			let bas_tut = egui::Rect::from_center_size(
+				egui::pos2(bx, dik.top() + 8.0),
+				egui::vec2(15.0, 14.0),
+			);
+			let son_tut = egui::Rect::from_center_size(
+				egui::pos2(sx, dik.top() + 8.0),
+				egui::vec2(15.0, 14.0),
+			);
+			let sag = a.d0.saturating_add(a.adet);
+			let yb = (bas_konum >= a.d0 && bas_konum <= sag).then(|| {
+				ui.interact(
+					bas_tut,
+					ui.scope_id().with(("ses-tut-bas", idx)),
+					egui::Sense::drag(),
+				)
+			});
+			let ys = (son_konum >= a.d0 && son_konum <= sag).then(|| {
+				ui.interact(
+					son_tut,
+					ui.scope_id().with(("ses-tut-son", idx)),
+					egui::Sense::drag(),
+				)
+			});
+			if let Some(yb) = yb {
+				if yb.drag_started() {
+					a.tut_bas = Some(bas_sabit);
+				}
+				if yb.dragged() {
+					if let Some(p) = yb.interact_pointer_pos() {
+						a.tut_bas = Some(
+							crate::audio_timing::px_to_ornek(
+								p.x - dik.left(),
+								&g,
+							)
+							.clamp(0, a.toplam),
+						);
+					}
+				}
+				if yb.drag_stopped() {
+					if let Some(v) = a.tut_bas.take() {
+						self.ses_tut_birak(a, idx, true, v);
+					}
+				}
+				if yb.clicked() {
+					a.imlec = bas_sabit;
+				}
+			}
+			if let Some(ys) = ys {
+				if ys.drag_started() {
+					a.tut_son = Some(son_sabit);
+				}
+				if ys.dragged() {
+					if let Some(p) = ys.interact_pointer_pos() {
+						a.tut_son = Some(
+							crate::audio_timing::px_to_ornek(
+								p.x - dik.left(),
+								&g,
+							)
+							.clamp(0, a.toplam),
+						);
+					}
+				}
+				if ys.drag_stopped() {
+					if let Some(v) = a.tut_son.take() {
+						self.ses_tut_birak(a, idx, false, v);
+					}
+				}
+				if ys.clicked() {
+					a.imlec = son_sabit;
+				}
+			}
+		}
+
+		// --- görünür aralık: spektrum (önbellekli) veya dalga ---
+		let mut spek_cizildi = false;
+		if a.mod_ == SesMod::Spektrum {
+			let cols = ((genislik * 0.5).round() as i32).clamp(1, 192);
+			let rows = if kompakt { 32 } else { 96 };
+			if ses_spek_hazirla(ui.ctx(), a, cols, rows) {
+				spek_cizildi = true;
+			}
+		}
+		if spek_cizildi {
+			if let Some(dok) = a.spek_doku.as_ref() {
+				ui.painter().image(
+					dok.id(),
+					dik,
+					egui::Rect::from_min_max(
+						egui::pos2(0.0, 0.0),
+						egui::pos2(1.0, 1.0),
+					),
+					egui::Color32::WHITE,
+				);
+			}
+		} else {
+			ses_dalga_ciz(ui.painter(), a, dik, &g);
+		}
+
+		// --- katmanlar: seçim, imleç, oynatma başı, satır tutamaçları ---
+		let boya = ui.painter();
+		if let Some((b, s)) = a.secim {
+			if s > b {
+				let x1 = dik.left() + crate::audio_timing::ornek_to_px(b, &g);
+				let x2 = dik.left() + crate::audio_timing::ornek_to_px(s, &g);
+				let sec = egui::Rect::from_min_max(
+					egui::pos2(x1, dik.top()),
+					egui::pos2(x2, dik.bottom()),
+				);
+				boya.rect_filled(
+					sec,
+					0.0,
+					egui::Color32::from_rgba_unmultiplied(80, 170, 240, 46),
+				);
+				for x in [x1, x2] {
+					boya.line_segment(
+						[
+							egui::pos2(x, dik.top()),
+							egui::pos2(x, dik.bottom()),
+						],
+						egui::Stroke::new(
+							1.0,
+							egui::Color32::from_rgba_unmultiplied(120, 190, 255, 180),
+						),
+					);
+				}
+			}
+		}
+		let imlec_x = dik.left() + crate::audio_timing::ornek_to_px(a.imlec, &g);
+		if a.imlec >= a.d0 && a.imlec <= a.d0 + a.adet {
+			boya.line_segment(
+				[
+					egui::pos2(imlec_x, dik.top()),
+					egui::pos2(imlec_x, dik.bottom()),
+				],
+				egui::Stroke::new(1.5, egui::Color32::from_rgb(245, 205, 80)),
+			);
+		}
+		if a.konum >= 0 && a.konum >= a.d0 && a.konum <= a.d0 + a.adet {
+			let x = dik.left() + crate::audio_timing::ornek_to_px(a.konum, &g);
+			boya.line_segment(
+				[
+					egui::pos2(x, dik.top()),
+					egui::pos2(x, dik.bottom()),
+				],
+				egui::Stroke::new(1.5, egui::Color32::from_rgb(90, 230, 140)),
+			);
+		}
+		if let Some((_idx, bas_ms, son_ms)) = satir_zaman {
+			let bas_sabit = ms_ornek(bas_ms, a.rate).clamp(0, a.toplam);
+			let son_sabit = ms_ornek(son_ms, a.rate).clamp(0, a.toplam);
+			let bas = a.tut_bas.unwrap_or(bas_sabit);
+			let son = a.tut_son.unwrap_or(son_sabit);
+			for (ornek, ad, renk) in [
+				(bas, "B", egui::Color32::from_rgb(255, 170, 70)),
+				(son, "S", egui::Color32::from_rgb(190, 120, 255)),
+			] {
+				if ornek < a.d0 || ornek > a.d0 + a.adet {
+					continue;
+				}
+				let x = dik.left() + crate::audio_timing::ornek_to_px(ornek, &g);
+				boya.line_segment(
+					[
+						egui::pos2(x, dik.top()),
+						egui::pos2(x, dik.bottom()),
+					],
+					egui::Stroke::new(1.0, renk),
+				);
+				let tut = egui::Rect::from_center_size(
+					egui::pos2(x, dik.top() + 8.0),
+					egui::vec2(15.0, 14.0),
+				);
+				boya.rect_filled(tut, 2.0, renk);
+				boya.text(
+					tut.center(),
+					egui::Align2::CENTER_CENTER,
+					ad,
+					egui::FontId::proportional(9.0),
+					egui::Color32::BLACK,
+				);
+			}
+		}
+
+		if !kompakt {
+			ui.add_space(2.0);
+			ui.horizontal_wrapped(|h| {
+				match a.secim {
+					Some((b, s)) => h.label(format!(
+						"seçim {}–{} ms",
+						ornek_ms(b, a.rate),
+						ornek_ms(s, a.rate)
+					)),
+					None => h.label("seçim yok"),
+				};
+				h.label(format!("imleç {} ms", ornek_ms(a.imlec, a.rate)));
+				if let Some((_, b, s)) = satir_zaman {
+					h.label(format!("satır {b}–{s} ms"));
+				} else {
+					h.label("satır seç");
+				}
+			});
+			ui.label(RichText::new(&a.info).weak());
+			ui.label(RichText::new(&a.ses_durum).weak());
+			if a.secim.is_none() || satir_zaman.is_none() {
+				ui.label(
+					RichText::new(
+						"Başlat/Bitir için dalgada seçim yap ve grid'den satır seç.",
+					)
+					.weak(),
+				);
+			}
+			if let Some(e) = &a.spek_hata {
+				ui.label(
+					RichText::new(format!("spektrum: {e}"))
+						.color(egui::Color32::from_rgb(220, 120, 90)),
+				);
+			}
+		} else if let Some(e) = &a.spek_hata {
+			ui.label(
+				RichText::new(format!("spektrum: {e}"))
+					.color(egui::Color32::from_rgb(220, 120, 90)),
+			);
+		} else if a.ses_durum.starts_with("oynatma olmadı")
+			|| a.ses_durum.starts_with("dalga okunamadı")
+		{
+			ui.label(
+				RichText::new(a.ses_durum.clone())
+					.color(egui::Color32::from_rgb(220, 120, 90)),
+			);
+		}
+	}
+
+	/// Kompakt Aegisub ses şeridi: tek satır + 36 pt dalga; durum etiketi yok.
+	fn ses_kompakt_cubuk(
+		&mut self,
+		ui: &mut egui::Ui,
+		a: &mut AudioSection,
+		hedef: f32,
+	) {
+		let gen = ui.available_width().max(1.0);
+		let capa = gen * 0.5;
+		ui.horizontal(|h| {
+			if h
+				.add(egui::Button::new("▶").min_size(egui::vec2(24.0, hedef)))
+				.clicked()
+			{
+				self.ses_imlecten_oynat(a);
+			}
+			if h
+				.add(egui::Button::new("⏹").min_size(egui::vec2(24.0, hedef)))
+				.clicked()
+			{
+				self.ses_durdur(a);
+			}
+			let mod_ad = if a.mod_ == SesMod::Dalga { "Dalga" } else { "Spek" };
+			if h
+				.add(egui::Button::new(mod_ad).min_size(egui::vec2(0.0, hedef)))
+				.clicked()
+			{
+				a.mod_ = if a.mod_ == SesMod::Dalga {
+					SesMod::Spektrum
+				} else {
+					SesMod::Dalga
+				};
+			}
+			if h
+				.add(egui::Button::new("−").min_size(egui::vec2(22.0, hedef)))
+				.clicked()
+			{
+				let mut g = ses_gorunum(a, gen);
+				crate::audio_timing::zoom_merkez(&mut g, 0.5, capa, a.toplam);
+				ses_gorunum_uygula(a, g);
+			}
+			if h
+				.add(egui::Button::new("+").min_size(egui::vec2(22.0, hedef)))
+				.clicked()
+			{
+				let mut g = ses_gorunum(a, gen);
+				crate::audio_timing::zoom_merkez(&mut g, 2.0, capa, a.toplam);
+				ses_gorunum_uygula(a, g);
+			}
+			if h
+				.add(egui::Button::new("Büyüt").min_size(egui::vec2(0.0, hedef)))
+				.clicked()
+			{
+				self.ses_win = true;
+			}
+		});
+	}
+
+	/// Tam ses araç çubuğu (masaüstü, mobil sekme ve zamanlama penceresi).
+	fn ses_arac_cubugu(
+		&mut self,
+		ui: &mut egui::Ui,
+		a: &mut AudioSection,
+		_mobil: bool,
+		hedef: f32,
+		satir: Option<(usize, i64, i64)>,
+	) {
+		let gen = ui.available_width().max(1.0);
+		let capa = gen * 0.5;
+		let secim = a.secim.filter(|(b, s)| s > b);
+		ui.horizontal_wrapped(|h| {
+			for (mod_, ad) in [(SesMod::Dalga, "Dalga"), (SesMod::Spektrum, "Spektrum")]
+			{
+				if h
+					.add(
+						egui::Button::new(ad)
+							.selected(a.mod_ == mod_)
+							.min_size(egui::vec2(0.0, hedef)),
+					)
+					.clicked()
+				{
+					a.mod_ = mod_;
+				}
+			}
+			h.separator();
+			if h
+				.add(egui::Button::new("−").min_size(egui::vec2(26.0, hedef)))
+				.clicked()
+			{
+				let mut g = ses_gorunum(a, gen);
+				crate::audio_timing::zoom_merkez(&mut g, 0.5, capa, a.toplam);
+				ses_gorunum_uygula(a, g);
+			}
+			if h
+				.add(egui::Button::new("+").min_size(egui::vec2(26.0, hedef)))
+				.clicked()
+			{
+				let mut g = ses_gorunum(a, gen);
+				crate::audio_timing::zoom_merkez(&mut g, 2.0, capa, a.toplam);
+				ses_gorunum_uygula(a, g);
+			}
+			if h
+				.add(egui::Button::new("Sığdır").min_size(egui::vec2(0.0, hedef)))
+				.clicked()
+			{
+				a.d0 = 0;
+				a.adet = a.toplam.max(1);
+			}
+			h.separator();
+			if h
+				.add(egui::Button::new("◀").min_size(egui::vec2(26.0, hedef)))
+				.clicked()
+			{
+				let mut g = ses_gorunum(a, gen);
+				crate::audio_timing::kaydir(&mut g, gen * 0.5, a.toplam);
+				ses_gorunum_uygula(a, g);
+			}
+			if h
+				.add(egui::Button::new("▶").min_size(egui::vec2(26.0, hedef)))
+				.clicked()
+			{
+				let mut g = ses_gorunum(a, gen);
+				crate::audio_timing::kaydir(&mut g, -gen * 0.5, a.toplam);
+				ses_gorunum_uygula(a, g);
+			}
+			h.separator();
+			if h
+				.add_enabled(
+					secim.is_some(),
+					egui::Button::new("▶ seçim")
+						.min_size(egui::vec2(0.0, hedef)),
+				)
+				.clicked()
+			{
+				if let Some((b, s)) = secim {
+					self.ses_oynat(a, b, s - b);
+				}
+			}
+			if h
+				.add(egui::Button::new("▶ imleç").min_size(egui::vec2(0.0, hedef)))
+				.clicked()
+			{
+				self.ses_imlecten_oynat(a);
+			}
+			if h
+				.add(egui::Button::new("⏹").min_size(egui::vec2(0.0, hedef)))
+				.clicked()
+			{
+				self.ses_durdur(a);
+			}
+			h.separator();
+			let yazilabilir = secim.is_some() && satir.is_some();
+			if h
+				.add_enabled(
+					yazilabilir,
+					egui::Button::new("Başlat")
+						.min_size(egui::vec2(0.0, hedef)),
+				)
+				.clicked()
+			{
+				if let (Some((b, _)), Some((idx, _, son))) = (secim, satir) {
+					self.ses_sinir_yaz(a, idx, true, b, son);
+				}
+			}
+			if h
+				.add_enabled(
+					yazilabilir,
+					egui::Button::new("Bitir")
+						.min_size(egui::vec2(0.0, hedef)),
+				)
+				.clicked()
+			{
+				if let (Some((_, s)), Some((idx, bas, _))) = (secim, satir) {
+					self.ses_sinir_yaz(a, idx, false, bas, s);
+				}
+			}
+			if h
+				.add(
+					egui::Button::new("Kareye oturt")
+						.min_size(egui::vec2(0.0, hedef)),
+				)
+				.clicked()
+			{
+				self.ses_kareye_oturt(a, satir);
+			}
+			h.checkbox(&mut a.takip, "takip");
+			if self.ses_win
+				&& h
+					.add(egui::Button::new("Küçült").min_size(egui::vec2(0.0, hedef)))
+					.clicked()
+			{
+				self.ses_win = false;
+			}
+		});
+	}
+
+	/// Oynatma durumunu yokla; takip açıksa oynatma başını görünür aralıkta tut.
+	fn ses_oynatma_yokla(&mut self, a: &mut AudioSection) {
+		if !a.oynatma_denendi {
+			return;
+		}
+		let d = unsafe { velnosub_abi_audio_state(a.handle) };
+		let ad = match d {
+			-1 => "oynatma yok",
+			4 => "hazırlanıyor",
+			0 => "oynatılıyor",
+			1 => "boşalma",
+			2 => "hata",
+			_ => "bilinmeyen",
+		};
+		if d == 0 || d == 1 {
+			let p = unsafe { velnosub_abi_audio_position(a.handle) };
+			if p >= 0 {
+				a.konum = p;
+				a.imlec = p.clamp(0, a.toplam);
+			}
+			if d == 0 && a.takip {
+				// Sayfa %80'i: her karede yeniden hesaplamak yerine ancak
+				// oynatma başı görünür aralıktan çıkınca kaydır.
+				let sag = a.d0.saturating_add(a.adet);
+				if a.konum >= 0 && (a.konum < a.d0 || a.konum > sag) {
+					let adet = a.adet.max(1);
+					let maks = (a.toplam - adet).max(0);
+					a.d0 = (a.konum - adet * 4 / 5).clamp(0, maks);
+				}
+			}
+		}
+		if d == 1 {
+			a.oynatma_denendi = false;
+			a.ses_durum = "oynatma bitti".into();
+		} else if d == 2 || d == -1 {
+			a.oynatma_denendi = false;
+			a.ses_durum = format!("durum {d} — {ad}");
+		} else if d == 0 || d == 1 || d == 4 {
+			a.ses_durum = if a.konum >= 0 {
+				format!(
+					"durum {d} — {ad} — {} ms",
+					ornek_ms(a.konum, a.rate)
+				)
+			} else {
+				format!("durum {d} — {ad}")
+			};
+		}
+	}
+
+	fn ses_oynat(&mut self, a: &mut AudioSection, bas: i64, adet: i64) {
+		if a.toplam <= 0 {
+			self.note = "ses yok".into();
+			return;
+		}
+		let bas = bas.clamp(0, a.toplam - 1);
+		let son = bas.saturating_add(adet.max(0)).min(a.toplam);
+		if son <= bas {
+			self.note = "oynatma aralığı boş".into();
+			return;
+		}
+		let rc = unsafe { velnosub_abi_audio_play(a.handle, bas, son - bas) };
+		if rc == 0 {
+			a.oynatma_denendi = true;
+			a.konum = bas;
+			a.takip = true;
+			a.ses_durum = format!(
+				"oynatma {}–{} ms",
+				ornek_ms(bas, a.rate),
+				ornek_ms(son, a.rate)
+			);
+		} else {
+			a.oynatma_denendi = false;
+			a.konum = -1;
+			a.ses_durum = format!("oynatma olmadı: {}", last_error());
+			self.note = a.ses_durum.clone();
+		}
+	}
+
+	fn ses_imlecten_oynat(&mut self, a: &mut AudioSection) {
+		if a.toplam <= 0 {
+			self.note = "ses yok".into();
+			return;
+		}
+		if a.imlec >= a.toplam {
+			a.imlec = a.toplam - 1;
+		}
+		let adet = a.toplam - a.imlec;
+		self.ses_oynat(a, a.imlec, adet);
+	}
+
+	fn ses_durdur(&mut self, a: &mut AudioSection) {
+		unsafe { velnosub_abi_audio_stop(a.handle) };
+		a.oynatma_denendi = false;
+		a.konum = -1;
+		a.ses_durum = "kesildi".into();
+	}
+
+	fn ses_zaman_yaz(
+		&mut self,
+		idx: usize,
+		ms_bas: i64,
+		ms_son: i64,
+	) -> Result<(), String> {
+		let h = self.handle.ok_or_else(|| "altyazı açık değil".to_string())?;
+		times_set(h, idx, ms_bas, ms_son)?;
+		if let Some(r) = self.rows.get_mut(idx) {
+			r.bas = ms_ass(ms_bas);
+			r.son = ms_ass(ms_son);
+		}
+		Ok(())
+	}
+
+	/// "Başlat" = seçim başı, "Bitir" = seçim sonu; diğer uç satırdan gelir.
+	fn ses_sinir_yaz(
+		&mut self,
+		a: &AudioSection,
+		idx: usize,
+		bas_mi: bool,
+		sinir_ornek: i64,
+		diger_ms: i64,
+	) {
+		let yeni_ms = ornek_ms(sinir_ornek.clamp(0, a.toplam), a.rate).max(0);
+		let (mb, ms) = if bas_mi {
+			(yeni_ms.min(diger_ms), diger_ms)
+		} else {
+			(diger_ms, yeni_ms.max(diger_ms))
+		};
+		match self.ses_zaman_yaz(idx, mb, ms) {
+			Ok(()) => self.note = format!("satır {}: {mb}–{ms} ms", idx + 1),
+			Err(e) => self.note = format!("zaman yazılamadı: {e}"),
+		}
+	}
+
+	/// Tutamaç bırakıldı: video varsa kareye oturt, sonra tek ABI yazımı.
+	fn ses_tut_birak(
+		&mut self,
+		a: &mut AudioSection,
+		idx: usize,
+		bas_mi: bool,
+		ornek: i64,
+	) {
+		let mut hedef = ornek.clamp(0, a.toplam);
+		if let Some(fps) = self.video.as_ref().map(|v| v.fps).filter(|f| *f > 0.0)
+		{
+			hedef = crate::audio_timing::kareye_oturt(hedef, a.rate, fps)
+				.clamp(0, a.toplam);
+		} else {
+			self.note = "video yok, kareye oturtma kapalı".into();
+		}
+		let Some((mb, ms)) = self
+			.rows
+			.get(idx)
+			.and_then(|r| Some((ass_ms(&r.bas).ok()?, ass_ms(&r.son).ok()?)))
+		else {
+			return;
+		};
+		let (yb, ys) = if bas_mi {
+			(ornek_ms(hedef, a.rate).min(ms), ms)
+		} else {
+			(mb, ornek_ms(hedef, a.rate).max(mb))
+		};
+		match self.ses_zaman_yaz(idx, yb, ys) {
+			Ok(()) => {
+				a.imlec = hedef;
+				self.note = format!("satır {}: {yb}–{ys} ms", idx + 1);
+			}
+			Err(e) => self.note = format!("tutamaç yazılamadı: {e}"),
+		}
+	}
+
+	fn ses_kareye_oturt(
+		&mut self,
+		a: &mut AudioSection,
+		satir: Option<(usize, i64, i64)>,
+	) {
+		let Some(fps) = self
+			.video
+			.as_ref()
+			.map(|v| v.fps)
+			.filter(|f| *f > 0.0)
+		else {
+			self.note = "video yok, kareye oturtma kapalı".into();
+			return;
+		};
+		if let Some((idx, mb, ms)) = satir {
+			let nb = crate::audio_timing::kareye_oturt(
+				ms_ornek(mb, a.rate),
+				a.rate,
+				fps,
+			)
+			.clamp(0, a.toplam);
+			let ns = crate::audio_timing::kareye_oturt(
+				ms_ornek(ms, a.rate),
+				a.rate,
+				fps,
+			)
+			.clamp(nb, a.toplam);
+			let (nb_ms, ns_ms) = (ornek_ms(nb, a.rate), ornek_ms(ns, a.rate));
+			match self.ses_zaman_yaz(idx, nb_ms, ns_ms) {
+				Ok(()) => {
+					a.secim = Some((nb, ns));
+					a.imlec = nb;
+					self.note = format!("satır {} kareye oturtuldu", idx + 1);
+				}
+				Err(e) => self.note = format!("kareye oturtma yazılamadı: {e}"),
+			}
+			return;
+		}
+		let Some((b, s)) = a.secim else {
+			a.imlec = crate::audio_timing::kareye_oturt(a.imlec, a.rate, fps)
+				.clamp(0, a.toplam);
+			return;
+		};
+		let nb = crate::audio_timing::kareye_oturt(b, a.rate, fps)
+			.clamp(0, a.toplam);
+		let ns = crate::audio_timing::kareye_oturt(s, a.rate, fps)
+			.clamp(nb, a.toplam);
+		a.secim = Some((nb, ns));
+		a.imlec = nb;
 	}
 
 	fn stil_icerik(&mut self, ui: &mut egui::Ui, _mobil: bool) {
@@ -4444,6 +5345,19 @@ impl eframe::App for GridApp {
 			Duzen::Mobil => self.mobil_cerceve(ui),
 			Duzen::Masaustu => self.masaustu_cerceve(ui),
 			Duzen::Otomatik => {}
+		}
+		if self.ses_win && self.audio.is_some() {
+			let mut acik = true;
+			egui::Window::new("Ses zamanlama")
+				.open(&mut acik)
+				.resizable(true)
+				.default_size(egui::vec2(900.0, 420.0))
+				.min_width(340.0)
+				.show(ui.ctx(), |p| {
+					self.ses_icerik(p, false, false);
+				});
+			// "Küçült" içeride `ses_win`i kapatır; X ise `acik`ı.
+			self.ses_win = acik && self.ses_win;
 		}
 	}
 }
