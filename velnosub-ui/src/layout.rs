@@ -120,6 +120,29 @@ mod tests {
 	}
 
 	#[test]
+	fn bolmeler_alt_sinir() {
+		let b = bolmeler(2400.0, 1080.0, Some(0.1));
+		yakin(b.ust_yuk, 594.0, "ust_yuk");
+		// 594 × 0.1 = 59.4; genişliğin %32 alt sınırı 768'e kırpılır
+		yakin(b.video_gen, 768.0, "video_gen");
+		yakin(b.sag_gen, 1632.0, "sag_gen");
+	}
+
+	#[test]
+	fn bolmeler_ust_dogrudan_esit() {
+		// `bolmeler(gen, 800)` üst yüksekliği 440 üretir; panel yeniden
+		// boyutlandırıldığında kullanılan doğrudan yol aynı sonucu vermeli.
+		let gen = 1280.0;
+		let dolayli = bolmeler(gen, 800.0, Some(2.0));
+		let dogrudan = bolmeler_ust(gen, 440.0, Some(2.0));
+		yakin(dogrudan.ust_yuk, dolayli.ust_yuk, "ust_yuk");
+		yakin(dogrudan.video_gen, dolayli.video_gen, "video_gen");
+		yakin(dogrudan.sag_gen, dolayli.sag_gen, "sag_gen");
+		yakin(dogrudan.ses_yuk, dolayli.ses_yuk, "ses_yuk");
+		yakin(dogrudan.duzen_yuk, dolayli.duzen_yuk, "duzen_yuk");
+	}
+
+	#[test]
 	fn bolmeler_4_3_video() {
 		let b = bolmeler(2560.0, 1600.0, Some(4.0 / 3.0));
 		yakin(b.ust_yuk, 880.0, "ust_yuk");

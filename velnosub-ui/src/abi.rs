@@ -927,7 +927,8 @@ pub struct Ayar {
 
 /// `{ "anahtar": "deger" }` biçimi için sade tarayıcı: anahtarı bulup
 /// ondan sonraki ilk tırnaklı parçayı döner. Yalnız bizim yazdığımız
-/// `velnosub-ui.json` beklenir; yabancı içerik None döner (yeniden sor).
+/// `velnosub-ui.json` beklenir; dosya yoksa/okunamazsa varsayılan Otomatik
+/// kullanılır (None döner).
 fn deger_bul(icerik: &str, anahtar: &str) -> Option<String> {
 	let cap = format!("\"{anahtar}\"");
 	let bas = icerik.find(&cap)? + cap.len();
@@ -938,7 +939,8 @@ fn deger_bul(icerik: &str, anahtar: &str) -> Option<String> {
 	Some(kalan2[..j].to_string())
 }
 
-/// Ayar dosyasını okur; dosya yoksa boş Ayar (hem düzen hem tema None).
+/// Ayar dosyasını okur; dosya yoksa boş Ayar döner — bu durumda uygulama
+/// varsayılan Otomatik/koyu ile açılır (düzen seçimi sorulmaz).
 pub fn ayar_yukle() -> Ayar {
 	let bos = Ayar {
 		duzen: None,
@@ -2616,15 +2618,23 @@ impl GridApp {
 		}
 	}
 
-	fn ses_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+	fn ses_icerik(&mut self, ui: &mut egui::Ui, mobil: bool, kompakt: bool) {
 		// P4.4: ses şeridi — oynatma tuşları + dalga formu (peak kovalarından)
+		// `kompakt`: kısa Aegisub üst alanı (telefon yatayı) — tek tuş satırı
+		// + 36 pt dalga formu; durum/kanal etiketleri çizilmez (durum yine
+		// içeride güncellenir). Task 6 ses panelini yeniden tasarlayacak.
 		if let Some(a) = self.audio.as_mut() {
-			ui.add_space(4.0);
+			if !kompakt {
+				ui.add_space(4.0);
+			}
 			let mut oynat = egui::Button::new("▶ oynat");
 			let mut kes = egui::Button::new("⏹ kes");
 			if mobil {
 				oynat = oynat.min_size(egui::vec2(0.0, 44.0));
 				kes = kes.min_size(egui::vec2(0.0, 44.0));
+			} else if kompakt {
+				oynat = oynat.min_size(egui::vec2(0.0, 18.0));
+				kes = kes.min_size(egui::vec2(0.0, 18.0));
 			}
 			ui.horizontal(|su| {
 				if su.add(oynat).clicked() {
@@ -2641,7 +2651,9 @@ impl GridApp {
 					unsafe { velnosub_abi_audio_stop(a.handle) };
 					a.ses_durum = "kesildi".into();
 				}
-				su.label(RichText::new(&a.info).weak());
+				if !kompakt {
+					su.label(RichText::new(&a.info).weak());
+				}
 			});
 			if a.oynatma_denendi {
 				let d = unsafe { velnosub_abi_audio_state(a.handle) };
@@ -2655,12 +2667,14 @@ impl GridApp {
 				};
 				a.ses_durum = format!("durum {d} — {ad}");
 			}
-			ui.label(RichText::new(&a.ses_durum).weak());
-			ui.label(RichText::new(format!("{} kanal", a.ch)).weak());
+			if !kompakt {
+				ui.label(RichText::new(&a.ses_durum).weak());
+				ui.label(RichText::new(format!("{} kanal", a.ch)).weak());
+			}
 
 			// dalga formu: 512 kova → duvara dik çubuklar (min..max)
 			let genislik = ui.available_width();
-			let yuk = 72.0f32;
+			let yuk = if kompakt { 36.0f32 } else { 72.0f32 };
 			let (dik, _) =
 				ui.allocate_exact_size(egui::vec2(genislik, yuk), egui::Sense::hover());
 			let boy = a.minv.len().max(1) as f32;
@@ -2675,7 +2689,9 @@ impl GridApp {
 				ui.painter()
 					.line_segment([egui::pos2(x, ymin), egui::pos2(x, ymax)], kalem);
 			}
-			ui.add_space(4.0);
+			if !kompakt {
+				ui.add_space(4.0);
+			}
 		}
 	}
 
@@ -3570,7 +3586,7 @@ impl GridApp {
 					self.grid_icerik(su, true);
 				}
 				Sekme::Video => self.video_icerik(su, true),
-				Sekme::Ses => self.ses_icerik(su, true),
+				Sekme::Ses => self.ses_icerik(su, true, false),
 				Sekme::Stil => self.stil_icerik(su, true),
 				Sekme::Form => self.form_icerik(su, true),
 				Sekme::Ayarlar => self.ayarlar_bolum(su),
@@ -4153,7 +4169,7 @@ impl GridApp {
 				.filter(|v| v.w > 0 && v.hgt > 0)
 				.map(|v| v.w as f32 / v.hgt as f32);
 			let b = layout::bolmeler(gen, yuk, video_oran);
-			egui::Panel::top("masaustu-tavan").show_inside(su, |top| {
+			egui::Panel::top("masaustu-tavan").show(su, |top| {
 				let tema = tema_simdi(top);
 				// P4.8.2: aegisub menü çubuğu en üstte
 				self.menu_cubugu(top);
@@ -4227,7 +4243,7 @@ impl GridApp {
 				// egui 0.37 birleşik Panel API'si: yükseklik `default_size`
 				.default_size(b.ust_yuk)
 				.frame(egui::Frame::NONE)
-				.show_inside(su, |ust| {
+				.show(su, |ust| {
 					// Kullanıcı paneli boyutlandırdıysa bölmeler o andaki
 					// yükseklikten yeniden hesaplanır (varsayılan: ust_yuk).
 					let b = layout::bolmeler_ust(
@@ -4236,11 +4252,17 @@ impl GridApp {
 						video_oran,
 					);
 					ust.horizontal_top(|h| {
+						// Sıfır item_spacing yalnız bölme tahsisinde kalır:
+						// içerik UI'ları normal denetim aralıklarına döner.
+						let eski = h.spacing().item_spacing;
 						h.spacing_mut().item_spacing = egui::Vec2::ZERO;
 						h.allocate_ui_with_layout(
 							egui::vec2(b.video_gen, b.ust_yuk),
 							egui::Layout::top_down(egui::Align::Min),
-							|v| self.video_icerik(v, false),
+							|v| {
+								v.spacing_mut().item_spacing = eski;
+								self.video_icerik(v, false);
+							},
 						);
 						h.allocate_ui_with_layout(
 							egui::vec2(b.sag_gen, b.ust_yuk),
@@ -4251,12 +4273,40 @@ impl GridApp {
 								sag.allocate_ui_with_layout(
 									egui::vec2(b.sag_gen, b.ses_yuk),
 									egui::Layout::top_down(egui::Align::Min),
-									|s| self.ses_icerik(s, false),
+									|s| {
+										s.spacing_mut().item_spacing = eski;
+										// Kısa yatayda ses içeriği taşarsa
+										// kırp/kaydır (güvenlik ağı).
+										egui::ScrollArea::vertical()
+											.id_salt("aeg-ses")
+											.max_height(b.ses_yuk)
+											.auto_shrink([false, false])
+											.show(s, |s| {
+												s.spacing_mut().item_spacing = eski;
+												self.ses_icerik(
+													s,
+													false,
+													b.ses_yuk < 120.0,
+												);
+											});
+									},
 								);
 								sag.allocate_ui_with_layout(
 									egui::vec2(b.sag_gen, b.duzen_yuk),
 									egui::Layout::top_down(egui::Align::Min),
-									|d| self.duzen_kutusu(d, false),
+									|d| {
+										d.spacing_mut().item_spacing = eski;
+										// Düzen kutusu kısa yatayda grid'e
+										// taşmasın: kendi içinde kaydır.
+										egui::ScrollArea::vertical()
+											.id_salt("aeg-duzen")
+											.max_height(b.duzen_yuk)
+											.auto_shrink([false, false])
+											.show(d, |d| {
+												d.spacing_mut().item_spacing = eski;
+												self.duzen_kutusu(d, false);
+											});
+									},
 								);
 							},
 						);
@@ -4264,7 +4314,7 @@ impl GridApp {
 				});
 			// İlk eklenen bottom en dış kenara oturur: durum EN ALTA
 			egui::Panel::bottom("masaustu-durum")
-				.show_inside(su, |d| self.durum_icerik(d, false));
+				.show(su, |d| self.durum_icerik(d, false));
 			// Merkez: stil/form şeritleri varsa grid'i sektirir; grid'in tek
 			// kaydırma alanı show_rows'lu satır listesi
 			egui::CentralPanel::default().show(su, |merkez| {
@@ -4313,13 +4363,19 @@ impl eframe::App for GridApp {
 		// Aegisub, portre/dar ekran mobil. Tercih `self.duzen`de korunur;
 		// yön değişince sonraki karede yeniden değerlendirilir.
 		let etkin = match self.duzen {
-			Duzen::Otomatik => match layout::sec(
-				ui.available_width(),
-				ui.available_height(),
-			) {
-				Yerlesim::Aegisub => Duzen::Masaustu,
-				Yerlesim::Mobil => Duzen::Mobil,
-			},
+			Duzen::Otomatik => {
+				// Zoom'lu nokta genişliği yerine yerel (taban ppp) genişliği
+				// kullan: 640–800 pt yerel yatay ekran, 0.8× masaüstü zoom'u
+				// yüzünden yanlışlıkla Aegisub'a geçmesin. ppp_base yoksa
+				// (henüz masaüstüne girilmediyse) genişlik değişmez.
+				let ppp = ui.ctx().pixels_per_point();
+				let taban = self.ppp_base.unwrap_or(ppp);
+				let gen_taban = ui.available_width() * (ppp / taban);
+				match layout::sec(gen_taban, ui.available_height()) {
+					Yerlesim::Aegisub => Duzen::Masaustu,
+					Yerlesim::Mobil => Duzen::Mobil,
+				}
+			}
 			d => d,
 		};
 		// ölçek tabana döner: Mobil'e masaüstü zoom'u sızmaz; Masaustu'ya
@@ -4374,10 +4430,11 @@ impl eframe::App for GridApp {
 mod tests {
 	use super::*;
 
-	/// Ayar döngüsü: dosya yoksa alanlar None kalır (uygulama varsayılanı
-	/// Otomatik/koyu), yazım sonra birebir okunur; bilinmeyen içerik yine
-	/// varsayılana düşer. Ekransız haberci — derleme ortamında GUI penceresi
-	/// açılamaz; çizim kanıtı cihaz/APK bağlamına kalmıştır.
+	/// Ayar döngüsü: dosya yoksa alanlar None kalır ve uygulama varsayılan
+	/// Otomatik/koyu ile açılır (seçim sorulmaz), yazım sonra birebir okunur;
+	/// bilinmeyen içerik yine varsayılana düşer. Ekransız haberci — derleme
+	/// ortamında GUI penceresi açılamaz; çizim kanıtı cihaz/APK bağlamına
+	/// kalmıştır.
 	#[test]
 	fn ayar_dongusu() {
 		let yol = std::env::temp_dir()
@@ -4385,7 +4442,10 @@ mod tests {
 		std::env::set_var("VELNOSUB_UI_JSON", &yol);
 		let _ = std::fs::remove_file(&yol);
 		let ay = ayar_yukle();
-		assert!(ay.duzen.is_none() && ay.tema.is_none(), "dosya yokken seçim sorulmalı");
+		assert!(
+			ay.duzen.is_none() && ay.tema.is_none(),
+			"dosya yokken varsayılan Otomatik kullanılır"
+		);
 		ayar_yaz("mobil", "koyu").expect("ilk yazım");
 		let ay = ayar_yukle();
 		assert_eq!(ay.duzen.as_deref(), Some("mobil"));
@@ -4394,9 +4454,16 @@ mod tests {
 		let ay = ayar_yukle();
 		assert_eq!(ay.duzen.as_deref(), Some("masaustu"));
 		assert_eq!(ay.tema.as_deref(), Some("acik"));
+		ayar_yaz("otomatik", "koyu").expect("otomatik yazımı");
+		let ay = ayar_yukle();
+		assert_eq!(ay.duzen.as_deref(), Some("otomatik"));
+		assert_eq!(ay.tema.as_deref(), Some("koyu"));
 		std::fs::write(&yol, "{}").unwrap();
 		let ay = ayar_yukle();
-		assert!(ay.duzen.is_none() && ay.tema.is_none(), "bilinmeyen içerik yeniden sorar");
+		assert!(
+			ay.duzen.is_none() && ay.tema.is_none(),
+			"bilinmeyen içerikte varsayılan Otomatik kullanılır"
+		);
 		let _ = std::fs::remove_file(&yol);
 	}
 
