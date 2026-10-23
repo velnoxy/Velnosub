@@ -1797,7 +1797,8 @@ int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
 // spektrogram: d0..d0+adet aralığı cols sütuna bölünür; her sütun 256 karelik
 // pencere (soldan hizalı) okur. Satır 0 en düşük, rows-1 en yüksek frekans;
 // bin eşlemesi doğrusal: bin = row * (kFftN/2) / rows. Eksik/kısa okumalar
-// sıfır doldurulur; d0 dosya sonundaysa sütunlar sıfır kalır (çökme yok).
+// sıfır doldurulur. d0+adet ses sınırını aşarsa aralık reddedilir; böylece
+// sütun konumu hesabı taşmaz ve görünür aralık dışına veri okunmaz.
 int velnosub_abi_audio_spectrum(int h, int64_t d0, int64_t adet,
                                 int cols, int rows, unsigned char *out) {
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
@@ -1807,6 +1808,10 @@ int velnosub_abi_audio_spectrum(int h, int64_t d0, int64_t adet,
 	}
 	if (d0 < 0 || adet <= 0) { set_err("spektrogram aralığı geçersiz"); return -1; }
 	AudioWave &a = *g_audio.at(h);
+	if (adet > a.toplam_ornek || d0 > a.toplam_ornek - adet) {
+		set_err("spektrogram aralığı ses sınırları dışında");
+		return -1;
+	}
 	if (a.yol.empty()) { set_err("ses yolu boş (kolu kapat-aç)"); return -1; }
 	std::FILE *f = std::fopen(a.yol.c_str(), "rb");
 	if (!f) { set_err("ses dosyası açılamadı: " + a.yol); return -1; }
