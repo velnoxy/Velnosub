@@ -136,6 +136,7 @@ struct AudioPlayer final : oboe::AudioStreamDataCallback, oboe::AudioStreamError
 	std::atomic<int> kurulma{-1}; // -1 hazırlanıyor, 0 tamam, 2 hata
 	int64_t kalan = 0;            // kalan kare
 	std::atomic<int> durum{0};    // 0 oynatılıyor, 1 boşalma, 2 hata
+	std::atomic<int64_t> ilerleme{0}; // geri çağrımda tüketilen kare (d0'a göre)
 	std::atomic<bool> kes{false};
 	std::shared_ptr<oboe::AudioStream> akis; // kurulum ipliği doldurur
 
@@ -156,6 +157,7 @@ struct AudioPlayer final : oboe::AudioStreamDataCallback, oboe::AudioStreamError
 		size_t okunan = std::fread(cik, sizeof(int16_t), (size_t)istenen * ch_c, f);
 		int64_t goten = (int64_t)okunan / ch_c;
 		kalan -= goten;
+		ilerleme.fetch_add(goten, std::memory_order_relaxed);
 		for (int64_t i = goten; i < istenen; ++i)
 			for (int c = 0; c < ch_c; ++c)
 				cik[i * ch_c + c] = 0; // boşalma duruşu
@@ -1822,6 +1824,7 @@ int velnosub_abi_audio_play(int h, int64_t d0, int64_t adet) {
 	}
 	if (a.yol.empty()) { set_err("ses yolu boş (kolu kapat-aç)"); return -1; }
 	auto pbc = std::make_shared<AudioPlayer>();
+	pbc->ilerleme.store(0); // yeni oynatıcı: sayaç sıfırdan başlar
 	pbc->yol = a.yol;
 	pbc->rate = a.rate;
 	pbc->ch_c = a.ch;
@@ -1843,6 +1846,17 @@ int velnosub_abi_audio_state(int h) {
 	return it->second->durum.load();
 }
 
+// oynatma konumu (kare): yok/hata -1, boşalma d0+adet, aksi d0+ilerleme
+int64_t velnosub_abi_audio_position(int h) {
+	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
+	auto it = g_oynatici.find(h);
+	if (it == g_oynatici.end()) return -1;
+	AudioPlayer &p = *it->second;
+	if (p.kurulma.load() == 2 || p.durum.load() == 2) return -1;
+	if (p.durum.load() == 1) return p.d0 + p.adet;
+	return p.d0 + p.ilerleme.load(std::memory_order_relaxed);
+}
+
 int velnosub_abi_audio_stop(int h) {
 	std::lock_guard<std::mutex> kilit(g_oynatma_kilit);
 	ses_kes_kilitli(h);
@@ -1854,6 +1868,7 @@ int velnosub_abi_audio_play(int, int64_t, int64_t) {
 	return -1;
 }
 int velnosub_abi_audio_state(int) { return 0; }
+int64_t velnosub_abi_audio_position(int) { return -1; }
 int velnosub_abi_audio_stop(int) { return 0; }
 #endif
 

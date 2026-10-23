@@ -147,6 +147,7 @@ extern "C" {
 	) -> c_int;
 	fn velnosub_abi_audio_play(h: c_int, d0: i64, adet: i64) -> c_int;
 	fn velnosub_abi_audio_state(h: c_int) -> c_int;
+	fn velnosub_abi_audio_position(h: c_int) -> i64;
 	fn velnosub_abi_audio_stop(h: c_int) -> c_int;
 	fn velnosub_abi_audio_close(h: c_int);
 }
@@ -527,6 +528,7 @@ pub struct AudioSection {
 	info: String,
 	ses_durum: String,
 	oynatma_denendi: bool,
+	konum: i64,
 }
 
 fn audio_peaks_cek(h: c_int, toplam: i64) -> Result<(Vec<i16>, Vec<i16>), String> {
@@ -2277,6 +2279,7 @@ impl GridApp {
 			info: bilgi,
 			ses_durum: "—".into(),
 			oynatma_denendi: false,
+			konum: 0,
 		});
 		self.note = format!("ses açıldı: {toplam} örnek");
 		Ok(())
@@ -2665,7 +2668,17 @@ impl GridApp {
 					2 => "hata",
 					_ => "bilinmeyen",
 				};
-				a.ses_durum = format!("durum {d} — {ad}");
+				if d == 0 || d == 1 {
+					a.konum = unsafe { velnosub_abi_audio_position(a.handle) };
+				}
+				a.ses_durum = if !kompakt && (d == 0 || d == 1) && a.konum >= 0 {
+					format!(
+						"durum {d} — {ad} — {} ms",
+						a.konum * 1000 / a.rate.max(1) as i64
+					)
+				} else {
+					format!("durum {d} — {ad}")
+				};
 			}
 			if !kompakt {
 				ui.label(RichText::new(&a.ses_durum).weak());
