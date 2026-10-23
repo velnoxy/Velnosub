@@ -116,7 +116,7 @@ phase_apk() {
       && BT="$BT" PF="$PF" PKGSRC="$DB" \
          ABISO="$B/tools/cross/libvelnosub-abi.so" \
          UISO="$REPO/velnosub-ui/target/aarch64-linux-android/release/libvelnosub_ui.so" \
-      && bash build-apk.sh
+         bash build-apk.sh
     )
     echo "APK: $(ls -l "$REPO/tools/cross/apk-ui"/velnosub-ui-*.apk | tail -2)"
 }
