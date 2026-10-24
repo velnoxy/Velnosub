@@ -126,6 +126,13 @@ extern "C" {
 		h: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
 	fn velnosub_abi_render_close(h: c_int) -> c_int;
+	// P8: typesetting — ASS koordinat boyu + yalnız seçili satır render'ı
+	fn velnosub_abi_script_size(
+		h: c_int, out_w: *mut c_int, out_h: *mut c_int,
+	) -> c_int;
+	fn velnosub_abi_render_line(
+		h: c_int, idx: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
+	) -> c_int;
 	fn velnosub_abi_audio_open(
 		path: *const c_char, rate: c_int, ch: c_int,
 	) -> c_int;

@@ -12,6 +12,7 @@
 
 #include "ass_dialogue.h"
 #include "ass_file.h"
+#include "ass_info.h"
 #include "ass_style.h"
 #include <ass/ass.h>
 #include <cstdio>
@@ -568,6 +569,29 @@ static void r_close(RCtx &r) {
 	r = RCtx{};
 }
 
+// ASS serileştirme: script info (PlayRes dahil), stiller ve istenirse yalnız
+// tek olay. Önizleme ile satır render'ı aynı başlığı kullanır; PlayRes yoksa
+// libass 384x288 varsayar (Aegisub GetResolution ile aynı).
+static std::string ass_seri(Ctx const& c, int sadece_idx) {
+	std::string ser = "[Script Info]\n";
+	for (auto const& info : c.file.Info)
+		ser += info.GetEntryData() + "\n";
+	if (c.file.GetScriptInfo("ScriptType").empty())
+		ser += "ScriptType: v4.00+\n";
+	ser += "\n[V4+ Styles]\n";
+	for (auto const& st : c.file.Styles)
+		ser += st.GetEntryData() + "\n";
+	ser += "\n[Events]\n";
+	int i = 0;
+	for (auto const& ev : c.file.Events) {
+		if (sadece_idx < 0 || i == sadece_idx)
+			ser += ev.GetEntryData() + "\n";
+		++i;
+	}
+	return ser;
+}
+
+
 int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
                              const char *aile_font) {
 	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
@@ -596,14 +620,9 @@ int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
 			::ass_add_font(r.lib, aile_font && *aile_font ? aile_font : "Default",
 			               fdata.data(), static_cast<int>(fdata.size()));
 		}
-		// bellekten seri: durum (düzenlemeler) birebir taşınır
+		// bellekten seri: durum (düzenlemeler) birebir taşınır; PlayRes dahil
 		Ctx &c = *g_ctx.at(h);
-		std::string ser = "[Script Info]\nScriptType: v4.00+\n\n[V4+ Styles]\n";
-		for (auto &st : c.file.Styles)
-			ser += st.GetEntryData() + "\n";
-		ser += "\n[Events]\n";
-		for (auto &ev : c.file.Events)
-			ser += ev.GetEntryData() + "\n";
+		std::string ser = ass_seri(c, -1);
 		r.track = ::ass_new_track(r.lib);
 		::ass_process_data(r.track, ser.data(), static_cast<int>(ser.size()));
 		if (r.track->n_events <= 0) {
@@ -627,12 +646,8 @@ int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
 	return -1;
 }
 
-// ms içinde kare render; RGBA sekizli (r,g,b,ALFA) yazım — dizgi alfa
-// (zemin 0); dönüş glyph etki pikseli (0 = boş kare, katı hata değil).
-// n == gen*yuk*4 ister.
-int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
-	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
-	RCtx &r = g_r.at(h);
+// Kare deposine dizgi alfa kompoziti yaz; glyph etki sayısını döndürür.
+static int kare_yaz(RCtx &r, ASS_Track *track, int ms, unsigned char *buf, int n) {
 	if (!buf) { set_err("boş kare depositi"); return -1; }
 	if (n != r.gen * r.yuk * 4) {
 		set_err("kare depositi boyu " + std::to_string(n) + " != "
@@ -640,7 +655,7 @@ int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
 		return -1;
 	}
 	int change = 0;
-	ASS_Image *imgs = ::ass_render_frame(r.ren, r.track, ms, &change);
+	ASS_Image *imgs = ::ass_render_frame(r.ren, track, ms, &change);
 	// P4.6 dilim 2: iç kare artık DİZGİ alfa tutar (0xAARRGGBB; zemin
 	// alfa 0) — egui video üstüne gerçek saydamlayış işlemiyle biner.
 	// over kompozit (dizgi alfa): out_a = sa + da*(255-sa)/255,
@@ -691,11 +706,68 @@ int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
 	return static_cast<int>(glyphs);
 }
 
+// ms içinde tüm olayları çiz; RGBA sekizli (r,g,b,ALFA), zemin alfa 0.
+int velnosub_abi_render_frame(int h, int ms, unsigned char *buf, int n) {
+	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
+	RCtx &r = g_r.at(h);
+	return kare_yaz(r, r.track, ms, buf, n);
+}
+
+// Yalnız idx olayını çiz — typesetting önizlemesi. Aynı renderer/font/ölçü
+// ve aynı başlık serileştirmesi kullanılır; tam kare önizlemesiyle hizalıdır.
+int velnosub_abi_render_line(int h, int idx, int ms, unsigned char *buf, int n) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
+	Ctx &c = *g_ctx.at(h);
+	RCtx &r = g_r.at(h);
+	if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+		set_err("satır dışında indeks: " + std::to_string(idx));
+		return -1;
+	}
+	if (ms < 0) { set_err("negatif zaman"); return -1; }
+	try {
+		std::string ser = ass_seri(c, idx);
+		ASS_Track *t = ::ass_new_track(r.lib);
+		if (!t) { set_err("ass_new_track bitti boş"); return -1; }
+		::ass_process_data(t, ser.data(), static_cast<int>(ser.size()));
+		if (t->n_events <= 0) {
+			::ass_free_track(t);
+			set_err("libass geçici olay listesi boş");
+			return -1;
+		}
+		int son = kare_yaz(r, t, ms, buf, n);
+		::ass_free_track(t);
+		return son;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 int velnosub_abi_render_close(int h) {
 	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
 	r_close(g_r.at(h));
 	g_r.erase(h);
 	return 0;
+}
+
+// ASS koordinat uzayı: PlayResX/Y; eksikse Aegisub/libass uyumlu
+// 384x288 (veya tek eksenden türetilen) varsayım. UI video yoksa 640x480
+// kullanabilir; render hattı bu boyutu izler.
+int velnosub_abi_script_size(int h, int *out_w, int *out_h) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!out_w || !out_h) { set_err("boş boyut çıktısı"); return -1; }
+	try {
+		Ctx &c = *g_ctx.at(h);
+		int w = 0, hh = 0;
+		c.file.GetResolution(w, hh);
+		*out_w = w;
+		*out_h = hh;
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
 }
 
 int velnosub_abi_style_of(int h, int idx, char *buf, int buflen) {
