@@ -9,6 +9,7 @@ pub mod abi;
 pub mod ass_tags;
 pub mod audio_timing;
 pub mod layout;
+pub mod visual_geom;
 
 use eframe::egui;
 use egui::ViewportBuilder;
