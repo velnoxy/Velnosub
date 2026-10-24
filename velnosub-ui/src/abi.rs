@@ -2838,7 +2838,7 @@ impl GridApp {
 
 		let genislik = ui.available_width().max(1.0);
 		let yuk = if kompakt {
-			36.0
+			24.0
 		} else if mobil {
 			104.0
 		} else {
@@ -2873,11 +2873,11 @@ impl GridApp {
 		// altında yakınlaştır ---
 		let mut g = ses_gorunum(a, genislik);
 		if rul_yanit.dragged() {
-			crate::audio_timing::kaydir(
-				&mut g,
-				rul_yanit.drag_delta().x,
-				a.toplam,
-			);
+			// `drag_delta()` sürükleme başından bu yana toplam deltadır;
+			// her karede tekrar uygulanırsa görünüm hızlanır. Karelik
+			// işaretçi deltasını kullan.
+			let dx = ui.input(|i| i.pointer.delta().x);
+			crate::audio_timing::kaydir(&mut g, dx, a.toplam);
 			ses_gorunum_uygula(a, g);
 		}
 		if rul_yanit.clicked() {
@@ -3195,9 +3195,15 @@ impl GridApp {
 					.color(egui::Color32::from_rgb(220, 120, 90)),
 			);
 		}
+		// Oynatma bu karede araç çubuğundan başladıysa yukarıdaki erken
+		// istek kaçırılır; kare sonunda da iste.
+		if a.oynatma_denendi {
+			ui.ctx()
+				.request_repaint_after(std::time::Duration::from_millis(33));
+		}
 	}
 
-	/// Kompakt Aegisub ses şeridi: tek satır + 36 pt dalga; durum etiketi yok.
+	/// Kompakt Aegisub ses şeridi: tek satır + 24 pt dalga; durum etiketi yok.
 	fn ses_kompakt_cubuk(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -4505,7 +4511,14 @@ impl GridApp {
 					self.grid_icerik(su, true);
 				}
 				Sekme::Video => self.video_icerik(su, true),
-				Sekme::Ses => self.ses_icerik(su, true, false),
+				Sekme::Ses => {
+					egui::ScrollArea::vertical()
+						.id_salt("mobil-ses")
+						.auto_shrink([false, false])
+						.show(su, |s| {
+							self.ses_icerik(s, true, false);
+						});
+				}
 				Sekme::Stil => self.stil_icerik(su, true),
 				Sekme::Form => self.form_icerik(su, true),
 				Sekme::Ayarlar => self.ayarlar_bolum(su),
@@ -5348,10 +5361,14 @@ impl eframe::App for GridApp {
 		}
 		if self.ses_win && self.audio.is_some() {
 			let mut acik = true;
+			let ekran = ui.max_rect().size();
 			egui::Window::new("Ses zamanlama")
 				.open(&mut acik)
 				.resizable(true)
-				.default_size(egui::vec2(900.0, 420.0))
+				.default_size(egui::vec2(
+					(ekran.x * 0.9).clamp(340.0, 1100.0),
+					(ekran.y * 0.85).clamp(260.0, 700.0),
+				))
 				.min_width(340.0)
 				.show(ui.ctx(), |p| {
 					self.ses_icerik(p, false, false);
