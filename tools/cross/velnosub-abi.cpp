@@ -29,6 +29,8 @@
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
+#include <algorithm>
+
 // P5.5: kutu-sesi — ffmpeg linki STATİK .a hattıdır (build-apk.sh 8. adım
 // sembol-kapanış denetimi build-time yakalar). DİKKAT: vendored ffmpeg
 // başlıkları extern "C" sarmalı İÇERMİYOR — sarmayı biz açıyoruz; yoksa
@@ -591,6 +593,66 @@ static std::string ass_seri(Ctx const& c, int sadece_idx) {
 	return ser;
 }
 
+static int kare_yaz(RCtx &r, ASS_Track *track, int ms,
+                    unsigned char *buf, int n);
+
+// Geçici typeset önizlemesi: yalnız bir olay, metin alanı değiştirilmiş.
+// `GetEntryData` öneki 9. virgülden sonra biter (Layer..Effect); metin
+// alanındaki virgüller korunur.
+static std::string satir_metin_verisi(AssDialogue const& ev, std::string metin) {
+	std::string s = ev.GetEntryData();
+	size_t p = 0;
+	int virgul = 0;
+	for (size_t i = 0; i < s.size(); ++i) {
+		if (s[i] == ',' && ++virgul == 9) {
+			p = i + 1;
+			break;
+		}
+	}
+	metin.erase(std::remove(metin.begin(), metin.end(), '\n'), metin.end());
+	metin.erase(std::remove(metin.begin(), metin.end(), '\r'), metin.end());
+	if (!p) return s;
+	return s.substr(0, p) + metin;
+}
+
+static std::string ass_seri_metin(Ctx const& c, int idx, std::string const& metin) {
+	std::string ser = "[Script Info]\n";
+	for (auto const& info : c.file.Info)
+		ser += info.GetEntryData() + "\n";
+	if (c.file.GetScriptInfo("ScriptType").empty())
+		ser += "ScriptType: v4.00+\n";
+	ser += "\n[V4+ Styles]\n";
+	for (auto const& st : c.file.Styles)
+		ser += st.GetEntryData() + "\n";
+	ser += "\n[Events]\n";
+	int i = 0;
+	for (auto const& ev : c.file.Events) {
+		if (i == idx)
+			ser += satir_metin_verisi(ev, metin) + "\n";
+		++i;
+	}
+	return ser;
+}
+
+// Hazır olay serisini geçici bir libass track'ine verip kareye yaz.
+static int seri_kare_yaz(RCtx &r, std::string const& ser, int ms,
+                         unsigned char *buf, int n) {
+	ASS_Track *t = ::ass_new_track(r.lib);
+	if (!t) {
+		set_err("ass_new_track bitti boş");
+		return -1;
+	}
+	::ass_process_data(t, ser.data(), static_cast<int>(ser.size()));
+	if (t->n_events <= 0) {
+		::ass_free_track(t);
+		set_err("libass geçici olay listesi boş");
+		return -1;
+	}
+	int son = kare_yaz(r, t, ms, buf, n);
+	::ass_free_track(t);
+	return son;
+}
+
 
 int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
                              const char *aile_font) {
@@ -726,18 +788,30 @@ int velnosub_abi_render_line(int h, int idx, int ms, unsigned char *buf, int n) 
 	}
 	if (ms < 0) { set_err("negatif zaman"); return -1; }
 	try {
-		std::string ser = ass_seri(c, idx);
-		ASS_Track *t = ::ass_new_track(r.lib);
-		if (!t) { set_err("ass_new_track bitti boş"); return -1; }
-		::ass_process_data(t, ser.data(), static_cast<int>(ser.size()));
-		if (t->n_events <= 0) {
-			::ass_free_track(t);
-			set_err("libass geçici olay listesi boş");
-			return -1;
-		}
-		int son = kare_yaz(r, t, ms, buf, n);
-		::ass_free_track(t);
-		return son;
+		return seri_kare_yaz(r, ass_seri(c, idx), ms, buf, n);
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+// Metin alanı geçici olarak değiştirilmiş tek olayı çiz — clip/vektör/XY
+// önizlemesi. Kalıcı dosya metni değişmez; commit UI'da bırakınca yapılır.
+int velnosub_abi_render_line_metin(int h, int idx, const char *metin, int ms,
+                                   unsigned char *buf, int n) {
+	if (!g_ctx.count(h)) { set_err("tanımsız tutamaç"); return -1; }
+	if (!g_r.count(h)) { set_err("tanımsız render tutamaç"); return -1; }
+	Ctx &c = *g_ctx.at(h);
+	RCtx &r = g_r.at(h);
+	if (idx < 0 || idx >= static_cast<int>(c.file.Events.size())) {
+		set_err("satır dışında indeks: " + std::to_string(idx));
+		return -1;
+	}
+	if (ms < 0) { set_err("negatif zaman"); return -1; }
+	if (!metin) { set_err("boş geçici metin"); return -1; }
+	try {
+		std::string ser = ass_seri_metin(c, idx, metin);
+		return seri_kare_yaz(r, ser, ms, buf, n);
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }

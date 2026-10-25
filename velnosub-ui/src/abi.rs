@@ -134,6 +134,10 @@ extern "C" {
 	fn velnosub_abi_render_line(
 		h: c_int, idx: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
+	fn velnosub_abi_render_line_metin(
+		h: c_int, idx: c_int, metin: *const c_char, ms: c_int,
+		buf: *mut u8, buflen: c_int,
+	) -> c_int;
 	fn velnosub_abi_audio_open(
 		path: *const c_char, rate: c_int, ch: c_int,
 	) -> c_int;
@@ -220,6 +224,34 @@ fn edit_line(h: c_int, idx: usize, text: &str) -> Result<(), String> {
 		Ok(())
 	} else {
 		Err(last_error())
+	}
+}
+
+/// Geçici metinle tek satır render'ı (clip/vektör/XY önizlemesi).
+fn satir_metin_cek(
+	h: c_int,
+	idx: usize,
+	metin: &str,
+	ms: i32,
+	buf: &mut [u8],
+) -> Result<i32, String> {
+	let c = CString::new(metin)
+		.map_err(|e| format!("geçici metin kodlanamadı: {e}"))?;
+	let n = i32::try_from(buf.len()).map_err(|_| "kare deposu çok büyük")?;
+	let rc = unsafe {
+		velnosub_abi_render_line_metin(
+			h,
+			idx as c_int,
+			c.as_ptr(),
+			ms,
+			buf.as_mut_ptr(),
+			n,
+		)
+	};
+	if rc < 0 {
+		Err(last_error())
+	} else {
+		Ok(rc)
 	}
 }
 
@@ -536,6 +568,9 @@ enum Arac {
 	Tasi,
 	Olcek,
 	ZDondur,
+	Clip,
+	Vektor,
+	XY,
 }
 
 struct Surukleme {
@@ -568,6 +603,19 @@ struct Typeset {
 	oniz_ofs: egui::Vec2,
 	oniz_olcek: f32,
 	oniz_aci: f32,
+	// clip / vektör / XY geçici önizleme metni
+	gecici: Option<String>,
+	clip: Option<(f64, f64, f64, f64)>,
+	clip_hazir: bool,
+	iclip: bool,
+	clip_surukle: Option<usize>,
+	vektor: Option<Vec<(f64, f64)>>,
+	vektor_hazir: bool,
+	vektor_surukle: Option<usize>,
+	frx: f64,
+	fry: f64,
+	xy_hazir: bool,
+	xy_surukle: Option<(egui::Pos2, f64, f64)>,
 	hata: Option<String>,
 }
 
@@ -589,6 +637,18 @@ impl Typeset {
 			oniz_ofs: egui::Vec2::ZERO,
 			oniz_olcek: 1.0,
 			oniz_aci: 0.0,
+			gecici: None,
+			clip: None,
+			clip_hazir: false,
+			iclip: false,
+			clip_surukle: None,
+			vektor: None,
+			vektor_hazir: false,
+			vektor_surukle: None,
+			frx: 0.0,
+			fry: 0.0,
+			xy_hazir: false,
+			xy_surukle: None,
 			hata: None,
 		}
 	}
@@ -598,6 +658,19 @@ impl Typeset {
 		self.oniz_ofs = egui::Vec2::ZERO;
 		self.oniz_olcek = 1.0;
 		self.oniz_aci = 0.0;
+		self.gecici = None;
+	}
+
+	fn arac_sec(&mut self, a: Arac) {
+		self.arac = a;
+		self.clip_hazir = false;
+		self.vektor_hazir = false;
+		self.xy_hazir = false;
+		self.clip_surukle = None;
+		self.vektor_surukle = None;
+		self.xy_surukle = None;
+		self.hata = None;
+		self.oniz_sifirla();
 	}
 }
 
@@ -682,6 +755,90 @@ fn dondur_tutamac(bb: egui::Rect, aci: f32) -> egui::Pos2 {
 	let up = egui::vec2(0.0, -30.0);
 	let (s, c) = aci.sin_cos();
 	tc + egui::vec2(up.x * c - up.y * s, up.x * s + up.y * c)
+}
+
+/// Mevcut dikdörtgen clip'i oku. Vektör/bozuk clip `Err` döner.
+fn clip_dik_oku(metin: &str) -> Result<Option<((f64, f64, f64, f64), bool)>, ()> {
+	let (ad, ham) = if let Some(v) = ass_tags::etiket_al(metin, "clip") {
+		("clip", v)
+	} else if let Some(v) = ass_tags::etiket_al(metin, "iclip") {
+		("iclip", v)
+	} else {
+		return Ok(None);
+	};
+	if ass_tags::vektor_noktalari(metin, ad).is_some() {
+		return Err(());
+	}
+	let s = sayilar_al(&ham);
+	if s.len() != 4 {
+		return Err(());
+	}
+	let x1 = s[0].min(s[2]);
+	let y1 = s[1].min(s[3]);
+	let x2 = s[0].max(s[2]);
+	let y2 = s[1].max(s[3]);
+	Ok(Some(((x1, y1, x2, y2), ad == "iclip")))
+}
+
+/// Dikdörtgen clip yaz; eski clip/iclip etiketlerini değiştirir.
+fn clip_dik_yaz(metin: &str, r: (f64, f64, f64, f64), iclip: bool) -> String {
+	let m = ass_tags::etiket_sil(metin, "clip");
+	let m = ass_tags::etiket_sil(&m, "iclip");
+	ass_tags::etiket_yaz(
+		&m,
+		if iclip { "iclip" } else { "clip" },
+		&format!("({:.1},{:.1},{:.1},{:.1})", r.0, r.1, r.2, r.3),
+	)
+}
+
+/// Vektör clip yaz; eski clip/iclip etiketlerini değiştirir.
+fn clip_vektor_yaz(
+	metin: &str,
+	noktalar: &[(f64, f64)],
+	iclip: bool,
+) -> String {
+	let m = ass_tags::etiket_sil(metin, "clip");
+	let m = ass_tags::etiket_sil(&m, "iclip");
+	ass_tags::vektor_yaz(
+		&m,
+		if iclip { "iclip" } else { "clip" },
+		noktalar,
+		true,
+	)
+}
+
+/// Mevcut vektör clip noktalarını oku.
+fn clip_vektor_oku(metin: &str) -> Option<(Vec<(f64, f64)>, bool)> {
+	for ad in ["clip", "iclip"] {
+		if let Some(mut p) = ass_tags::vektor_noktalari(metin, ad) {
+			// `vektor_yaz(kapali=true)` ilk noktaya dönen kapanışı ekler;
+			// düzenleme listesinde bu yinelenen noktayı göstermeyiz.
+			if p.len() > 1 && p.first() == p.last() {
+				p.pop();
+			}
+			if !p.is_empty() {
+				return Some((p, ad == "iclip"));
+			}
+		}
+	}
+	None
+}
+
+/// XY perspektif etiketlerini yaz; mevcut `\frx/\fry` yerinde güncellenir.
+fn xy_yaz(metin: &str, frx: f64, fry: f64) -> String {
+	let m = ass_tags::etiket_yaz(metin, "frx", &format!("{:.1}", aci_derece(frx)));
+	ass_tags::etiket_yaz(&m, "fry", &format!("{:.1}", aci_derece(fry)))
+}
+
+/// Noktanın doğru parçasına ekran mesafesi (nokta ekleme isabeti).
+fn kenar_mesafe(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+	let ab = b - a;
+	let l2 = ab.length_sq();
+	if l2 <= 1e-6 {
+		return (p - a).length();
+	}
+	let t = ((p - a).dot(ab) / l2).clamp(0.0, 1.0);
+	(p - (a + ab * t)).length()
 }
 
 
@@ -2752,12 +2909,13 @@ impl GridApp {
 		let aktif = self.typeset.is_some();
 		let arac = self.typeset.as_ref().map(|t| t.arac);
 		let sec = self.secili.unwrap();
+		let mut ters_degis = false;
 		ui.horizontal_wrapped(|su| {
 			if !aktif {
 				let b = su
 					.add(egui::Button::new(format!("{} Typeset", ikon::TUNE)))
 					.on_hover_text(
-						"seçili satırı video üzerinde taşı, ölçekle veya Z döndür",
+						"seçili satırı video üzerinde taşı, ölçekle, döndür, clip/vektör/XY düzenle",
 					);
 				if b.clicked() {
 					self.typeset_basla(su.ctx(), sec);
@@ -2768,13 +2926,24 @@ impl GridApp {
 					(Arac::Tasi, "Taşı"),
 					(Arac::Olcek, "Ölçek"),
 					(Arac::ZDondur, "Z Döndür"),
+					(Arac::Clip, "Clip"),
+					(Arac::Vektor, "Vektör"),
+					(Arac::XY, "XY"),
 				] {
 					if su.selectable_label(arac == Some(a), ad).clicked() {
 						if let Some(t) = self.typeset.as_mut() {
-							t.arac = a;
-							t.hata = None;
-							t.oniz_sifirla();
+							t.arac_sec(a);
 						}
+					}
+				}
+				if matches!(arac, Some(Arac::Clip | Arac::Vektor)) {
+					let ic = self
+						.typeset
+						.as_ref()
+						.map(|t| t.iclip)
+						.unwrap_or(false);
+					if su.selectable_label(ic, "ters (iclip)").clicked() {
+						ters_degis = true;
 					}
 				}
 				if su.button(format!("{} kapat", ikon::CLOSE)).clicked() {
@@ -2782,6 +2951,9 @@ impl GridApp {
 				}
 			}
 		});
+		if ters_degis {
+			self.typeset_iclip_degistir(sec);
+		}
 		ui.add_space(2.0);
 	}
 
@@ -2881,8 +3053,58 @@ impl GridApp {
 		)
 	}
 
-	/// Seçili satırı video üzerine çiz; sürüklemede egui önizlemesi,
-	/// bırakınca tek `edit_line` commit'i.
+	/// `\clip` ↔ `\iclip` anahtarını mevcut geometriyle değiştir.
+	fn typeset_iclip_degistir(&mut self, idx: usize) {
+		let Some(t) = self.typeset.as_ref() else {
+			return;
+		};
+		let metin = t.metin.clone();
+		let arac = t.arac;
+		let yeni_ic = !t.iclip;
+		if ass_tags::etiket_al(&metin, "clip").is_none()
+			&& ass_tags::etiket_al(&metin, "iclip").is_none()
+		{
+			self.note = "ters: önce bir clip çiz".into();
+			return;
+		}
+		if arac == Arac::Clip && t.clip.is_none() {
+			self.note =
+				"ters: mevcut clip vektör; önce Vektör aracını kullan".into();
+			return;
+		}
+		if arac == Arac::Vektor && t.vektor.is_none() {
+			self.note = "ters: vektör noktaları okunamadı".into();
+			return;
+		}
+		let yeni = if arac == Arac::Vektor {
+			let p = t.vektor.clone().unwrap_or_else(|| {
+				vec![
+					(0.0, 0.0),
+					(t.script_w as f64, 0.0),
+					(t.script_w as f64, t.script_h as f64),
+					(0.0, t.script_h as f64),
+				]
+			});
+			clip_vektor_yaz(&metin, &p, yeni_ic)
+		} else {
+			let r = t.clip.unwrap_or((
+				0.0,
+				0.0,
+				t.script_w as f64,
+				t.script_h as f64,
+			));
+			clip_dik_yaz(&metin, r, yeni_ic)
+		};
+		if self.typeset_uygula(idx, yeni) {
+			if let Some(t) = self.typeset.as_mut() {
+				t.iclip = yeni_ic;
+			}
+		}
+	}
+
+
+	/// Seçili satırı video üzerine çiz; sürüklemede geçici metin/egui
+	/// önizlemesi, bırakınca tek `edit_line` commit'i.
 	fn typeset_cek(
 		&mut self,
 		ui: &mut egui::Ui,
@@ -2923,7 +3145,21 @@ impl GridApp {
 			let Some(t) = self.typeset.as_mut() else {
 				return;
 			};
+			if t.metin != metin {
+				t.gecici = None;
+				t.surukleme = None;
+				t.clip_surukle = None;
+				t.vektor_surukle = None;
+				t.xy_surukle = None;
+				t.clip_hazir = false;
+				t.vektor_hazir = false;
+				t.xy_hazir = false;
+			}
 			t.metin = metin.clone();
+			let render_metin = t
+				.gecici
+				.clone()
+				.unwrap_or_else(|| metin.clone());
 			if t.tampon.len() != n {
 				t.tampon = vec![0u8; n];
 				t.son_satir = usize::MAX;
@@ -2934,38 +3170,39 @@ impl GridApp {
 			}
 			if t.son_satir != sec
 				|| t.son_ms != ms
-				|| t.son_metin != metin
+				|| t.son_metin != render_metin
 				|| t.dok.is_none()
 			{
-				let rc = unsafe {
-					velnosub_abi_render_line(
-						h,
-						sec as c_int,
-						ms,
-						t.tampon.as_mut_ptr(),
-						n as c_int,
-					)
-				};
-				if rc < 0 {
-					t.hata = Some(last_error());
-					t.dok = None;
-					t.bbox = None;
-				} else {
-					let img = egui::ColorImage::from_rgba_unmultiplied(
-						[gen, yuk],
-						&t.tampon,
-					);
-					let ad = format!("vtypeset_{}_{}_{}", h, sec, ms);
-					t.dok = Some(ui.ctx().load_texture(
-						ad,
-						img,
-						egui::TextureOptions::LINEAR,
-					));
-					t.bbox = alfa_bbox(&t.tampon, gen, yuk);
-					t.son_satir = sec;
-					t.son_ms = ms;
-					t.son_metin = metin.clone();
-					t.hata = None;
+				match satir_metin_cek(
+					h,
+					sec,
+					&render_metin,
+					ms,
+					&mut t.tampon,
+				) {
+					Err(e) => {
+						t.hata = Some(e);
+						t.dok = None;
+						t.bbox = None;
+					}
+					Ok(_) => {
+						let img = egui::ColorImage::from_rgba_unmultiplied(
+							[gen, yuk],
+							&t.tampon,
+						);
+						let ad =
+							format!("vtypeset_{}_{}_{}", h, sec, ms);
+						t.dok = Some(ui.ctx().load_texture(
+							ad,
+							img,
+							egui::TextureOptions::LINEAR,
+						));
+						t.bbox = alfa_bbox(&t.tampon, gen, yuk);
+						t.son_satir = sec;
+						t.son_ms = ms;
+						t.son_metin = render_metin;
+						t.hata = None;
+					}
 				}
 			}
 			if t.arac == Arac::Tasi
@@ -2975,13 +3212,28 @@ impl GridApp {
 					"\\move satırı taşınamaz; önce \\move kaldırılmalı".into(),
 				);
 			}
-			let Some(bbpx) = t.bbox else {
-				let hata = t
-					.hata
-					.clone()
-					.unwrap_or_else(|| "bu karede satır görünmüyor".into());
-				ui.label(RichText::new(format!("typeset: {hata}")).weak());
-				return;
+			let bbpx = match t.bbox {
+				Some(b) => b,
+				None => {
+					if matches!(
+						t.arac,
+						Arac::Clip | Arac::Vektor | Arac::XY
+					) {
+						egui::Rect::from_min_max(
+							egui::pos2(0.0, 0.0),
+							egui::pos2(gen as f32, yuk as f32),
+						)
+					} else {
+						let hata = t.hata.clone().unwrap_or_else(|| {
+							"bu karede satır görünmüyor".into()
+						});
+						ui.label(
+							RichText::new(format!("typeset: {hata}"))
+								.weak(),
+						);
+						return;
+					}
+				}
 			};
 			let e = crate::visual_geom::esleme_doldur(
 				t.script_w,
@@ -3032,6 +3284,103 @@ impl GridApp {
 				bb.right_bottom(),
 				bb.left_bottom(),
 			];
+			if t.arac == Arac::Clip && !t.clip_hazir {
+				t.clip_hazir = true;
+				match clip_dik_oku(&metin) {
+					Ok(Some((r, ic))) => {
+						t.clip = Some(r);
+						t.iclip = ic;
+					}
+					Ok(None) => {
+						t.clip = Some((
+							0.0,
+							0.0,
+							t.script_w as f64,
+							t.script_h as f64,
+						));
+						t.iclip = false;
+					}
+					Err(()) => {
+						t.clip = None;
+						t.hata = Some(
+							"mevcut clip vektör/bozuk; Vektör aracını kullan"
+								.into(),
+						);
+					}
+				}
+			}
+			if t.arac == Arac::Vektor && !t.vektor_hazir {
+				t.vektor_hazir = true;
+				if let Some((p, ic)) = clip_vektor_oku(&metin) {
+					t.vektor = Some(p);
+					t.iclip = ic;
+				} else {
+					match clip_dik_oku(&metin) {
+						Ok(Some((r, ic))) => {
+							t.vektor = Some(vec![
+								(r.0, r.1),
+								(r.2, r.1),
+								(r.2, r.3),
+								(r.0, r.3),
+							]);
+							t.iclip = ic;
+						}
+						Ok(None) => {
+							t.vektor = Some(vec![
+								(0.0, 0.0),
+								(t.script_w as f64, 0.0),
+								(t.script_w as f64, t.script_h as f64),
+								(0.0, t.script_h as f64),
+							]);
+							t.iclip = false;
+						}
+						Err(()) => {
+							t.vektor = None;
+							t.hata = Some(
+								"bozuk clip; vektör noktaları okunamadı"
+									.into(),
+							);
+						}
+					}
+				}
+			}
+			if t.arac == Arac::XY && !t.xy_hazir {
+				t.xy_hazir = true;
+				t.frx = ass_tags::etiket_al(&metin, "frx")
+					.and_then(|v| sayilar_al(&v).first().copied())
+					.unwrap_or(0.0);
+				t.fry = ass_tags::etiket_al(&metin, "fry")
+					.and_then(|v| sayilar_al(&v).first().copied())
+					.unwrap_or(0.0);
+			}
+			if t.arac == Arac::Clip && t.clip.is_none() {
+				t.hata = Some(
+					"mevcut clip vektör/bozuk; Vektör aracını kullan"
+						.into(),
+				);
+			}
+			if t.arac == Arac::Vektor && t.vektor.is_none() {
+				t.hata =
+					Some("bozuk clip; vektör noktaları okunamadı".into());
+			}
+			let clip_kose = t.clip.map(|r| {
+				let k = [
+					crate::visual_geom::ass_to_ekran(r.0, r.1, &e),
+					crate::visual_geom::ass_to_ekran(r.2, r.1, &e),
+					crate::visual_geom::ass_to_ekran(r.2, r.3, &e),
+					crate::visual_geom::ass_to_ekran(r.0, r.3, &e),
+				];
+				k.map(|(x, y)| egui::pos2(x, y))
+			});
+			let vektor_ekran: Option<Vec<egui::Pos2>> = t.vektor.as_ref().map(|p| {
+				p.iter()
+					.map(|(x, y)| {
+						let (sx, sy) =
+							crate::visual_geom::ass_to_ekran(*x, *y, &e);
+						egui::pos2(sx, sy)
+					})
+					.collect()
+			});
 			let resp = ui.interact(
 				dik,
 				ui.scope_id().with(("typeset", sec)),
@@ -3088,6 +3437,40 @@ impl GridApp {
 								basla = true;
 							}
 						}
+						Arac::Clip => {
+							if let Some(kose) = clip_kose {
+								for (i, c) in kose.iter().enumerate() {
+									if crate::visual_geom::tutamac(
+										(p.x, p.y),
+										(c.x, c.y),
+										24.0,
+									) {
+										t.clip_surukle = Some(i);
+										break;
+									}
+								}
+							}
+						}
+						Arac::Vektor => {
+							if let Some(noktalar) = &vektor_ekran {
+								for (i, c) in noktalar.iter().enumerate() {
+									if crate::visual_geom::tutamac(
+										(p.x, p.y),
+										(c.x, c.y),
+										20.0,
+									) {
+										t.vektor_surukle = Some(i);
+										break;
+									}
+								}
+							}
+						}
+						Arac::XY => {
+							if bb.expand(8.0).contains(p) {
+								t.xy_surukle =
+									Some((p, t.frx, t.fry));
+							}
+						}
 					}
 					if basla {
 						let bas_pos = pos_ass.unwrap_or_else(|| {
@@ -3110,33 +3493,110 @@ impl GridApp {
 				}
 			}
 			if resp.dragged() {
-				if let (Some(p), Some(s)) = (p, t.surukleme.as_ref()) {
+				if let Some(p) = p {
+					if let Some(s) = t.surukleme.as_ref() {
+						match t.arac {
+							Arac::Tasi => {
+								t.oniz_ofs = p - s.bas_pointer;
+							}
+							Arac::Olcek => {
+								let d0 = (s.bas_pointer - s.pivot).length();
+								if d0 > 4.0 {
+									let d = (p - s.pivot).length();
+									let oran = (d / d0).clamp(0.05, 20.0);
+									let yeni =
+										(s.bas_fscx * oran as f64).max(10.0);
+									t.oniz_olcek =
+										(yeni / s.bas_fscx.max(1.0)) as f32;
+								}
+							}
+							Arac::ZDondur => {
+								let v0 = s.bas_pointer - s.pivot;
+								let v1 = p - s.pivot;
+								let mut d =
+									v1.y.atan2(v1.x) - v0.y.atan2(v0.x);
+								while d > std::f32::consts::PI {
+									d -= std::f32::consts::TAU;
+								}
+								while d < -std::f32::consts::PI {
+									d += std::f32::consts::TAU;
+								}
+								t.oniz_aci = d;
+							}
+							_ => {}
+						}
+					}
 					match t.arac {
-						Arac::Tasi => {
-							t.oniz_ofs = p - s.bas_pointer;
-						}
-						Arac::Olcek => {
-							let d0 = (s.bas_pointer - s.pivot).length();
-							if d0 > 4.0 {
-								let d = (p - s.pivot).length();
-								let oran = (d / d0).clamp(0.05, 20.0);
-								let yeni = (s.bas_fscx * oran as f64).max(10.0);
-								t.oniz_olcek =
-									(yeni / s.bas_fscx.max(1.0)) as f32;
+						Arac::Clip => {
+							if let (Some(i), Some(mut r)) =
+								(t.clip_surukle, t.clip)
+							{
+								let (ax, ay) =
+									crate::visual_geom::ekran_to_ass(
+										p.x, p.y, &e,
+									);
+								match i {
+									0 => {
+										r.0 = ax;
+										r.1 = ay;
+									}
+									1 => {
+										r.2 = ax;
+										r.1 = ay;
+									}
+									2 => {
+										r.2 = ax;
+										r.3 = ay;
+									}
+									_ => {
+										r.0 = ax;
+										r.3 = ay;
+									}
+								}
+								let x1 = r.0.min(r.2);
+								let y1 = r.1.min(r.3);
+								let x2 = r.0.max(r.2);
+								let y2 = r.1.max(r.3);
+								let r = (x1, y1, x2, y2);
+								t.clip = Some(r);
+								t.gecici =
+									Some(clip_dik_yaz(&metin, r, t.iclip));
 							}
 						}
-						Arac::ZDondur => {
-							let v0 = s.bas_pointer - s.pivot;
-							let v1 = p - s.pivot;
-							let mut d = v1.y.atan2(v1.x) - v0.y.atan2(v0.x);
-							while d > std::f32::consts::PI {
-								d -= std::f32::consts::TAU;
+						Arac::Vektor => {
+							if let (Some(i), Some(mut pts)) =
+								(t.vektor_surukle, t.vektor.clone())
+							{
+								if i < pts.len() {
+									let (ax, ay) =
+										crate::visual_geom::ekran_to_ass(
+											p.x, p.y, &e,
+										);
+									pts[i] = (
+										ax.clamp(0.0, t.script_w as f64),
+										ay.clamp(0.0, t.script_h as f64),
+									);
+									t.vektor = Some(pts.clone());
+									t.gecici = Some(clip_vektor_yaz(
+										&metin,
+										&pts,
+										t.iclip,
+									));
+								}
 							}
-							while d < -std::f32::consts::PI {
-								d += std::f32::consts::TAU;
-							}
-							t.oniz_aci = d;
 						}
+						Arac::XY => {
+							if let Some((bas, fx, fy)) = t.xy_surukle {
+								let dx = (p.x - bas.x) as f64;
+								let dy = (p.y - bas.y) as f64;
+								t.fry = aci_derece(fy + dx * 0.5);
+								t.frx = aci_derece(fx - dy * 0.5);
+								t.gecici = Some(xy_yaz(
+									&metin, t.frx, t.fry,
+								));
+							}
+						}
+						_ => {}
 					}
 				}
 			}
@@ -3200,6 +3660,7 @@ impl GridApp {
 								&format!("{a:.1}"),
 							))
 						}
+						_ => None,
 					};
 					if yeni.is_some() {
 						out = yeni;
@@ -3207,6 +3668,100 @@ impl GridApp {
 					t.oniz_ofs = egui::Vec2::ZERO;
 					t.oniz_olcek = 1.0;
 					t.oniz_aci = 0.0;
+				}
+				if t.clip_surukle.take().is_some() {
+					if let Some(y) = t.gecici.clone() {
+						out = Some(y);
+					}
+				}
+				if t.vektor_surukle.take().is_some() {
+					if let Some(y) = t.gecici.clone() {
+						out = Some(y);
+					}
+				}
+				if t.xy_surukle.take().is_some() {
+					if let Some(y) = t.gecici.clone() {
+						out = Some(y);
+					}
+				}
+			}
+			// Vektör: kenara tıkla → nokta ekle; uzun bas/sağ tık → nokta sil.
+			if t.arac == Arac::Vektor {
+				if let Some(p) = p {
+					if let Some(ekran) = t.vektor.as_ref().map(|pts| {
+						pts.iter()
+							.map(|(x, y)| {
+								let (sx, sy) =
+									crate::visual_geom::ass_to_ekran(*x, *y, &e);
+								egui::pos2(sx, sy)
+							})
+							.collect::<Vec<_>>()
+					}) {
+						let yakin = ekran.iter().position(|c| {
+							crate::visual_geom::tutamac(
+								(p.x, p.y),
+								(c.x, c.y),
+								20.0,
+							)
+						});
+						if resp.long_touched() || resp.secondary_clicked() {
+							if let Some(i) = yakin {
+								if let Some(mut pts) = t.vektor.clone() {
+									if pts.len() > 3 {
+										pts.remove(i);
+										t.vektor_surukle = None;
+										t.vektor = Some(pts.clone());
+										out = Some(clip_vektor_yaz(
+											&metin,
+											&pts,
+											t.iclip,
+										));
+									}
+								}
+							}
+						} else if resp.clicked() && yakin.is_none() {
+							if ekran.len() >= 2 {
+								let mut en = (0usize, f32::MAX);
+								for i in 0..ekran.len() {
+									let d = kenar_mesafe(
+										p,
+										ekran[i],
+										ekran[(i + 1) % ekran.len()],
+									);
+									if d < en.1 {
+										en = (i, d);
+									}
+								}
+								if en.1 <= 14.0 {
+									if let Some(mut pts) = t.vektor.clone() {
+										let (ax, ay) =
+											crate::visual_geom::ekran_to_ass(
+												p.x, p.y, &e,
+											);
+										pts.insert(
+											en.0 + 1,
+											(
+												ax.clamp(
+													0.0,
+													t.script_w as f64,
+												),
+												ay.clamp(
+													0.0,
+													t.script_h as f64,
+												),
+											),
+										);
+										t.vektor = Some(pts.clone());
+										out = Some(clip_vektor_yaz(
+											&metin,
+											&pts,
+											t.iclip,
+										));
+									}
+								}
+							}
+						}
+					}
 				}
 			}
 			// Önizleme dokusu ve tutamaçlar.
@@ -3241,56 +3796,189 @@ impl GridApp {
 				mesh.add_triangle(taban, taban + 2, taban + 3);
 				ciz.add(egui::Shape::mesh(mesh));
 			}
-			let kose: Vec<egui::Pos2> = [
-				bb.left_top(),
-				bb.right_top(),
-				bb.right_bottom(),
-				bb.left_bottom(),
-			]
-			.into_iter()
-			.map(pv)
-			.collect();
 			let sari = egui::Color32::from_rgb(255, 210, 70);
-			for i in 0..4 {
-				ciz.line_segment(
-					[kose[i], kose[(i + 1) % 4]],
-					egui::Stroke::new(1.5, sari),
-				);
-			}
 			match t.arac {
-				Arac::Tasi => {
-					ciz.circle_filled(pivot + ofs, 3.0, sari);
-				}
-				Arac::Olcek => {
-					for c in &kose {
-						ciz.circle_filled(*c, 6.0, sari);
-						ciz.circle_stroke(
-							*c,
-							6.0,
-							egui::Stroke::new(1.0, egui::Color32::BLACK),
+				Arac::Tasi | Arac::Olcek | Arac::ZDondur => {
+					let kose: Vec<egui::Pos2> = [
+						bb.left_top(),
+						bb.right_top(),
+						bb.right_bottom(),
+						bb.left_bottom(),
+					]
+					.into_iter()
+					.map(pv)
+					.collect();
+					for i in 0..4 {
+						ciz.line_segment(
+							[kose[i], kose[(i + 1) % 4]],
+							egui::Stroke::new(1.5, sari),
 						);
 					}
+					match t.arac {
+						Arac::Tasi => {
+							ciz.circle_filled(pivot + ofs, 3.0, sari);
+						}
+						Arac::Olcek => {
+							for c in &kose {
+								ciz.circle_filled(*c, 6.0, sari);
+								ciz.circle_stroke(
+									*c,
+									6.0,
+									egui::Stroke::new(
+										1.0,
+										egui::Color32::BLACK,
+									),
+								);
+							}
+						}
+						_ => {
+							let tc = pv(egui::pos2(
+								bb.center().x,
+								bb.top(),
+							));
+							let up = egui::vec2(0.0, -30.0);
+							let (s, c) = aci.sin_cos();
+							let u = egui::vec2(
+								up.x * c - up.y * s,
+								up.x * s + up.y * c,
+							) * olcek;
+							let hnd = tc + u;
+							ciz.line_segment(
+								[tc, hnd],
+								egui::Stroke::new(1.5, sari),
+							);
+							ciz.circle_filled(hnd, 6.0, sari);
+							ciz.circle_stroke(
+								hnd,
+								6.0,
+								egui::Stroke::new(
+									1.0,
+									egui::Color32::BLACK,
+								),
+							);
+							ciz.circle_filled(pivot + ofs, 3.0, sari);
+						}
+					}
 				}
-				Arac::ZDondur => {
-					let tc = pv(egui::pos2(bb.center().x, bb.top()));
-					let up = egui::vec2(0.0, -30.0);
-					let (s, c) = aci.sin_cos();
-					let u = egui::vec2(
-						up.x * c - up.y * s,
-						up.x * s + up.y * c,
-					) * olcek;
-					let hnd = tc + u;
-					ciz.line_segment(
-						[tc, hnd],
-						egui::Stroke::new(1.5, sari),
+				Arac::Clip => {
+					if let Some(r) = t.clip {
+						let renk = if t.iclip {
+							egui::Color32::from_rgb(255, 150, 60)
+						} else {
+							sari
+						};
+						let k = [
+							crate::visual_geom::ass_to_ekran(r.0, r.1, &e),
+							crate::visual_geom::ass_to_ekran(r.2, r.1, &e),
+							crate::visual_geom::ass_to_ekran(r.2, r.3, &e),
+							crate::visual_geom::ass_to_ekran(r.0, r.3, &e),
+						]
+						.map(|(x, y)| egui::pos2(x, y));
+						let dolgu = egui::Color32::from_rgba_unmultiplied(
+							renk.r(),
+							renk.g(),
+							renk.b(),
+							20,
+						);
+						ciz.rect_filled(
+							egui::Rect::from_two_pos(k[0], k[2]),
+							0.0,
+							dolgu,
+						);
+						for i in 0..4 {
+							ciz.line_segment(
+								[k[i], k[(i + 1) % 4]],
+								egui::Stroke::new(1.8, renk),
+							);
+						}
+						for c in k {
+							ciz.circle_filled(c, 7.0, renk);
+							ciz.circle_stroke(
+								c,
+								7.0,
+								egui::Stroke::new(
+									1.0,
+									egui::Color32::BLACK,
+								),
+							);
+						}
+					}
+				}
+				Arac::Vektor => {
+					if let Some(pts) = t.vektor.as_ref() {
+						let ekran: Vec<egui::Pos2> = pts
+							.iter()
+							.map(|(x, y)| {
+								let (sx, sy) =
+									crate::visual_geom::ass_to_ekran(
+										*x, *y, &e,
+									);
+								egui::pos2(sx, sy)
+							})
+							.collect();
+						if ekran.len() >= 2 {
+							for i in 0..ekran.len() {
+								ciz.line_segment(
+									[
+										ekran[i],
+										ekran[(i + 1)
+											% ekran.len()],
+									],
+									egui::Stroke::new(1.8, sari),
+								);
+							}
+						}
+						for (i, c) in ekran.iter().enumerate() {
+							let aktif = t.vektor_surukle == Some(i);
+							let r = if aktif { 9.0 } else { 6.0 };
+							ciz.circle_filled(*c, r, sari);
+							ciz.circle_stroke(
+								*c,
+								r,
+								egui::Stroke::new(
+									1.0,
+									egui::Color32::BLACK,
+								),
+							);
+						}
+						if ekran.len() >= 4 {
+							// ilk nokta halkası: kapalı vektör başlangıcı
+							ciz.circle_stroke(
+								ekran[0],
+								11.0,
+								egui::Stroke::new(1.2, sari),
+							);
+						}
+					}
+				}
+				Arac::XY => {
+					let kose: Vec<egui::Pos2> = [
+						bb.left_top(),
+						bb.right_top(),
+						bb.right_bottom(),
+						bb.left_bottom(),
+					]
+					.into_iter()
+					.collect();
+					let renk = egui::Color32::from_rgb(110, 190, 255);
+					for i in 0..4 {
+						ciz.line_segment(
+							[kose[i], kose[(i + 1) % 4]],
+							egui::Stroke::new(1.2, renk),
+						);
+					}
+					ciz.circle_filled(bb.center(), 3.0, renk);
+					let metin_xy = format!(
+						"XY  frx {:.0}°  fry {:.0}°",
+						t.frx, t.fry
 					);
-					ciz.circle_filled(hnd, 6.0, sari);
-					ciz.circle_stroke(
-						hnd,
-						6.0,
-						egui::Stroke::new(1.0, egui::Color32::BLACK),
+					ciz.text(
+						bb.left_top() + egui::vec2(4.0, -16.0),
+						egui::Align2::LEFT_BOTTOM,
+						metin_xy,
+						egui::FontId::proportional(12.0),
+						renk,
 					);
-					ciz.circle_filled(pivot + ofs, 3.0, sari);
 				}
 			}
 			if let Some(hata) = &t.hata {
@@ -3304,10 +3992,10 @@ impl GridApp {
 	}
 
 	/// Typeset sonucunu tek Commit olarak yaz; geri al/ileri anını tazele.
-	fn typeset_uygula(&mut self, idx: usize, yeni: String) {
+	fn typeset_uygula(&mut self, idx: usize, yeni: String) -> bool {
 		let Some(h) = self.handle else {
 			self.note = "typeset: açık dosya yok".into();
-			return;
+			return false;
 		};
 		self.son_an = None;
 		self.an_tut();
@@ -3320,16 +4008,24 @@ impl GridApp {
 					t.metin = yeni;
 					t.son_satir = usize::MAX;
 					t.son_metin.clear();
+					t.clip_hazir = false;
+					t.vektor_hazir = false;
+					t.xy_hazir = false;
 					t.oniz_sifirla();
 				}
 				self.oniz.son_ms = -1;
 				self.note = format!("typeset yazıldı: satır {}", idx + 1);
+				true
 			}
 			Err(e) => {
 				if let Some(t) = self.typeset.as_mut() {
+					t.clip_hazir = false;
+					t.vektor_hazir = false;
+					t.xy_hazir = false;
 					t.oniz_sifirla();
 				}
 				self.note = format!("typeset yazılamadı: {e}");
+				false
 			}
 		}
 	}
@@ -6280,5 +6976,49 @@ mod tests {
 			egui::Vec2::ZERO,
 		);
 		assert!((r.x - 10.0).abs() < 0.01 && (r.y - 20.0).abs() < 0.01);
+	}
+
+	#[test]
+	fn typeset_clip_dikdortgen_gidis_donus() {
+		let m = "{\\pos(10,20)\\clip(110,220,10,20)}A";
+		let (r, ic) = clip_dik_oku(m).unwrap().unwrap();
+		assert_eq!(r, (10.0, 20.0, 110.0, 220.0));
+		assert!(!ic);
+		let m = clip_dik_yaz(m, (0.0, 1.0, 100.0, 101.0), true);
+		let (r, ic) = clip_dik_oku(&m).unwrap().unwrap();
+		assert_eq!(r, (0.0, 1.0, 100.0, 101.0));
+		assert!(ic);
+		assert!(m.contains("\\iclip(0.0,1.0,100.0,101.0)"));
+		assert!(!m.contains("\\clip("));
+		assert!(clip_dik_yaz("{\\clip(m 0 0 l 10 0 10 10)}A", (0.0, 0.0, 1.0, 1.0), false)
+			.contains("\\clip(0.0,0.0,1.0,1.0)"));
+	}
+
+	#[test]
+	fn typeset_clip_vektor_gidis_donus() {
+		let m = "{\\pos(10,20)}A";
+		let pts = vec![(0.0, 0.0), (100.0, 0.0), (100.0, 50.0)];
+		let m = clip_vektor_yaz(m, &pts, false);
+		let (okunan, ic) = clip_vektor_oku(&m).unwrap();
+		assert_eq!(okunan, pts);
+		assert!(!ic);
+		let m = clip_vektor_yaz(&m, &pts, true);
+		let (okunan, ic) = clip_vektor_oku(&m).unwrap();
+		assert_eq!(okunan, pts);
+		assert!(ic);
+		assert!(!m.contains("\\clip(m"));
+	}
+
+	#[test]
+	fn typeset_xy_ve_kenar_mesafesi() {
+		let m = xy_yaz("{\\pos(10,20)}A", 370.0, -190.0);
+		assert!(m.contains("\\frx10.0"));
+		assert!(m.contains("\\fry170.0"));
+		let d = kenar_mesafe(
+			egui::pos2(0.0, 10.0),
+			egui::pos2(-10.0, 0.0),
+			egui::pos2(10.0, 0.0),
+		);
+		assert!((d - 10.0).abs() < 0.01);
 	}
 }
