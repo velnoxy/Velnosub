@@ -14,6 +14,7 @@ use eframe::egui;
 use egui::{CentralPanel, Color32, Panel, RichText, ScrollArea, TextEdit};
 
 use crate::layout::{self, Yerlesim};
+use crate::ass_tags;
 
 /// P8.1: gömülü Material Icons kod noktaları (assets/MaterialIcons-Regular.ttf).
 /// egui varsayılan yazı tiplerinde bu aralık boştur; font lib.rs'te ailelere
@@ -529,6 +530,161 @@ impl Default for Oniz {
 	}
 }
 
+/// Typesetting aracı — Task 10 çekirdeği; clip/vektör Task 11.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Arac {
+	Tasi,
+	Olcek,
+	ZDondur,
+}
+
+struct Surukleme {
+	bas_pointer: egui::Pos2,
+	pivot: egui::Pos2,
+	bas_pos_ass: (f64, f64),
+	bas_fscx: f64,
+	bas_fscy: f64,
+	bas_frz: f64,
+	bas_metin: String,
+}
+
+/// Seçili satırın video üzerindeki typesetting durumu.
+struct Typeset {
+	satir: usize,
+	arac: Arac,
+	metin: String,
+	script_w: i32,
+	script_h: i32,
+	// render_line önbelleği
+	son_satir: usize,
+	son_ms: i32,
+	son_metin: String,
+	tampon: Vec<u8>,
+	dok: Option<egui::TextureHandle>,
+	// doku pikseli cinsinden alfa sınırı
+	bbox: Option<egui::Rect>,
+	surukleme: Option<Surukleme>,
+	// sürükleme sırasındaki egui önizleme dönüşümü
+	oniz_ofs: egui::Vec2,
+	oniz_olcek: f32,
+	oniz_aci: f32,
+	hata: Option<String>,
+}
+
+impl Typeset {
+	fn yeni(satir: usize, metin: String, script_w: i32, script_h: i32) -> Self {
+		Self {
+			satir,
+			arac: Arac::Tasi,
+			metin,
+			script_w: script_w.max(1),
+			script_h: script_h.max(1),
+			son_satir: usize::MAX,
+			son_ms: i32::MIN,
+			son_metin: String::new(),
+			tampon: Vec::new(),
+			dok: None,
+			bbox: None,
+			surukleme: None,
+			oniz_ofs: egui::Vec2::ZERO,
+			oniz_olcek: 1.0,
+			oniz_aci: 0.0,
+			hata: None,
+		}
+	}
+
+	fn oniz_sifirla(&mut self) {
+		self.surukleme = None;
+		self.oniz_ofs = egui::Vec2::ZERO;
+		self.oniz_olcek = 1.0;
+		self.oniz_aci = 0.0;
+	}
+}
+
+/// Etiket değerindeki sonlu sayıları sırayla çöz (`\pos(10,20)` gibi).
+fn sayilar_al(deger: &str) -> Vec<f64> {
+	deger
+		.split(|c: char| c == ',' || c == '(' || c == ')' || c.is_whitespace())
+		.filter_map(|s| s.parse::<f64>().ok())
+		.filter(|v| v.is_finite())
+		.collect()
+}
+
+/// Dereceyi (-180, 180] aralığına indir.
+fn aci_derece(v: f64) -> f64 {
+	let mut a = (v + 180.0).rem_euclid(360.0) - 180.0;
+	if a == -180.0 {
+		a = 180.0;
+	}
+	a
+}
+
+/// Ekran noktasını `pivot` çevresinde ölçekle/döndür, sonra kaydır.
+fn ts_donusum(
+	p: egui::Pos2,
+	pivot: egui::Pos2,
+	olcek: f32,
+	aci: f32,
+	ofs: egui::Vec2,
+) -> egui::Pos2 {
+	let v = p - pivot;
+	let (s, c) = aci.sin_cos();
+	pivot + egui::vec2(v.x * c - v.y * s, v.x * s + v.y * c) * olcek + ofs
+}
+
+/// Kare dokusunda alfa > 4 olan en küçük dikdörtgen (piksel).
+fn alfa_bbox(d: &[u8], gen: usize, yuk: usize) -> Option<egui::Rect> {
+	let mut minx = gen;
+	let mut miny = yuk;
+	let mut maxx = 0usize;
+	let mut maxy = 0usize;
+	let mut var = false;
+	for y in 0..yuk {
+		for x in 0..gen {
+			let a = d.get((y * gen + x) * 4 + 3).copied().unwrap_or(0);
+			if a > 4 {
+				var = true;
+				minx = minx.min(x);
+				miny = miny.min(y);
+				maxx = maxx.max(x);
+				maxy = maxy.max(y);
+			}
+		}
+	}
+	if !var {
+		return None;
+	}
+	Some(egui::Rect::from_min_max(
+		egui::pos2(minx as f32, miny as f32),
+		egui::pos2((maxx + 1) as f32, (maxy + 1) as f32),
+	))
+}
+
+/// ASS hizasına göre çizilmiş satırın çapa noktası.
+fn hiza_ankraj(bb: egui::Rect, hiza: i32) -> egui::Pos2 {
+	let h = if (1..=9).contains(&hiza) { hiza } else { 2 };
+	let x = match (h - 1) % 3 {
+		0 => bb.left(),
+		1 => bb.center().x,
+		_ => bb.right(),
+	};
+	let y = match (h - 1) / 3 {
+		0 => bb.bottom(),
+		1 => bb.center().y,
+		_ => bb.top(),
+	};
+	egui::pos2(x, y)
+}
+
+/// Döndürme tutamacı: çizim kutusunun üst ortasından yukarı doğru.
+fn dondur_tutamac(bb: egui::Rect, aci: f32) -> egui::Pos2 {
+	let tc = egui::pos2(bb.center().x, bb.top());
+	let up = egui::vec2(0.0, -30.0);
+	let (s, c) = aci.sin_cos();
+	tc + egui::vec2(up.x * c - up.y * s, up.x * s + up.y * c)
+}
+
+
 /// Ses çizim modu — Aegisub "Ses → Spektrum" geçişi.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SesMod {
@@ -1022,6 +1178,8 @@ pub struct GridApp {
 	dialog: Option<DialogSection>,
 	// P4.6 dilim 2: ASS önizleme (video üstünde saydam dokuya binen kare)
 	oniz: Oniz,
+	// P8: seçili satır üzerinde görsel typesetting (taşı/ölçek/Z döndür)
+	typeset: Option<Typeset>,
 	// P4.6 dilim 2: arayüz düzeni — varsayılan Otomatik (yatayda Aegisub,
 	// dikeyde mobil); Mobil/Masaüstü ayarlardan/seçimden sabitlenir
 	// (`velnosub-ui.json`; VELNOSUB_UI_JSON ortam değişkeniyle yol geçilir)
@@ -1223,6 +1381,7 @@ impl GridApp {
 			ayar_win: false,
 			ses_win: false,
 			oniz: Oniz::default(),
+			typeset: None,
 		};
 		match ayar_yukle().duzen.as_deref() {
 			Some("otomatik") => app.duzen = Duzen::Otomatik,
@@ -2566,10 +2725,621 @@ impl GridApp {
 		}
 	}
 
+	/// Çekirdekten ASS PlayRes boyutunu oku (Task 7 ABI).
+	fn script_size(&self) -> Option<(i32, i32)> {
+		let h = self.handle?;
+		let mut w = 0;
+		let mut yuk = 0;
+		let rc = unsafe { velnosub_abi_script_size(h, &mut w, &mut yuk) };
+		if rc == 0 && w > 0 && yuk > 0 {
+			Some((w, yuk))
+		} else {
+			None
+		}
+	}
+
+	/// Video panelinin üstündeki typeset girişi/araç çubuğu.
+	fn typeset_arac_cubugu(&mut self, ui: &mut egui::Ui) {
+		if self.video.is_none() || self.secili.is_none() {
+			self.typeset = None;
+			return;
+		}
+		if let Some(t) = &self.typeset {
+			if Some(t.satir) != self.secili {
+				self.typeset = None;
+			}
+		}
+		let aktif = self.typeset.is_some();
+		let arac = self.typeset.as_ref().map(|t| t.arac);
+		let sec = self.secili.unwrap();
+		ui.horizontal_wrapped(|su| {
+			if !aktif {
+				let b = su
+					.add(egui::Button::new(format!("{} Typeset", ikon::TUNE)))
+					.on_hover_text(
+						"seçili satırı video üzerinde taşı, ölçekle veya Z döndür",
+					);
+				if b.clicked() {
+					self.typeset_basla(su.ctx(), sec);
+				}
+			} else {
+				su.label(RichText::new(format!("typeset · satır {}", sec + 1)).weak());
+				for (a, ad) in [
+					(Arac::Tasi, "Taşı"),
+					(Arac::Olcek, "Ölçek"),
+					(Arac::ZDondur, "Z Döndür"),
+				] {
+					if su.selectable_label(arac == Some(a), ad).clicked() {
+						if let Some(t) = self.typeset.as_mut() {
+							t.arac = a;
+							t.hata = None;
+							t.oniz_sifirla();
+						}
+					}
+				}
+				if su.button(format!("{} kapat", ikon::CLOSE)).clicked() {
+					self.typeset = None;
+				}
+			}
+		});
+		ui.add_space(2.0);
+	}
+
+	/// Seçili satırı typeset kipine al; satır görünmüyorsa başına atla.
+	fn typeset_basla(&mut self, ctx: &egui::Context, idx: usize) {
+		if self.handle.is_none() {
+			self.note = "typeset: açık dosya yok".into();
+			return;
+		}
+		let Some(metin) = self.rows.get(idx).map(|r| r.text.clone()) else {
+			self.note = "typeset: satır bulunamadı".into();
+			return;
+		};
+		let (sw, sh) = self
+			.script_size()
+			.or_else(|| {
+				self.video
+					.as_ref()
+					.map(|v| (v.w as i32, v.hgt as i32))
+			})
+			.unwrap_or((384, 288));
+		let bas = self
+			.rows
+			.get(idx)
+			.and_then(|r| ass_ms(&r.bas).ok());
+		let son = self
+			.rows
+			.get(idx)
+			.and_then(|r| ass_ms(&r.son).ok());
+		let mut hata = None;
+		if let Some(v) = self.video.as_mut() {
+			v.oynat = false;
+			v.son_tik = None;
+			if v.kareler > 0 && v.fps > 0.0 {
+				if let (Some(b), Some(s)) = (bas, son) {
+					let ms = (v.frame as f64 * 1000.0 / v.fps).round() as i64;
+					if ms < b || ms > s || s <= b {
+						let k = ((b as f64 * v.fps / 1000.0).ceil() as i32)
+							.clamp(0, (v.kareler - 1).max(0));
+						if k != v.frame {
+							v.frame = k;
+							if let Err(e) = v.cizim_cek(ctx) {
+								hata = Some(e);
+							}
+						}
+					}
+				}
+			}
+		}
+		self.typeset = Some(Typeset::yeni(idx, metin, sw, sh));
+		if let Some(a) = self.audio.as_ref() {
+			unsafe {
+				velnosub_abi_audio_stop(a.handle);
+			}
+		}
+		if let Some(e) = hata {
+			if let Some(t) = self.typeset.as_mut() {
+				t.hata = Some(format!("video karesi: {e}"));
+			}
+		}
+		self.oniz.son_ms = -1;
+		self.note = format!("typeset: satır {} hazır", idx + 1);
+	}
+
+	/// Seçili satırın stil hizası (1..9); geçersizse alt-orta.
+	fn satir_hiza(&self, idx: usize) -> i32 {
+		let Some(r) = self.rows.get(idx) else {
+			return 2;
+		};
+		self.stiller
+			.iter()
+			.find(|s| s.name.trim() == r.stil.trim())
+			.map(|s| s.alignment)
+			.filter(|h| (1..=9).contains(h))
+			.unwrap_or(2)
+	}
+
+	/// Stilin etkin ScaleX/ScaleY yüzdesi (satır override'ı yokken taban).
+	fn satir_olcek(&self, idx: usize) -> (f64, f64) {
+		let Some(r) = self.rows.get(idx) else {
+			return (100.0, 100.0);
+		};
+		let Some(s) = self
+			.stiller
+			.iter()
+			.find(|s| s.name.trim() == r.stil.trim())
+		else {
+			return (100.0, 100.0);
+		};
+		let mut it = s.scale.split(',').filter_map(|v| {
+			let x = v.trim().parse::<f64>().ok()?;
+			(x > 0.0).then_some(x)
+		});
+		(
+			it.next().unwrap_or(100.0),
+			it.next().unwrap_or(100.0),
+		)
+	}
+
+	/// Seçili satırı video üzerine çiz; sürüklemede egui önizlemesi,
+	/// bırakınca tek `edit_line` commit'i.
+	fn typeset_cek(
+		&mut self,
+		ui: &mut egui::Ui,
+		dik: egui::Rect,
+		gen: usize,
+		yuk: usize,
+		hiz: f64,
+		kare: i32,
+	) {
+		let Some(h) = self.handle else {
+			self.typeset = None;
+			return;
+		};
+		let Some(sec) = self.secili else {
+			self.typeset = None;
+			return;
+		};
+		let Some(t0) = self.typeset.as_ref() else {
+			return;
+		};
+		if t0.satir != sec || gen == 0 || yuk == 0 || !self.oniz.acik {
+			return;
+		}
+		let metin = self
+			.rows
+			.get(sec)
+			.map(|r| r.text.clone())
+			.unwrap_or_default();
+		let hiza_stil = self.satir_hiza(sec);
+		let (stil_fscx, stil_fscy) = self.satir_olcek(sec);
+		let ms = if hiz > 1e-6 {
+			((kare as f64) * 1000.0 / hiz).round() as i32
+		} else {
+			0
+		};
+		let n = gen * yuk * 4;
+		let commit = {
+			let Some(t) = self.typeset.as_mut() else {
+				return;
+			};
+			t.metin = metin.clone();
+			if t.tampon.len() != n {
+				t.tampon = vec![0u8; n];
+				t.son_satir = usize::MAX;
+				t.son_ms = i32::MIN;
+				t.son_metin.clear();
+				t.dok = None;
+				t.bbox = None;
+			}
+			if t.son_satir != sec
+				|| t.son_ms != ms
+				|| t.son_metin != metin
+				|| t.dok.is_none()
+			{
+				let rc = unsafe {
+					velnosub_abi_render_line(
+						h,
+						sec as c_int,
+						ms,
+						t.tampon.as_mut_ptr(),
+						n as c_int,
+					)
+				};
+				if rc < 0 {
+					t.hata = Some(last_error());
+					t.dok = None;
+					t.bbox = None;
+				} else {
+					let img = egui::ColorImage::from_rgba_unmultiplied(
+						[gen, yuk],
+						&t.tampon,
+					);
+					let ad = format!("vtypeset_{}_{}_{}", h, sec, ms);
+					t.dok = Some(ui.ctx().load_texture(
+						ad,
+						img,
+						egui::TextureOptions::LINEAR,
+					));
+					t.bbox = alfa_bbox(&t.tampon, gen, yuk);
+					t.son_satir = sec;
+					t.son_ms = ms;
+					t.son_metin = metin.clone();
+					t.hata = None;
+				}
+			}
+			if t.arac == Arac::Tasi
+				&& ass_tags::etiket_al(&metin, "move").is_some()
+			{
+				t.hata = Some(
+					"\\move satırı taşınamaz; önce \\move kaldırılmalı".into(),
+				);
+			}
+			let Some(bbpx) = t.bbox else {
+				let hata = t
+					.hata
+					.clone()
+					.unwrap_or_else(|| "bu karede satır görünmüyor".into());
+				ui.label(RichText::new(format!("typeset: {hata}")).weak());
+				return;
+			};
+			let e = crate::visual_geom::esleme_doldur(
+				t.script_w,
+				t.script_h,
+				crate::visual_geom::Alan {
+					x: dik.left(),
+					y: dik.top(),
+					w: dik.width(),
+					h: dik.height(),
+				},
+			);
+			let kx = dik.width() / gen as f32;
+			let ky = dik.height() / yuk as f32;
+			let bb = egui::Rect::from_min_max(
+				dik.min + egui::vec2(bbpx.min.x * kx, bbpx.min.y * ky),
+				dik.min + egui::vec2(bbpx.max.x * kx, bbpx.max.y * ky),
+			);
+			let hiza = ass_tags::etiket_al(&metin, "an")
+				.and_then(|v| sayilar_al(&v).first().copied())
+				.map(|v| v as i32)
+				.filter(|v| (1..=9).contains(v))
+				.unwrap_or(hiza_stil);
+			let pos_ass = ass_tags::etiket_al(&metin, "pos").and_then(|v| {
+				let s = sayilar_al(&v);
+				if s.len() >= 2 {
+					Some((s[0], s[1]))
+				} else {
+					None
+				}
+			});
+			let org_ass = ass_tags::etiket_al(&metin, "org").and_then(|v| {
+				let s = sayilar_al(&v);
+				if s.len() >= 2 {
+					Some((s[0], s[1]))
+				} else {
+					None
+				}
+			});
+			let pivot = if let Some((x, y)) = org_ass.or(pos_ass) {
+				let (px, py) = crate::visual_geom::ass_to_ekran(x, y, &e);
+				egui::pos2(px, py)
+			} else {
+				hiza_ankraj(bb, hiza)
+			};
+			let tutamaclar = [
+				bb.left_top(),
+				bb.right_top(),
+				bb.right_bottom(),
+				bb.left_bottom(),
+			];
+			let resp = ui.interact(
+				dik,
+				ui.scope_id().with(("typeset", sec)),
+				egui::Sense::click_and_drag(),
+			);
+			let p = resp
+				.interact_pointer_pos()
+				.or_else(|| ui.input(|i| i.pointer.interact_pos()))
+				.or_else(|| ui.input(|i| i.pointer.latest_pos()));
+			let fscx = ass_tags::etiket_al(&metin, "fscx")
+				.and_then(|v| sayilar_al(&v).first().copied())
+				.filter(|v| *v > 0.0)
+				.unwrap_or(stil_fscx);
+			let fscy = ass_tags::etiket_al(&metin, "fscy")
+				.and_then(|v| sayilar_al(&v).first().copied())
+				.filter(|v| *v > 0.0)
+				.unwrap_or(stil_fscy);
+			let frz = ass_tags::etiket_al(&metin, "frz")
+				.and_then(|v| sayilar_al(&v).first().copied())
+				.unwrap_or(0.0);
+			if resp.drag_started() {
+				if let Some(p) = p {
+					let mut basla = false;
+					match t.arac {
+						Arac::Tasi => {
+							if ass_tags::etiket_al(&metin, "move").is_some() {
+								t.hata = Some(
+									"\\move satırı taşınamaz; önce \\move kaldırılmalı"
+										.into(),
+								);
+							} else if bb.expand(8.0).contains(p) {
+								basla = true;
+							}
+						}
+						Arac::Olcek => {
+							for c in tutamaclar {
+								if crate::visual_geom::tutamac(
+									(p.x, p.y),
+									(c.x, c.y),
+									24.0,
+								) {
+									basla = true;
+									break;
+								}
+							}
+						}
+						Arac::ZDondur => {
+							let c = dondur_tutamac(bb, t.oniz_aci);
+							if crate::visual_geom::tutamac(
+								(p.x, p.y),
+								(c.x, c.y),
+								24.0,
+							) {
+								basla = true;
+							}
+						}
+					}
+					if basla {
+						let bas_pos = pos_ass.unwrap_or_else(|| {
+							let a = hiza_ankraj(bb, hiza);
+							crate::visual_geom::ekran_to_ass(a.x, a.y, &e)
+						});
+						t.oniz_ofs = egui::Vec2::ZERO;
+						t.oniz_olcek = 1.0;
+						t.oniz_aci = 0.0;
+						t.surukleme = Some(Surukleme {
+							bas_pointer: p,
+							pivot,
+							bas_pos_ass: bas_pos,
+							bas_fscx: fscx,
+							bas_fscy: fscy,
+							bas_frz: frz,
+							bas_metin: metin.clone(),
+						});
+					}
+				}
+			}
+			if resp.dragged() {
+				if let (Some(p), Some(s)) = (p, t.surukleme.as_ref()) {
+					match t.arac {
+						Arac::Tasi => {
+							t.oniz_ofs = p - s.bas_pointer;
+						}
+						Arac::Olcek => {
+							let d0 = (s.bas_pointer - s.pivot).length();
+							if d0 > 4.0 {
+								let d = (p - s.pivot).length();
+								let oran = (d / d0).clamp(0.05, 20.0);
+								let yeni = (s.bas_fscx * oran as f64).max(10.0);
+								t.oniz_olcek =
+									(yeni / s.bas_fscx.max(1.0)) as f32;
+							}
+						}
+						Arac::ZDondur => {
+							let v0 = s.bas_pointer - s.pivot;
+							let v1 = p - s.pivot;
+							let mut d = v1.y.atan2(v1.x) - v0.y.atan2(v0.x);
+							while d > std::f32::consts::PI {
+								d -= std::f32::consts::TAU;
+							}
+							while d < -std::f32::consts::PI {
+								d += std::f32::consts::TAU;
+							}
+							t.oniz_aci = d;
+						}
+					}
+				}
+			}
+			let mut out = None;
+			if resp.drag_stopped() {
+				if let Some(s) = t.surukleme.take() {
+					let p = p.unwrap_or(s.bas_pointer);
+					let yeni = match t.arac {
+						Arac::Tasi => {
+							let kx = if e.olcek_x > 1e-6 {
+								e.olcek_x as f64
+							} else {
+								1.0
+							};
+							let ky = if e.olcek_y > 1e-6 {
+								e.olcek_y as f64
+							} else {
+								1.0
+							};
+							let dx = (p.x - s.bas_pointer.x) as f64 / kx;
+							let dy = (p.y - s.bas_pointer.y) as f64 / ky;
+							if ass_tags::etiket_al(&s.bas_metin, "move").is_some() {
+								t.hata = Some(
+									"\\move satırı taşınamaz; önce \\move kaldırılmalı"
+										.into(),
+								);
+								None
+							} else {
+								Some(ass_tags::etiket_yaz(
+									&s.bas_metin,
+									"pos",
+									&format!(
+										"({:.1},{:.1})",
+										s.bas_pos_ass.0 + dx,
+										s.bas_pos_ass.1 + dy
+									),
+								))
+							}
+						}
+						Arac::Olcek => {
+							let oran = t.oniz_olcek as f64;
+							let fx = (s.bas_fscx * oran).max(10.0);
+							let fy = (s.bas_fscy * oran).max(10.0);
+							let m = ass_tags::etiket_yaz(
+								&s.bas_metin,
+								"fscx",
+								&format!("{fx:.1}"),
+							);
+							Some(ass_tags::etiket_yaz(
+								&m,
+								"fscy",
+								&format!("{fy:.1}"),
+							))
+						}
+						Arac::ZDondur => {
+							let d = t.oniz_aci.to_degrees() as f64;
+							let a = aci_derece(s.bas_frz + d);
+							Some(ass_tags::etiket_yaz(
+								&s.bas_metin,
+								"frz",
+								&format!("{a:.1}"),
+							))
+						}
+					};
+					if yeni.is_some() {
+						out = yeni;
+					}
+					t.oniz_ofs = egui::Vec2::ZERO;
+					t.oniz_olcek = 1.0;
+					t.oniz_aci = 0.0;
+				}
+			}
+			// Önizleme dokusu ve tutamaçlar.
+			let ofs = t.oniz_ofs;
+			let olcek = t.oniz_olcek;
+			let aci = t.oniz_aci;
+			let pv = |p: egui::Pos2| ts_donusum(p, pivot, olcek, aci, ofs);
+			let ciz = ui.painter().with_clip_rect(dik);
+			if let Some(d) = &t.dok {
+				let mut mesh = egui::Mesh::with_texture(d.id());
+				let kose = [
+					dik.left_top(),
+					dik.right_top(),
+					dik.right_bottom(),
+					dik.left_bottom(),
+				];
+				let uv = [
+					egui::pos2(0.0, 0.0),
+					egui::pos2(1.0, 0.0),
+					egui::pos2(1.0, 1.0),
+					egui::pos2(0.0, 1.0),
+				];
+				let taban = mesh.vertices.len() as u32;
+				for (p, uv) in kose.into_iter().zip(uv) {
+					mesh.vertices.push(egui::epaint::Vertex {
+						pos: pv(p),
+						uv,
+						color: egui::Color32::WHITE,
+					});
+				}
+				mesh.add_triangle(taban, taban + 1, taban + 2);
+				mesh.add_triangle(taban, taban + 2, taban + 3);
+				ciz.add(egui::Shape::mesh(mesh));
+			}
+			let kose: Vec<egui::Pos2> = [
+				bb.left_top(),
+				bb.right_top(),
+				bb.right_bottom(),
+				bb.left_bottom(),
+			]
+			.into_iter()
+			.map(pv)
+			.collect();
+			let sari = egui::Color32::from_rgb(255, 210, 70);
+			for i in 0..4 {
+				ciz.line_segment(
+					[kose[i], kose[(i + 1) % 4]],
+					egui::Stroke::new(1.5, sari),
+				);
+			}
+			match t.arac {
+				Arac::Tasi => {
+					ciz.circle_filled(pivot + ofs, 3.0, sari);
+				}
+				Arac::Olcek => {
+					for c in &kose {
+						ciz.circle_filled(*c, 6.0, sari);
+						ciz.circle_stroke(
+							*c,
+							6.0,
+							egui::Stroke::new(1.0, egui::Color32::BLACK),
+						);
+					}
+				}
+				Arac::ZDondur => {
+					let tc = pv(egui::pos2(bb.center().x, bb.top()));
+					let up = egui::vec2(0.0, -30.0);
+					let (s, c) = aci.sin_cos();
+					let u = egui::vec2(
+						up.x * c - up.y * s,
+						up.x * s + up.y * c,
+					) * olcek;
+					let hnd = tc + u;
+					ciz.line_segment(
+						[tc, hnd],
+						egui::Stroke::new(1.5, sari),
+					);
+					ciz.circle_filled(hnd, 6.0, sari);
+					ciz.circle_stroke(
+						hnd,
+						6.0,
+						egui::Stroke::new(1.0, egui::Color32::BLACK),
+					);
+					ciz.circle_filled(pivot + ofs, 3.0, sari);
+				}
+			}
+			if let Some(hata) = &t.hata {
+				ui.label(RichText::new(format!("typeset: {hata}")).weak());
+			}
+			out
+		};
+		if let Some(yeni) = commit {
+			self.typeset_uygula(sec, yeni);
+		}
+	}
+
+	/// Typeset sonucunu tek Commit olarak yaz; geri al/ileri anını tazele.
+	fn typeset_uygula(&mut self, idx: usize, yeni: String) {
+		let Some(h) = self.handle else {
+			self.note = "typeset: açık dosya yok".into();
+			return;
+		};
+		self.son_an = None;
+		self.an_tut();
+		match edit_line(h, idx, &yeni) {
+			Ok(()) => {
+				if let Some(r) = self.rows.get_mut(idx) {
+					r.text = yeni.clone();
+				}
+				if let Some(t) = self.typeset.as_mut() {
+					t.metin = yeni;
+					t.son_satir = usize::MAX;
+					t.son_metin.clear();
+					t.oniz_sifirla();
+				}
+				self.oniz.son_ms = -1;
+				self.note = format!("typeset yazıldı: satır {}", idx + 1);
+			}
+			Err(e) => {
+				if let Some(t) = self.typeset.as_mut() {
+					t.oniz_sifirla();
+				}
+				self.note = format!("typeset yazılamadı: {e}");
+			}
+		}
+	}
+
 	fn video_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
 		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
 		let mut v_hata: Option<String> = None;
 		let mut oniz_dik: Option<egui::Rect> = None;
+		// Task 10: typeset girişi/araç çubuğu — video ve seçili satır varsa
+		self.typeset_arac_cubugu(ui);
 		// P7.1: aegisub player penceresi (aktif satır) — v-blok ÖNCESİNDEN
 		// hesap (self ödünç çakışması yok)
 		let (_oyn_bas, oyn_son, oyn_d0, oyn_rate, oyn_toplam) =
@@ -2790,7 +3560,14 @@ impl GridApp {
 		);
 		if let (Some(alt_h), Some((gen, yuk, hiz, kare))) = (h, k5) {
 			self.oniz_cek(ui.ctx(), alt_h, gen, yuk, hiz, kare);
-			if let (Some(dik), Some(d)) = (oniz_dik, self.oniz.dok.as_ref()) {
+			if self.typeset.is_some() {
+				// Task 10: yalnız seçili satır; tam kare önizlemesi gizlenir.
+				if let Some(dik) = oniz_dik {
+					self.typeset_cek(ui, dik, gen, yuk, hiz, kare);
+				}
+			} else if let (Some(dik), Some(d)) =
+				(oniz_dik, self.oniz.dok.as_ref())
+			{
 				if self.oniz.etki > 0 {
 					ui.put(
 						dik,
@@ -5455,5 +6232,53 @@ mod tests {
 		println!(
 			"kontrast ölçüleri: koyu-önce={once:.2} (ihlal) koyu-sonra={sonra:.2} zaman-gri={zaman_gri:.2} hata={hata:.2} açık-tamir={acik_sonra:.2}"
 		);
+	}
+
+	#[test]
+	fn typeset_sayi_ve_aci() {
+		assert_eq!(sayilar_al("(10,20.5)"), vec![10.0, 20.5]);
+		assert_eq!(sayilar_al("m 0 0 l 10 10"), vec![0.0, 0.0, 10.0, 10.0]);
+		assert_eq!(aci_derece(370.0), 10.0);
+		assert_eq!(aci_derece(-190.0), 170.0);
+		assert_eq!(aci_derece(180.0), 180.0);
+	}
+
+	#[test]
+	fn typeset_alfa_siniri() {
+		let (w, h) = (5usize, 4usize);
+		let mut d = vec![0u8; w * h * 4];
+		for (x, y) in [(1usize, 1usize), (3usize, 2usize)] {
+			let i = (y * w + x) * 4;
+			d[i + 3] = 255;
+		}
+		let bb = alfa_bbox(&d, w, h).expect("alfa sınırı");
+		assert_eq!(bb.min, egui::pos2(1.0, 1.0));
+		assert_eq!(bb.max, egui::pos2(4.0, 3.0));
+		assert!(alfa_bbox(&vec![0u8; w * h * 4], w, h).is_none());
+	}
+
+	#[test]
+	fn typeset_hiza_ankrajlari() {
+		let bb = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), egui::vec2(100.0, 50.0));
+		assert_eq!(hiza_ankraj(bb, 2), egui::pos2(60.0, 70.0));
+		assert_eq!(hiza_ankraj(bb, 5), egui::pos2(60.0, 45.0));
+		assert_eq!(hiza_ankraj(bb, 7), egui::pos2(10.0, 20.0));
+		assert_eq!(hiza_ankraj(bb, 9), egui::pos2(110.0, 20.0));
+	}
+
+	#[test]
+	fn typeset_donusumu() {
+		let p = egui::pos2(20.0, 20.0);
+		let pivot = egui::pos2(10.0, 10.0);
+		let q = ts_donusum(p, pivot, 2.0, 0.0, egui::vec2(3.0, 4.0));
+		assert!((q.x - 33.0).abs() < 0.01 && (q.y - 34.0).abs() < 0.01);
+		let r = ts_donusum(
+			egui::pos2(20.0, 10.0),
+			pivot,
+			1.0,
+			std::f32::consts::FRAC_PI_2,
+			egui::Vec2::ZERO,
+		);
+		assert!((r.x - 10.0).abs() < 0.01 && (r.y - 20.0).abs() < 0.01);
 	}
 }
