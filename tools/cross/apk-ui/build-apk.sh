@@ -3,7 +3,7 @@
 # javac/d8 YOK: android:hasCode="false" — saf native aktivite.
 # Girişler:
 #   UISO   = T2 çıktısı libvelnosub_ui.so (aarch64 cdylib; ANativeActivity_onCreate + android_main)
-#   ABISO  = libvelnosub-abi.so (47 ABI sembolü; build-android-arm64 lane)
+#   ABISO  = libvelnosub-abi.so (58 ABI sembolü; build-android-arm64 lane)
 #   PKGSRC = device-pkg (kapanış .so'ları: core/freetype/fribidi/harfbuzz/uchardet/c++_shared
 #            + assets: font/ass örnekleri)
 # Kapanış (DT_NEEDED zinciri, 2026-10-21 llvm-readelf ölçümü):
@@ -61,8 +61,8 @@ PYEOF
 else
     MANIFEST=AndroidManifest.xml
     RES=res
-    OUT=velnosub-ui-0.1.1-alpha12.apk
-    echo "MOD: ALPHA (code 16, 0.1.1-ui-alpha12, debuggable true, nightly ikon)"
+    OUT=velnosub-ui-0.1.1-alpha13.apk
+    echo "MOD: ALPHA (code 17, 0.1.1-ui-alpha13, debuggable true, nightly ikon)"
 fi
 for f in "$UISO" "$ABISO"; do
     [ -f "$f" ] || { echo "EKSİK: $f"; exit 1; }
