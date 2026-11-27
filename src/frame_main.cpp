@@ -63,6 +63,8 @@
 #include <libaegisub/log.h>
 #include <libaegisub/make_unique.h>
 
+#include <algorithm>
+
 #include <wx/button.h>
 #include <wx/choice.h>
 #include <wx/dnd.h>
@@ -366,7 +368,7 @@ void FrameMain::UpdateTitle() {
 	newTitle << context->subsController->Filename().filename().wstring();
 
 #ifndef __WXMAC__
-	newTitle << " - Aegisub " << GetAegisubLongVersionString();
+	newTitle << " - Velnosub " << GetAegisubLongVersionString();
 #endif
 
 #if defined(__WXMAC__)
@@ -389,7 +391,13 @@ void FrameMain::OnVideoOpen(AsyncVideoProvider *provider) {
 	// Set zoom level based on video resolution and window size
 	double zoom = context->videoDisplay->GetZoom();
 	wxSize windowSize = GetSize();
-	if (vidx*3*zoom > windowSize.GetX()*4 || vidy*4*zoom > windowSize.GetY()*6)
+	if (fluentWorkspace) {
+		double fitWidth = windowSize.GetWidth() * .44 / vidx;
+		double fitHeight = windowSize.GetHeight() * .48 / vidy;
+		if (zoom > fitWidth || zoom > fitHeight)
+			context->videoDisplay->SetWindowZoom(std::min(fitWidth, fitHeight));
+	}
+	else if (vidx*3*zoom > windowSize.GetX()*4 || vidy*4*zoom > windowSize.GetY()*6)
 		context->videoDisplay->SetWindowZoom(zoom * .25);
 	else if (vidx*3*zoom > windowSize.GetX()*2 || vidy*4*zoom > windowSize.GetY()*3)
 		context->videoDisplay->SetWindowZoom(zoom * .5);
