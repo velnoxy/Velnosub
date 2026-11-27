@@ -34,6 +34,8 @@
 
 #include "subs_edit_box.h"
 
+#include <wx/stattext.h>
+
 #include "ass_dialogue.h"
 #include "ass_file.h"
 #include "base_grid.h"
@@ -126,13 +128,7 @@ SubsEditBox::SubsEditBox(wxWindow *parent, agi::Context *context)
 	style_box = MakeComboBox("Default", wxCB_READONLY, &SubsEditBox::OnStyleChange, _("Style for this line"));
 
 	style_edit_button = new wxButton(this, -1, _("Edit"), wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
-	style_edit_button->Bind(wxEVT_BUTTON, [=](wxCommandEvent&) {
-		if (active_style) {
-			wxArrayString font_list = wxFontEnumerator::GetFacenames();
-			font_list.Sort();
-			DialogStyleEditor(this, active_style, c, nullptr, "", font_list).ShowModal();
-		}
-	});
+	style_edit_button->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { OpenStyleEditor(); });
 	top_sizer->Add(style_edit_button, wxSizerFlags().Expand().Border(wxRIGHT));
 
 	actor_box = new Placeholder<wxComboBox>(this, _("Actor"), wxDefaultSize, wxCB_DROPDOWN | wxTE_PROCESS_ENTER, _("Actor name for this speech. This is only for reference, and is mainly useless."));
@@ -217,9 +213,17 @@ SubsEditBox::SubsEditBox(wxWindow *parent, agi::Context *context)
 	//      https://github.com/wangqr/Aegisub/issues/4
 	edit_ctrl->SetInitialSize(secondary_editor->GetSize());
 
+	workspaceSourceLabel = new wxStaticText(this, wxID_ANY, _("Source"));
+	workspaceTranslationLabel = new wxStaticText(this, wxID_ANY, _("Translation"));
+	workspaceSourceLabel->SetForegroundColour(wxColour(244, 242, 250));
+	workspaceTranslationLabel->SetForegroundColour(wxColour(244, 242, 250));
+	main_sizer->Add(workspaceSourceLabel, wxSizerFlags().Border(wxLEFT | wxTOP, 6));
 	main_sizer->Add(secondary_editor, wxSizerFlags(1).Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM, 3));
+	main_sizer->Add(workspaceTranslationLabel, wxSizerFlags().Border(wxLEFT | wxTOP, 6));
 	main_sizer->Add(edit_ctrl, wxSizerFlags(1).Expand().Border(wxLEFT | wxRIGHT | wxBOTTOM, 3));
 	main_sizer->Hide(secondary_editor);
+	main_sizer->Hide(workspaceSourceLabel);
+	main_sizer->Hide(workspaceTranslationLabel);
 
 	bottom_sizer = new wxBoxSizer(wxHORIZONTAL);
 	bottom_sizer->Add(MakeBottomButton("edit/revert"), wxSizerFlags().Border(wxRIGHT));
@@ -417,12 +421,44 @@ void SubsEditBox::PopulateList(wxComboBox *combo, boost::flyweight<std::string> 
 	combo->Thaw();
 }
 
+void SubsEditBox::OpenStyleEditor() {
+	if (!active_style) return;
+	wxArrayString fonts = wxFontEnumerator::GetFacenames();
+	fonts.Sort();
+	DialogStyleEditor(this, active_style, c, nullptr, "", fonts).ShowModal();
+}
+
+void SubsEditBox::RefreshWorkspaceSource() {
+	if (fluentWorkspace)
+		secondary_editor->ChangeValue(to_wx(c->subsGrid->WorkspaceSource(line)));
+}
+
+void SubsEditBox::SetFluentWorkspace(bool enabled) {
+	fluentWorkspace = enabled;
+	GetSizer()->Show(workspaceSourceLabel, enabled);
+	GetSizer()->Show(workspaceTranslationLabel, enabled);
+	GetSizer()->Show(split_box, !enabled, true);
+	SetBackgroundColour(enabled ? wxColour(35, 36, 48) : wxNullColour);
+	secondary_editor->SetBackgroundColour(enabled ? wxColour(24, 25, 34) : wxNullColour);
+	secondary_editor->SetForegroundColour(enabled ? wxColour(244, 242, 250) : wxNullColour);
+	if (enabled) {
+		GetSizer()->Show(secondary_editor);
+		GetSizer()->Hide(bottom_sizer);
+		SetMinSize(GetSizer()->GetMinSize());
+		RefreshWorkspaceSource();
+		Layout();
+	}
+	else
+		DoOnSplit(split_box->IsChecked());
+}
+
 void SubsEditBox::OnActiveLineChanged(AssDialogue *new_line) {
 	wxEventBlocker blocker(this);
 	line = new_line;
 	commit_id = -1;
 
 	UpdateFields(AssFile::COMMIT_DIAG_FULL, false);
+	RefreshWorkspaceSource();
 }
 
 void SubsEditBox::OnSelectedSetChanged() {
@@ -430,7 +466,9 @@ void SubsEditBox::OnSelectedSetChanged() {
 }
 
 void SubsEditBox::OnLineInitialTextChanged(std::string const& new_text) {
-	if (split_box->IsChecked())
+	if (fluentWorkspace)
+		RefreshWorkspaceSource();
+	else if (split_box->IsChecked())
 		secondary_editor->SetValue(to_wx(new_text));
 }
 

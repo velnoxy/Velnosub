@@ -164,6 +164,24 @@ void BaseGrid::OnHighlightVisibleChange(agi::OptionValue const& opt) {
 		seek_listener.Block();
 }
 
+void BaseGrid::SetFluentWorkspace(bool enabled) {
+	fluentWorkspace = enabled;
+	UpdateStyle();
+}
+
+void BaseGrid::ResetWorkspaceSource() {
+	workspaceSources.clear();
+	for (auto const& line : context->ass->Events)
+		workspaceSources.emplace(line.Id, line.Text.get());
+	if (fluentWorkspace) Refresh(false);
+}
+
+std::string const& BaseGrid::WorkspaceSource(AssDialogue const* line) {
+	static const std::string empty;
+	if (!line) return empty;
+	return workspaceSources.try_emplace(line->Id, line->Text.get()).first->second;
+}
+
 void BaseGrid::UpdateStyle() {
 	wxString fontname = FontFace("Subtitle/Grid");
 	if (fontname.empty()) fontname = "Tahoma";
@@ -187,6 +205,17 @@ void BaseGrid::UpdateStyle() {
 	row_colors.FoldOpen.SetColour(to_wx(OPT_GET("Colour/Subtitle Grid/Background/Open Fold")->GetColor()));
 	row_colors.FoldClosed.SetColour(to_wx(OPT_GET("Colour/Subtitle Grid/Background/Closed Fold")->GetColor()));
 	row_colors.LeftCol.SetColour(to_wx(OPT_GET("Colour/Subtitle Grid/Left Column")->GetColor()));
+	if (fluentWorkspace) {
+		row_colors.Default.SetColour(wxColour(25, 26, 35));
+		row_colors.Header.SetColour(wxColour(38, 39, 51));
+		row_colors.Selection.SetColour(wxColour(77, 43, 129));
+		row_colors.Comment.SetColour(wxColour(33, 33, 44));
+		row_colors.Visible.SetColour(wxColour(47, 38, 69));
+		row_colors.SelectedComment.SetColour(wxColour(66, 44, 99));
+		row_colors.FoldOpen.SetColour(wxColour(36, 37, 49));
+		row_colors.FoldClosed.SetColour(wxColour(43, 37, 57));
+		row_colors.LeftCol.SetColour(wxColour(30, 31, 42));
+	}
 
 	if (width_helper)
 		width_helper->ClearCache();
@@ -315,9 +344,15 @@ void BaseGrid::OnPaint(wxPaintEvent &) {
 	wxColour text_standard(to_wx(OPT_GET("Colour/Subtitle Grid/Standard")->GetColor()));
 	wxColour text_selection(to_wx(OPT_GET("Colour/Subtitle Grid/Selection")->GetColor()));
 	wxColour text_collision(to_wx(OPT_GET("Colour/Subtitle Grid/Collision")->GetColor()));
+	if (fluentWorkspace) {
+		text_standard = wxColour(232, 229, 242);
+		text_selection = wxColour(255, 255, 255);
+		text_collision = wxColour(255, 181, 183);
+	}
 
 	// First grid row
-	wxPen grid_pen(to_wx(OPT_GET("Colour/Subtitle Grid/Lines")->GetColor()));
+	wxPen grid_pen(fluentWorkspace ? wxColour(58, 59, 73)
+		: to_wx(OPT_GET("Colour/Subtitle Grid/Lines")->GetColor()));
 	dc.SetPen(grid_pen);
 	dc.DrawLine(0, 0, w, 0);
 	dc.SetPen(*wxTRANSPARENT_PEN);
@@ -332,6 +367,15 @@ void BaseGrid::OnPaint(wxPaintEvent &) {
 		dc.DrawText(str, left, y + 2);
 	};
 
+	int sourceDivider = 0;
+	if (fluentWorkspace) {
+		int fixedWidth = 0;
+		for (size_t i = 0; i + 1 < columns.size(); ++i)
+			fixedWidth += columns[i]->Width();
+		if (w - fixedWidth > FromDIP(100))
+			sourceDivider = fixedWidth + (w - fixedWidth) / 2;
+	}
+
 	// Paint header
 	{
 		dc.SetTextForeground(text_standard);
@@ -340,8 +384,14 @@ void BaseGrid::OnPaint(wxPaintEvent &) {
 
 		int x = 0;
 		for (size_t i : agi::util::range(columns.size())) {
-			if (paint_columns[i])
-				paint_text(columns[i]->Header(), x, 0, i);
+			if (paint_columns[i]) {
+				if (sourceDivider && i + 1 == columns.size()) {
+					paint_text(_("Source"), x, 0, i);
+					paint_text(_("Translation"), sourceDivider, 0, i);
+				}
+				else
+					paint_text(columns[i]->Header(), x, 0, i);
+			}
 			x += columns[i]->Width();
 		}
 
@@ -399,8 +449,17 @@ void BaseGrid::OnPaint(wxPaintEvent &) {
 		int x = 0;
 		int y = (i + 1) * lineHeight;
 		for (size_t j : agi::util::range(columns.size())) {
-			if (paint_columns[j])
-				columns[j]->Paint(dc, x, y, curDiag, context);
+			if (paint_columns[j]) {
+				if (sourceDivider && j + 1 == columns.size()) {
+					{
+						wxDCClipper clip(dc, x, y, sourceDivider - x, lineHeight);
+						paint_text(to_wx(WorkspaceSource(curDiag)), x, y, j);
+					}
+					columns[j]->Paint(dc, sourceDivider, y, curDiag, context);
+				}
+				else
+					columns[j]->Paint(dc, x, y, curDiag, context);
+			}
 			x += columns[j]->Width();
 		}
 
@@ -420,12 +479,14 @@ void BaseGrid::OnPaint(wxPaintEvent &) {
 			if (x < w)
 				dc.DrawLine(x, 0, x, maxH);
 		}
+		if (sourceDivider) dc.DrawLine(sourceDivider, 0, sourceDivider, maxH);
 		dc.DrawLine(0, 0, 0, maxH);
 		dc.DrawLine(w, 0, w, maxH);
 	}
 
 	if (active_line && active_line->Fold.getVisibleRow() >= yPos && active_line->Fold.getVisibleRow() < yPos + nDraw) {
-		dc.SetPen(wxPen(to_wx(OPT_GET("Colour/Subtitle Grid/Active Border")->GetColor())));
+		dc.SetPen(wxPen(fluentWorkspace ? wxColour(159, 107, 225)
+			: to_wx(OPT_GET("Colour/Subtitle Grid/Active Border")->GetColor())));
 		dc.SetBrush(*wxTRANSPARENT_BRUSH);
 		dc.DrawRectangle(0, (active_line->Fold.getVisibleRow() - yPos + 1) * lineHeight, w, lineHeight + 1);
 	}

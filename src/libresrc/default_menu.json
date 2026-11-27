@@ -198,6 +198,7 @@
         { "command" : "audio/open/noise" }
     ],
     "main/view" : [
+        { "command" : "app/toggle/fluent_workspace" },
         { "command" : "app/language" },
         { "command" : "app/options", "special" : "options" },
         {},

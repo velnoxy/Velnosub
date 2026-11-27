@@ -63,7 +63,13 @@
 #include <libaegisub/log.h>
 #include <libaegisub/make_unique.h>
 
+#include <wx/button.h>
+#include <wx/choice.h>
 #include <wx/dnd.h>
+#include <wx/notebook.h>
+#include <wx/panel.h>
+#include <wx/simplebook.h>
+#include <wx/stattext.h>
 #include <wx/msgdlg.h>
 #include <wx/sizer.h>
 #include <wx/statline.h>
@@ -183,7 +189,7 @@ void FrameMain::EnableToolBar(agi::OptionValue const& opt) {
 
 void FrameMain::InitContents() {
 	StartupLog("Create background panel");
-	auto Panel = new wxPanel(this, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
+	auto Panel = workspacePanel = new wxPanel(this, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
 
 	StartupLog("Create subtitles grid");
 	context->subsGrid = new BaseGrid(Panel, context.get());
@@ -195,12 +201,13 @@ void FrameMain::InitContents() {
 	context->audioBox = audioBox = new AudioBox(Panel, context.get());
 
 	StartupLog("Create subtitle editing box");
-	auto EditBox = new SubsEditBox(Panel, context.get());
+	editBox = new SubsEditBox(Panel, context.get());
+	InitWorkspaceInspector(Panel);
 
 	StartupLog("Arrange main sizers");
 	ToolsSizer = new wxBoxSizer(wxVERTICAL);
 	ToolsSizer->Add(audioBox, 0, wxEXPAND);
-	ToolsSizer->Add(EditBox, 1, wxEXPAND);
+	ToolsSizer->Add(editBox, 1, wxEXPAND);
 	TopSizer = new wxBoxSizer(wxHORIZONTAL);
 	TopSizer->Add(videoBox, 0, wxEXPAND, 0);
 	TopSizer->Add(ToolsSizer, 1, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 5);
@@ -209,10 +216,116 @@ void FrameMain::InitContents() {
 	MainSizer->Add(TopSizer,0,wxEXPAND | wxALL,0);
 	MainSizer->Add(context->subsGrid,1,wxEXPAND | wxALL,0);
 	Panel->SetSizer(MainSizer);
+	SetFluentWorkspace(OPT_GET("App/Fluent Workspace")->GetBool());
 
 	StartupLog("Perform layout");
 	Layout();
 	StartupLog("Leaving InitContents");
+}
+
+void FrameMain::InitWorkspaceInspector(wxPanel *parent) {
+	const wxColour surface(35, 36, 48), text(244, 242, 250), accent(111, 62, 179);
+	auto button = [this, accent, text](wxWindow *owner, wxString const& label, const char *command) {
+		auto control = new wxButton(owner, wxID_ANY, label);
+		control->SetBackgroundColour(accent);
+		control->SetForegroundColour(text);
+		control->Bind(wxEVT_BUTTON, [this, command](wxCommandEvent&) {
+			auto action = cmd::get(command);
+			if (action->Validate(context.get()))
+				cmd::call(command, context.get());
+		});
+		return control;
+	};
+	playSelection = button(parent, _("Play selected line"), "video/play/line");
+	playSelection->Disable();
+	playSelection->Hide();
+
+	workspaceInspector = new wxPanel(parent);
+	workspaceInspector->SetBackgroundColour(surface);
+	workspaceInspector->SetMinSize(wxSize(FromDIP(190), -1));
+	auto inspector = new wxBoxSizer(wxVERTICAL);
+	auto tabs = new wxNotebook(workspaceInspector, wxID_ANY);
+	auto modes = new wxPanel(tabs);
+	auto settings = new wxPanel(tabs);
+	tabs->AddPage(modes, _("Modes"));
+	tabs->AddPage(settings, _("Settings"));
+	modes->SetBackgroundColour(surface);
+	settings->SetBackgroundColour(surface);
+	auto modeSizer = new wxBoxSizer(wxVERTICAL);
+	auto choice = new wxChoice(modes, wxID_ANY);
+	choice->Append(_("Translation"));
+	choice->Append(_("Timing"));
+	choice->Append(_("Typesetting"));
+	choice->SetSelection(0);
+	modeSizer->Add(choice, wxSizerFlags().Expand().Border(wxALL, FromDIP(6)));
+	auto book = new wxSimplebook(modes, wxID_ANY);
+	auto addPage = [&](std::initializer_list<std::pair<wxString, const char *>> actions) {
+		auto page = new wxPanel(book);
+		page->SetBackgroundColour(surface);
+		auto content = new wxBoxSizer(wxVERTICAL);
+		for (auto const& action : actions)
+			content->Add(button(page, action.first, action.second), wxSizerFlags().Expand().Border(wxALL, FromDIP(3)));
+		page->SetSizer(content);
+		book->AddPage(page, wxString());
+	};
+	addPage({{_("Previous line"), "grid/line/prev"}, {_("Next line"), "grid/line/next"}});
+	addPage({{_("Jump to line start"), "video/jump/start"}, {_("Jump to line end"), "video/jump/end"},
+	         {_("Timing post-processor"), "tool/time/postprocess"}});
+	addPage({{_("Position"), "video/tool/drag"}, {_("Scale"), "video/tool/scale"},
+	         {_("Rotate"), "video/tool/rotate/z"}, {_("Clip"), "video/tool/clip"}});
+	choice->Bind(wxEVT_CHOICE, [book](wxCommandEvent& event) { book->SetSelection(event.GetSelection()); });
+	modeSizer->Add(book, 1, wxEXPAND);
+	auto style = new wxButton(modes, wxID_ANY, _("Edit style…"));
+	style->SetForegroundColour(text);
+	style->SetBackgroundColour(accent);
+	style->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) { editBox->OpenStyleEditor(); });
+	modeSizer->Add(style, wxSizerFlags().Expand().Border(wxALL, FromDIP(6)));
+	modes->SetSizer(modeSizer);
+
+	auto settingsSizer = new wxBoxSizer(wxVERTICAL);
+	settingsSizer->Add(button(settings, _("Preferences…"), "app/options"), wxSizerFlags().Expand().Border());
+	settingsSizer->Add(button(settings, _("Styles manager…"), "tool/style/manager"), wxSizerFlags().Expand().Border());
+	settings->SetSizer(settingsSizer);
+	inspector->Add(tabs, 1, wxEXPAND);
+	workspaceInspector->SetSizer(inspector);
+	workspaceInspector->Hide();
+}
+
+void FrameMain::SetFluentWorkspace(bool enabled) {
+	if (fluentWorkspace == enabled) return;
+	Freeze();
+	fluentWorkspace = enabled;
+	OPT_SET("App/Fluent Workspace")->SetBool(enabled);
+	const int gap = FromDIP(6);
+	if (enabled) {
+		TopSizer->Detach(videoBox);
+		ToolsSizer->Detach(audioBox);
+		mediaSizer = new wxBoxSizer(wxVERTICAL);
+		mediaSizer->Add(videoBox, 0, wxEXPAND);
+		mediaSizer->Add(playSelection, wxSizerFlags().Expand().Border(wxTOP | wxBOTTOM, gap));
+		mediaSizer->Add(audioBox, 0, wxEXPAND);
+		TopSizer->Insert(0, mediaSizer, 0, wxEXPAND | wxALL, gap);
+		TopSizer->Add(workspaceInspector, 0, wxEXPAND | wxALL, gap);
+	}
+	else {
+		mediaSizer->Detach(videoBox);
+		mediaSizer->Detach(audioBox);
+		mediaSizer->Detach(playSelection);
+		TopSizer->Remove(mediaSizer);
+		mediaSizer = nullptr;
+		TopSizer->Detach(workspaceInspector);
+		TopSizer->Insert(0, videoBox, 0, wxEXPAND);
+		ToolsSizer->Insert(0, audioBox, 0, wxEXPAND);
+	}
+	workspacePanel->SetBackgroundColour(enabled ? wxColour(23, 24, 32) : GetBackgroundColour());
+	playSelection->Show(enabled);
+	playSelection->Enable(showVideo && context->project->VideoProvider());
+	workspaceInspector->Show(enabled);
+	context->subsGrid->SetFluentWorkspace(enabled);
+	editBox->SetFluentWorkspace(enabled);
+	workspacePanel->Layout();
+	Layout();
+	Thaw();
 }
 
 void FrameMain::SetDisplayMode(int video, int audio) {
@@ -237,8 +350,9 @@ void FrameMain::SetDisplayMode(int video, int audio) {
 
 	context->videoController->Stop();
 
-	TopSizer->Show(videoBox, showVideo, true);
-	ToolsSizer->Show(audioBox, showAudio, true);
+	videoBox->Show(showVideo);
+	audioBox->Show(showAudio);
+	playSelection->Enable(showVideo);
 
 	MainSizer->Layout();
 	Layout();
@@ -339,6 +453,8 @@ void FrameMain::OnAudioOpen(agi::AudioProvider *provider) {
 }
 
 void FrameMain::OnSubtitlesOpen() {
+	context->subsGrid->ResetWorkspaceSource();
+	editBox->RefreshWorkspaceSource();
 	UpdateTitle();
 	SetDisplayMode(1, 1);
 }

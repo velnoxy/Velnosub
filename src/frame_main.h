@@ -35,6 +35,9 @@ class AegisubApp;
 class AsyncVideoProvider;
 class AudioBox;
 class VideoBox;
+class SubsEditBox;
+class wxButton;
+class wxPanel;
 namespace agi { class AudioProvider; }
 namespace agi { struct Context; class OptionValue; }
 
@@ -68,7 +71,15 @@ class FrameMain : public wxFrame {
 	void OnVideoDetach(agi::OptionValue const& opt);
 	void OnSubtitlesOpen();
 
+	void InitWorkspaceInspector(wxPanel *parent);
 	void EnableToolBar(agi::OptionValue const& opt);
+
+	bool fluentWorkspace = false;
+	wxPanel *workspacePanel = nullptr;
+	wxPanel *workspaceInspector = nullptr;
+	wxSizer *mediaSizer = nullptr;
+	wxButton *playSelection = nullptr;
+	SubsEditBox *editBox = nullptr;
 
 	AudioBox *audioBox;      ///< The audio area
 	VideoBox *videoBox;      ///< The video area
@@ -90,6 +101,9 @@ public:
 	/// @param video -1: leave unchanged; 0: hide; 1: show
 	/// @param audio -1: leave unchanged; 0: hide; 1: show
 	void SetDisplayMode(int showVid,int showAudio);
+
+	void SetFluentWorkspace(bool enabled);
+	bool IsFluentWorkspace() const { return fluentWorkspace; }
 
 	bool IsVideoShown() const { return showVideo; }
 	bool IsAudioShown() const { return showAudio; }

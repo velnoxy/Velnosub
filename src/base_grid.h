@@ -42,7 +42,11 @@ class AssDialogue;
 class GridColumn;
 class WidthHelper;
 
+#include <unordered_map>
+
 class BaseGrid final : public wxWindow {
+	bool fluentWorkspace = false;
+	std::unordered_map<int, std::string> workspaceSources;
 	std::vector<agi::signal::Connection> connections;
 	int lineHeight = 1;     ///< Height of a line in pixels in the current font
 	bool holding = false;   ///< Is a drag selection in process?
@@ -139,6 +143,9 @@ public:
 	BaseGrid(wxWindow* parent, agi::Context *context);
 	~BaseGrid();
 
+	void SetFluentWorkspace(bool enabled);
+	void ResetWorkspaceSource();
+	std::string const& WorkspaceSource(AssDialogue const* line);
 	void SetByFrame(bool state);
 	void ScrollTo(int y);
 
