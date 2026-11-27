@@ -76,6 +76,7 @@ class SubsTextEditCtrl final : public wxStyledTextCtrl {
 	/// The last seen line text, used to avoid reparsing the line for syntax
 	/// highlighting when possible
 	std::string line_text;
+	bool fluentWorkspace = false;
 
 	/// Tokenized version of line_text
 	std::vector<agi::ass::DialogueToken> tokenized_line;
@@ -113,6 +114,7 @@ public:
 	SubsTextEditCtrl(wxWindow* parent, wxSize size, long style, agi::Context *context);
 	~SubsTextEditCtrl();
 
+	void SetFluentWorkspace(bool enabled);
 	void SetTextTo(std::string const& text);
 	void Paste() override;
 

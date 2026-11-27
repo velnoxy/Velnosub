@@ -435,6 +435,7 @@ void SubsEditBox::RefreshWorkspaceSource() {
 
 void SubsEditBox::SetFluentWorkspace(bool enabled) {
 	fluentWorkspace = enabled;
+	edit_ctrl->SetFluentWorkspace(enabled);
 	GetSizer()->Show(workspaceSourceLabel, enabled);
 	GetSizer()->Show(workspaceTranslationLabel, enabled);
 	GetSizer()->Show(split_box, !enabled, true);
