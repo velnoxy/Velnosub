@@ -1,0 +1,85 @@
+name: Publish desktop preview
+
+on:
+  push:
+    branches: [codex/publish-desktop-preview]
+    paths: [.github/workflows/publish-desktop-preview.yml]
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-desktop-preview
+
+jobs:
+  publish:
+    if: github.repository == 'velnoxy/Velnosub'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      SOURCE_SHA: 2de333e40c67a146cee5a1b7d92ab2a497894adf
+      DESKTOP_RUN: '46075339980'
+      FEDORA_RUN: '46075333850'
+      TAG: v0.1.1-desktop-preview
+    steps:
+      - name: Verify source and wait for the package workflows
+        shell: bash
+        run: |
+          verify_run() {
+            local run="$1" workflow="$2" event="$3"
+            gh api "repos/$GH_REPO/actions/runs/$run" | jq -e \
+              --arg sha "$SOURCE_SHA" --arg path ".github/workflows/$workflow" --arg event "$event" \
+              '.head_sha == $sha and .head_branch == "codex/fluent-desktop-fedora" and .event == $event and (.path | split("@")[0]) == $path'
+          }
+          verify_run "$DESKTOP_RUN" desktop-packages.yml pull_request
+          verify_run "$FEDORA_RUN" fedora-rpm.yml push
+          while true; do
+            waiting=0
+            for run in "$DESKTOP_RUN" "$FEDORA_RUN"; do
+              result=$(gh api "repos/$GH_REPO/actions/runs/$run" --jq 'if .status == "completed" then .conclusion else "waiting" end')
+              case "$result" in
+                success) ;;
+                waiting) waiting=1 ;;
+                *) echo "::error::Package run $run ended with $result"; exit 1 ;;
+              esac
+            done
+            if [[ "$waiting" == 0 ]]; then break; fi
+            sleep 30
+          done
+      - name: Download and verify all requested packages
+        shell: bash
+        run: |
+          mkdir -p release
+          gh run download "$DESKTOP_RUN" -D desktop -p 'Velnosub-*'
+          gh run download "$FEDORA_RUN" -D fedora -p 'Velnosub-fedora-*'
+          cp desktop/Velnosub-linux-x86_64/Velnosub-linux-x86_64.AppImage release/
+          cp desktop/Velnosub-windows-x64/Velnosub-windows-x64-{setup.exe,portable.exe,portable.zip} release/
+          cp desktop/Velnosub-macos-arm64/Velnosub-macos-arm64.dmg release/
+          cp desktop/Velnosub-macos-x86_64/Velnosub-macos-x86_64.dmg release/
+          cp fedora/Velnosub-fedora-44-x86_64/*.fc44.x86_64.rpm release/
+          cp fedora/Velnosub-fedora-45-x86_64/*.fc45.x86_64.rpm release/
+          cd release
+          for artifact in *; do test -s "$artifact"; done
+          sha256sum * > SHA256SUMS.txt
+      - name: Publish the desktop preview for the tested commit
+        shell: bash
+        run: |
+          source_tip=$(gh api "repos/$GH_REPO/git/ref/heads/codex/fluent-desktop-fedora" --jq '.object.sha')
+          test "$source_tip" = "$SOURCE_SHA"
+          cat > "$RUNNER_TEMP/velnosub-release-notes.md" <<EOF
+          Velnosub masaüstü önizlemesi \`$SOURCE_SHA\` commit’inden derlendi.
+          
+          - Fedora 44 ve 45 için ayrı x86_64 RPM
+          - Linux x86_64 AppImage
+          - Windows x64 setup EXE, portable EXE ve ZIP
+          - macOS Apple Silicon ve Intel için ayrı DMG
+          
+          Windows paketleri imzasızdır. macOS paketleri ad hoc imzalıdır.
+          
+          [Masaüstü derlemeleri](https://github.com/$GH_REPO/actions/runs/$DESKTOP_RUN) · [Fedora derlemeleri](https://github.com/$GH_REPO/actions/runs/$FEDORA_RUN)
+          EOF
+          gh release create "$TAG" release/* --target "$SOURCE_SHA" --prerelease \
+            --title "Velnosub 0.1.1 Desktop Preview" --notes-file "$RUNNER_TEMP/velnosub-release-notes.md"
