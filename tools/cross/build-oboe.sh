@@ -30,6 +30,7 @@ BLD=$WORK/oboe-build-$mode
 [ -d "$KAYNAK" ] || (tar -xzf "$SRC/oboe-${OBOE_VER}.tar.gz" -C "$SRC" && mv -f "$SRC/oboe-${OBOE_VER}" "$KAYNAK")
 
 cmake -S "$KAYNAK" -B "$BLD" \
+    -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
     -DCMAKE_TOOLCHAIN_FILE="$NDK_ROOT/build/cmake/android.toolchain.cmake" \
     -DANDROID_ABI="$AND_ABI" -DANDROID_PLATFORM=android-$API \
     -DCMAKE_BUILD_TYPE=Release -DOBOE_BUILD_TESTS=OFF \

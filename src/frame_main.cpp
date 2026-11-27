@@ -76,6 +76,7 @@
 #include <wx/sizer.h>
 #include <wx/statline.h>
 #include <wx/sysopt.h>
+#include <wx/utils.h>
 
 enum {
 	ID_APP_TIMER_STATUSCLEAR = 12002
@@ -152,6 +153,12 @@ FrameMain::FrameMain()
 
 	StartupLog("Create views and inner main window controls");
 	InitContents();
+	if (fluentWorkspace) {
+		const auto display = wxGetClientDisplayRect().GetSize();
+		const auto preferred = FromDIP(wxSize(1200, 840));
+		SetSize(std::min(preferred.GetWidth(), display.GetWidth()),
+		        std::min(preferred.GetHeight(), display.GetHeight()));
+	}
 	OPT_SUB("Video/Detached/Enabled", &FrameMain::OnVideoDetach, this);
 
 	StartupLog("Set up drag/drop target");
@@ -305,17 +312,17 @@ void FrameMain::SetFluentWorkspace(bool enabled) {
 		mediaSizer = new wxBoxSizer(wxVERTICAL);
 		mediaSizer->Add(videoBox, 0, wxEXPAND);
 		mediaSizer->Add(playSelection, wxSizerFlags().Expand().Border(wxTOP | wxBOTTOM, gap));
-		mediaSizer->Add(audioBox, 0, wxEXPAND);
 		TopSizer->Insert(0, mediaSizer, 0, wxEXPAND | wxALL, gap);
 		TopSizer->Add(workspaceInspector, 0, wxEXPAND | wxALL, gap);
+		MainSizer->Insert(2, audioBox, 0, wxEXPAND | wxLEFT | wxRIGHT, gap);
 	}
 	else {
 		mediaSizer->Detach(videoBox);
-		mediaSizer->Detach(audioBox);
 		mediaSizer->Detach(playSelection);
 		TopSizer->Remove(mediaSizer);
 		mediaSizer = nullptr;
 		TopSizer->Detach(workspaceInspector);
+		MainSizer->Detach(audioBox);
 		TopSizer->Insert(0, videoBox, 0, wxEXPAND);
 		ToolsSizer->Insert(0, audioBox, 0, wxEXPAND);
 	}

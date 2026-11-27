@@ -440,7 +440,8 @@ void SubsEditBox::SetFluentWorkspace(bool enabled) {
 	GetSizer()->Show(workspaceTranslationLabel, enabled);
 	GetSizer()->Show(split_box, !enabled, true);
 	SetBackgroundColour(enabled ? wxColour(35, 36, 48) : wxNullColour);
-	comment_box->SetForegroundColour(enabled ? wxColour(244, 242, 250) : wxNullColour);
+	for (auto control : std::initializer_list<wxWindow*>{comment_box, by_time, by_frame})
+		control->SetForegroundColour(enabled ? wxColour(244, 242, 250) : wxNullColour);
 	secondary_editor->SetBackgroundColour(enabled ? wxColour(24, 25, 34) : wxNullColour);
 	secondary_editor->SetForegroundColour(enabled ? wxColour(244, 242, 250) : wxNullColour);
 	if (enabled) {
