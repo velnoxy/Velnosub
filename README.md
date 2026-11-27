@@ -30,6 +30,13 @@ meson setup build && ninja -C build
 
 ### Masaüstü paketleri
 
+Fluent çalışma alanında kaynak metin çeviri alanının üstünde, modlar ve
+ayarlar sağda görünür. Kaynak alanı dosya açıldığındaki satır metnini, dosya
+yeniden açılana kadar karşılaştırma için gösterir. Seçili satırı oynatma
+düğmesi video oynatmadan ayrıdır. Stil düzenleyici ayrı bir pencerede açılır.
+Klasik yerleşime dönmek için Görünüm menüsündeki Fluent çalışma alanı
+seçeneğini kullan.
+
 Masaüstü paketleri mevcut wxWidgets editöründen üretilir. GitHub Actions'taki
 **Desktop packages** iş akışı paketleri artifact olarak kaydeder.
 
@@ -37,6 +44,7 @@ Masaüstü paketleri mevcut wxWidgets editöründen üretilir. GitHub Actions'ta
 |---|---|
 | Windows x64 | Kullanıcı hesabına kurulan setup EXE, kendi klasörüne açılan portable EXE ve portable ZIP |
 | Linux x86_64 | AppImage |
+| Fedora 44 ve 45 x86_64 | Her sürüme ayrı RPM (`Fedora RPM` iş akışı) |
 | macOS Apple Silicon ve Intel | Her mimari için ayrı DMG |
 
 Windows portable paketinde `Velnosub.exe` uygulamayı açar ve ayarlar

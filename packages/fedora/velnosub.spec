@@ -43,7 +43,7 @@ mkdir -p %{_vpath_builddir}
 cp git_version.h %{_vpath_builddir}/git_version.h
 
 %build
-%meson --datadir=share/velnosub --localedir=share/velnosub/locale -Dffms2=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
+%meson --auto-features=auto --datadir=share/velnosub --localedir=share/velnosub/locale -Dffms2=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
 %meson_build
 
 %install
@@ -78,3 +78,7 @@ desktop-file-validate %{buildroot}%{_datadir}/applications/com.velnoxy.velnosub.
 %{_datadir}/icons/hicolor/*/apps/velnosub.*
 %{_datadir}/metainfo/com.velnoxy.velnosub.appdata.xml
 %{_datadir}/velnosub/
+
+%changelog
+* Fri Nov 27 2026 Velnosub contributors - 0.1.1-1
+- Package the desktop editor for Fedora.
