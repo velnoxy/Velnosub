@@ -14,9 +14,11 @@
 //
 // Aegisub Project http://www.aegisub.org/
 
+#import <wx/stc/stc.h>
+
+#if !wxCHECK_VERSION(3, 3, 0)
 #import <objc/runtime.h>
 #import <wx/osx/private.h>
-#import <wx/stc/stc.h>
 
 // from src/osx/cocoa/window.mm
 @interface wxNSView : NSView <NSTextInputClient> {
@@ -210,3 +212,4 @@ bool process_key_event(wxStyledTextCtrl *ctrl, wxKeyEvent &evt) {
 }
 
 } }
+#endif

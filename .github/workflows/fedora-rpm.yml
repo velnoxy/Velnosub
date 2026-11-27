@@ -31,7 +31,7 @@ jobs:
       image: fedora:${{ matrix.fedora }}
     steps:
       - name: Install RPM tooling
-        run: dnf -y install git-core rpm-build rpmdevtools dnf-plugins-core tar gzip xorg-x11-server-Xvfb xauth xwininfo fontconfig dejavu-sans-fonts
+        run: dnf -y install git-core rpm-build rpmdevtools dnf-plugins-core tar gzip util-linux xorg-x11-server-Xvfb xauth xwininfo fontconfig dejavu-sans-fonts
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -47,7 +47,8 @@ jobs:
           bash tools/version.sh "$source/velnosub-0.1.1" "$PWD"
           git archive --prefix=velnosub-0.1.1/ HEAD | tar -xf - -C "$source"
           tar -czf "$root/SOURCES/velnosub-0.1.1.tar.gz" -C "$source" velnosub-0.1.1
-          rpmbuild -bb --define "_topdir $root" packages/fedora/velnosub.spec
+          chown -R nobody:nobody "$root"
+          runuser -u nobody -- rpmbuild -bb --define "_topdir $root" packages/fedora/velnosub.spec
           cp "$root"/RPMS/x86_64/velnosub-[0-9]*.rpm dist/
       - name: Install RPM and open ASS
         shell: bash
