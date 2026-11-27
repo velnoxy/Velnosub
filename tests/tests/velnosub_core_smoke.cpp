@@ -19,6 +19,8 @@
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
+#include <boost/filesystem/operations.hpp>
+
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -35,7 +37,8 @@ namespace config {
 namespace {
 std::string const& default_config() {
 	static std::string const data = [] {
-		std::ifstream in("../src/libresrc/default_config.json");
+		const char *config = std::getenv("VELNOSUB_TEST_CONFIG");
+		std::ifstream in(config ? config : "../src/libresrc/default_config.json");
 		return std::string(std::istreambuf_iterator<char>{in},
 		                   std::istreambuf_iterator<char>{});
 	}();
@@ -43,14 +46,14 @@ std::string const& default_config() {
 }
 
 agi::fs::path temp_path(std::string const& name) {
-	const char *env = std::getenv("TMPDIR");
-	return agi::fs::path(env ? env : "/tmp") / name;
+	return boost::filesystem::temp_directory_path() / name;
 }
 }
 
 class CoreSmoke : public ::testing::Test {
 protected:
 	void SetUp() override {
+		ASSERT_FALSE(default_config().empty());
 		if (!config::opt)
 			config::opt = new agi::Options(
 				"", {default_config().data(), default_config().size()},

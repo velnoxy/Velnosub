@@ -189,7 +189,7 @@ msgstr "Intuitiver und anpassbarer Audio-Timingmodus"
 
 #: ../packages/desktop/aegisub.appdata.xml.in.in:19
 msgid "Fully scriptable through the Automation module"
-msgstr "Weitreichende Automatisierung & Anpassung durch externe Skripte"
+msgstr "Weitreichende Automatisierung und Anpassung durch externe Skripte"
 
 #: ../packages/desktop/aegisub.appdata.xml.in.in:32
 msgid "Typesetting"

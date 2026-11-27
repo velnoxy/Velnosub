@@ -3,9 +3,13 @@ all_test_dep_libs = []
 all_test_sources = []
 
 
-gtest_proj = subproject('gtest')
-gtest_dep = gtest_proj.get_variable('gtest_dep')
-gmock_dep = gtest_proj.get_variable('gmock_dep')
+gtest_dep = dependency('gtest', required: false)
+gmock_dep = dependency('gmock', required: false)
+if not (gtest_dep.found() and gmock_dep.found())
+    gtest_proj = subproject('gtest')
+    gtest_dep = gtest_proj.get_variable('gtest_dep')
+    gmock_dep = gtest_proj.get_variable('gmock_dep')
+endif
 
 
 all_test_deps += [
@@ -105,4 +109,5 @@ velnosub_smoke = executable('velnosub-core-smoke', ['tests/velnosub_core_smoke.c
     cpp_args : extra_args + ['-DAGI_CORE'],
     link_with : [libaegisub, aegisub_core],
 )
-test('velnosub core smoke', velnosub_smoke)
+test('velnosub core smoke', velnosub_smoke,
+    env: ['VELNOSUB_TEST_CONFIG=' + (meson.project_source_root() / 'src/libresrc/default_config.json')])

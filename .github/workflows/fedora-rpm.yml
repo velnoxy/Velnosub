@@ -1,0 +1,72 @@
+name: Fedora RPM
+
+on:
+  push:
+    branches: [codex/fluent-desktop-fedora]
+  pull_request:
+    branches: [feature]
+    paths:
+      - '.github/workflows/fedora-rpm.yml'
+      - 'packages/fedora/**'
+      - 'meson.build'
+      - 'packages/**'
+      - 'src/**'
+      - 'tests/**'
+      - 'tools/version.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Fedora ${{ matrix.fedora }} x86_64
+    runs-on: ubuntu-latest
+    timeout-minutes: 65
+    strategy:
+      fail-fast: false
+      matrix:
+        fedora: [44, 45]
+    container:
+      image: fedora:${{ matrix.fedora }}
+    steps:
+      - name: Install RPM tooling
+        run: dnf -y install git-core rpm-build rpmdevtools dnf-plugins-core tar gzip xorg-x11-server-Xvfb xauth xwininfo fontconfig dejavu-sans-fonts
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build dependencies
+        run: dnf -y builddep packages/fedora/velnosub.spec
+      - name: Build RPM and run unit tests
+        shell: bash
+        run: |
+          root="$RUNNER_TEMP/rpmbuild"
+          source="$RUNNER_TEMP/velnosub-source"
+          mkdir -p "$root/SOURCES" "$source/velnosub-0.1.1" dist
+          bash tools/version.sh "$source/velnosub-0.1.1" "$PWD"
+          git archive --prefix=velnosub-0.1.1/ HEAD | tar -xf - -C "$source"
+          tar -czf "$root/SOURCES/velnosub-0.1.1.tar.gz" -C "$source" velnosub-0.1.1
+          rpmbuild -bb --define "_topdir $root" packages/fedora/velnosub.spec
+          cp "$root"/RPMS/x86_64/velnosub-[0-9]*.rpm dist/
+      - name: Install RPM and open ASS
+        shell: bash
+        run: |
+          dnf -y install ./dist/*.rpm
+          home="$(mktemp -d)"
+          cp tools/cross/apk-ui/seed/karaskel-dene.ass "$home/velnosub-smoke.ass"
+          HOME="$home" xvfb-run -a bash -eu -c '
+            velnosub "$HOME/velnosub-smoke.ass" > "$HOME/editor.log" 2>&1 &
+            editor=$!
+            trap "kill $editor 2>/dev/null || true" EXIT
+            for i in {1..30}; do
+              if ! kill -0 "$editor" 2>/dev/null; then cat "$HOME/editor.log"; exit 1; fi
+              if grep -F "velnosub-smoke.ass" <<< "$(xwininfo -root -tree)"; then exit 0; fi
+              sleep 1
+            done
+            cat "$HOME/editor.log"
+            exit 1'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Velnosub-fedora-${{ matrix.fedora }}-x86_64
+          path: dist/*.rpm
+          if-no-files-found: error
