@@ -11,6 +11,7 @@ permissions:
 
 concurrency:
   group: publish-desktop-preview
+  cancel-in-progress: true
 
 jobs:
   publish:
@@ -20,9 +21,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      SOURCE_SHA: 2de333e40c67a146cee5a1b7d92ab2a497894adf
-      DESKTOP_RUN: '46075339980'
-      FEDORA_RUN: '46075333850'
+      SOURCE_SHA: 6dde185d40dc60d297fcc6cbf1a37a44ffa83db8
+      DESKTOP_RUN: '46075925934'
+      FEDORA_RUN: '46075919760'
       TAG: v0.1.1-desktop-preview
     steps:
       - name: Verify source and wait for the package workflows
