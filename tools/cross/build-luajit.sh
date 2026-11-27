@@ -59,7 +59,7 @@ arm64|x86_64)
         arm64) TRIP=aarch64-linux-android; ABI_DIR=arm64-v8a ;;
         x86_64) TRIP=x86_64-linux-android; ABI_DIR=x86_64 ;;
     esac
-    TOOLBIN=$(echo /root/velsub/ndk/r29/toolchains/llvm/prebuilt/*/bin | head -1)
+    TOOLBIN=$(echo "${NDK_ROOT:-/root/velsub/ndk/r29}"/toolchains/llvm/prebuilt/*/bin | head -1)
     CCX=$TOOLBIN/$TRIP$API-clang
     [ -x "$CCX" ] || { echo "eksik: $CCX"; exit 1; }
     BUILD=$WORK/build-$mode
@@ -75,7 +75,7 @@ arm64|x86_64)
         XCFLAGS="-DLUAJIT_ENABLE_LUA52COMPAT" \
         TARGET_AR="llvm-ar rcus" \
         TARGET_STRIP="llvm-strip" \
-        TARGET_CFLAGS="-D__ANDROID_API__=$API" >/dev/null)
+        TARGET_CFLAGS="-fPIC -D__ANDROID_API__=$API" >/dev/null)
     PREFIX=$DEPS_ROOT/$ABI_DIR
     (cd "$BUILD" && make -s install PREFIX="$PREFIX" >/dev/null)
     LN=$(ls "$PREFIX/lib"/libluajit*.a | head -1 | xargs basename | sed 's/^lib//; s/\.a$//')

@@ -6,13 +6,43 @@
 --        --macro "Form dene" --val metin=... --val sayi=7 --btn 1 --save YOL
 -- (VELNOSUB_AEGISHIM ortam değişkeni aegisub yüzeyini yüklüyor)
 
+local function duz_metni_buyut(text)
+	local parts = {}
+	local cursor = 1
+	while true do
+		local first, last = text:find("\\[Nnh]", cursor)
+		if not first then
+			parts[#parts + 1] = text:sub(cursor):upper()
+			return table.concat(parts)
+		end
+		parts[#parts + 1] = text:sub(cursor, first - 1):upper()
+		parts[#parts + 1] = text:sub(first, last)
+		cursor = last + 1
+	end
+end
+
+local function altyazi_metnini_buyut(text)
+	local parts = {}
+	local cursor = 1
+	while true do
+		local first, last = text:find("%b{}", cursor)
+		if not first then
+			parts[#parts + 1] = duz_metni_buyut(text:sub(cursor))
+			return table.concat(parts)
+		end
+		parts[#parts + 1] = duz_metni_buyut(text:sub(cursor, first - 1))
+		parts[#parts + 1] = text:sub(first, last)
+		cursor = last + 1
+	end
+end
+
 local function ana_harf(subs, sel, aktif)
 	aegisub.log(("ana harf: seçim %d, aktif %d, satır %d")
 	             :format(#sel, aktif or -1, #subs))
 	for _, i in ipairs(sel) do
 		local l = subs[i]
 		aegisub.log(("öncesi %d: %s"):format(i, l.text))
-		l.text = l.text:upper()
+		l.text = altyazi_metnini_buyut(l.text)
 		subs[i] = l
 		aegisub.log(("sonrası %d: %s"):format(i, subs[i].text))
 	end

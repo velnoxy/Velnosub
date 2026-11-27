@@ -17,6 +17,7 @@
 #include <libaegisub/type_name.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <lua.hpp>
 
 namespace agi { namespace lua {
@@ -48,7 +49,7 @@ void register_lib_table(lua_State *L, std::initializer_list<const char *> types,
 template<typename T>
 char *strndup(T const& str) {
 	char *ret = static_cast<char*>(malloc(str.size() + 1));
-	memcpy(ret, str.data(), str.size());
+	std::memcpy(ret, str.data(), str.size());
 	ret[str.size()] = 0;
 	return ret;
 }

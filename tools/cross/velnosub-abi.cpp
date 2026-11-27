@@ -12,21 +12,34 @@
 
 #include "ass_dialogue.h"
 #include "ass_file.h"
+#include "ass_attachment.h"
 #include "ass_info.h"
 #include "ass_style.h"
 #include <ass/ass.h>
 #include <cstdio>
+#include <unistd.h>
+#ifdef VELNOSUB_ABI_LUAJIT
+#include <lua.hpp>
+#include <libaegisub/lua/modules.h>
+#include <libaegisub/lua/script_reader.h>
+#endif
+#ifdef __ANDROID__
+#include <jni.h>
+#endif
 #include "include/aegisub/video_provider.h"
 #include "options.h"
 #include "subtitle_format.h"
 #include "video_frame.h"
 #include "video_provider_manager.h"
 
+#include <libaegisub/ass/uuencode.h>
+#include <libaegisub/background_runner.h>
 #include <libaegisub/dispatch.h>
 #include <libaegisub/exception.h>
 #include <libaegisub/fs.h>
 #include <libaegisub/log.h>
 #include <libaegisub/option.h>
+#include <libaegisub/path.h>
 #include <libaegisub/vfr.h>
 
 #include <algorithm>
@@ -85,6 +98,7 @@ extern "C" int velnosub_core_edit_first_text(AssFile &file, const char *text);
 extern "C" int velnosub_core_insert_line(AssFile &file, int idx, const char *metin,
                                          const char *bas_zaman, const char *son_zaman,
                                          const char *stil);
+extern "C" int velnosub_core_duplicate_line(AssFile &file, int idx);
 extern "C" int velnosub_core_delete_line(AssFile &file, int idx);
 extern "C" int velnosub_core_set_line_times(AssFile &file, int idx,
                                             long long ms_bas, long long ms_son);
@@ -103,7 +117,7 @@ struct Ctx {
 bool g_ready = false;
 int g_next = 1;
 std::map<int, std::unique_ptr<Ctx>> g_ctx;
-std::string g_last_error;
+thread_local std::string g_last_error;
 
 std::string read_all(std::string const& p) {
 	std::ifstream in(p, std::ios::binary);
@@ -113,6 +127,7 @@ std::string read_all(std::string const& p) {
 
 void set_err(std::string s) { g_last_error = std::move(s); }
 
+std::mutex g_video_mutex;
 std::map<int, std::unique_ptr<VideoProvider>> g_video;
 int g_vnext = 0;
 
@@ -120,12 +135,15 @@ int g_vnext = 0;
 
 struct AudioWave {
 	std::string yol;                      // ham s16 PCM yolu (oynatma yeniden açar)
+	bool gecici = false;
+	~AudioWave() { if (gecici) std::remove(yol.c_str()); }
 	int rate = 48000, ch = 2;
 	int64_t toplam_ornek = 0;             // kare sayısı (her kare ch örnek)
 	int64_t kova_ornekleme = 256;         // harita parçacığı (kare)
 	std::vector<int16_t> kova_min, kova_max;
 };
 
+std::mutex g_audio_mutex;
 std::map<int, std::unique_ptr<AudioWave>> g_audio;
 int g_anext = 0;
 
@@ -255,6 +273,12 @@ int velnosub_abi_init(const char *config_json_path) {
 		}
 		config::opt = new agi::Options(
 			"", {cfg_text.data(), cfg_text.size()}, agi::Options::FLUSH_SKIP);
+		config::path = new agi::Path;
+#ifdef __ANDROID__
+		auto user_dir = agi::fs::path(config_json_path ? config_json_path : "").parent_path();
+		if (user_dir.is_absolute())
+			config::path->SetToken("?user", user_dir);
+#endif
 		g_ready = true;
 		return 0;
 	}
@@ -271,9 +295,323 @@ int velnosub_abi_open(const char *in_path) {
 		ctx->reader = SubtitleFormat::GetReader(in, "utf-8");
 		if (!ctx->reader) { set_err("okuyucu bulunamadı: " + std::string(in_path)); return -1; }
 		ctx->reader->ReadFile(&ctx->file, in, agi::vfr::Framerate(), "utf-8");
-		int h = g_ctx.empty() ? 1 : (++g_next);
+		int h = ++g_next;
 		g_ctx.emplace(h, std::move(ctx));
 		return h;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_new_document() {
+	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	try {
+		auto doc = std::make_unique<Ctx>();
+		doc->file.LoadDefault();
+		int handle = ++g_next;
+		g_ctx.emplace(handle, std::move(doc));
+		return handle;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_snapshot(int h) {
+	try {
+		auto const &source = *g_ctx.at(h);
+		auto snapshot = std::make_unique<Ctx>(source);
+		snapshot->file.Properties = source.file.Properties;
+		int id = ++g_next;
+		g_ctx.emplace(id, std::move(snapshot));
+		return id;
+	}
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+#ifdef VELNOSUB_ABI_LUAJIT
+static void set_script_video(lua_State *lua, int handle) {
+	std::vector<int> times;
+	std::vector<int> keys;
+	int width = 0, height = 0;
+	{
+		std::lock_guard<std::mutex> lock(g_video_mutex);
+		auto found = g_video.find(handle);
+		if (found == g_video.end())
+			return;
+		auto const &video = *found->second;
+		width = video.GetWidth();
+		height = video.GetHeight();
+		keys = video.GetKeyFrames();
+		auto fps = video.GetFPS();
+		for (int i = 0; i < video.GetFrameCount(); ++i)
+			times.push_back(fps.TimeAtFrame(i));
+	}
+	lua_getglobal(lua, "aegisub");
+	lua_createtable(lua, 0, 4);
+	lua_pushinteger(lua, width);
+	lua_setfield(lua, -2, "width");
+	lua_pushinteger(lua, height);
+	lua_setfield(lua, -2, "height");
+	auto set_array = [&](const char *name, const std::vector<int> &values) {
+		lua_createtable(lua, static_cast<int>(values.size()), 0);
+		for (size_t i = 0; i < values.size(); ++i) {
+			lua_pushinteger(lua, values[i]);
+			lua_rawseti(lua, -2, static_cast<int>(i + 1));
+		}
+		lua_setfield(lua, -2, name);
+	};
+	set_array("times", times);
+	set_array("keyframes", keys);
+	lua_setfield(lua, -2, "__video");
+	lua_pop(lua, 1);
+}
+
+static bool load_macro(lua_State *lua, const char *shim, const char *script, int video = -1) {
+	agi::lua::preload_modules(lua);
+	luaL_dostring(lua, "os.execute = nil; io.popen = nil");
+	std::vector<agi::fs::path> includes;
+	if (auto *include_dir = std::getenv("VELNOSUB_AEGIINC"))
+		includes.emplace_back(include_dir);
+	if (auto *user_dir = std::getenv("VELNOSUB_SCRIPT_DIR"))
+		includes.emplace_back(user_dir);
+	for (auto candidate : {"automation/include", "../automation/include"}) {
+		if (agi::fs::FileExists(agi::fs::path(candidate) / "moonscript.lua"))
+			includes.emplace_back(candidate);
+	}
+	bool has_compiler = std::any_of(includes.begin(), includes.end(), [](auto const& directory) {
+		return agi::fs::FileExists(directory / "moonscript.lua");
+	});
+	if (has_compiler && !agi::lua::Install(lua, includes)) {
+		set_err(lua_tostring(lua, -1) ? lua_tostring(lua, -1) : "Lua modülleri yüklenemedi");
+		return false;
+	}
+	lua_newtable(lua);
+	lua_pushboolean(lua, has_compiler);
+	lua_setfield(lua, -2, "__native_modules");
+	lua_getglobal(lua, "print");
+	lua_setfield(lua, -2, "log");
+	lua_setglobal(lua, "aegisub");
+	set_script_video(lua, video);
+	if (luaL_dostring(lua, shim) || luaL_dostring(lua, script)) {
+		set_err(lua_tostring(lua, -1) ? lua_tostring(lua, -1) : "Lua betiği yüklenemedi");
+		return false;
+	}
+	return true;
+}
+#endif
+
+static int list_script_actions(const char *shim, const char *script, char *out, int size, bool filters) {
+#ifdef VELNOSUB_ABI_LUAJIT
+	std::unique_ptr<lua_State, decltype(&lua_close)> state(luaL_newstate(), lua_close);
+	if (!state) { set_err("Lua durumu oluşturulamadı"); return -1; }
+	auto *lua = state.get();
+	if (!load_macro(lua, shim, script))
+		return -1;
+	lua_getglobal(lua, "aegisub");
+	lua_getfield(lua, -1, "__macro_names");
+	lua_pushboolean(lua, filters);
+	if (lua_pcall(lua, 1, 1, 0) != 0) {
+		set_err(lua_tostring(lua, -1) ? lua_tostring(lua, -1) : "makro listesi okunamadı");
+		return -1;
+	}
+	size_t length = 0;
+	auto *names = lua_tolstring(lua, -1, &length);
+	if (!names || !out || size <= 0 || length >= static_cast<size_t>(size)) {
+		set_err("makro listesi çıktı tamponuna sığmadı");
+		return -1;
+	}
+	std::memcpy(out, names, length);
+	return static_cast<int>(length);
+#else
+	(void)shim; (void)script; (void)out; (void)size; (void)filters;
+	set_err("LuaJIT bu derlemede bulunmuyor");
+	return -1;
+#endif
+}
+
+int velnosub_abi_list_macros(const char *shim, const char *script, char *out, int size) {
+	return list_script_actions(shim, script, out, size, false);
+}
+
+int velnosub_abi_list_filters(const char *shim, const char *script, char *out, int size) {
+	return list_script_actions(shim, script, out, size, true);
+}
+
+// Makronun kısmi yazımları yalnızca geçici kopyaya uygulanır.
+static int run_script_action(int h, int row, const char *shim, const char *script,
+                             const char *name, const char *path, bool filter, int video = -1) {
+#ifdef VELNOSUB_ABI_LUAJIT
+	if (!g_ctx.count(h) || (!filter && (row < 0 || row >= static_cast<int>(g_ctx.at(h)->file.Events.size())))) {
+		set_err("makro için geçerli bir altyazı satırı seç");
+		return -1;
+	}
+	std::unique_ptr<lua_State, decltype(&lua_close)> state(luaL_newstate(), lua_close);
+	if (!state) { set_err("Lua durumu oluşturulamadı"); return -1; }
+	auto *lua = state.get();
+	if (!load_macro(lua, shim, script, video))
+		return -1;
+	int copy = velnosub_abi_snapshot(h);
+	if (copy < 0)
+		return -1;
+	lua_getglobal(lua, "aegisub");
+	lua_getfield(lua, -1, filter ? "__run_filter" : "__run_on_handle");
+	lua_pushinteger(lua, copy);
+	lua_pushstring(lua, path);
+	lua_pushstring(lua, name);
+	if (!filter) lua_pushinteger(lua, row + 1);
+	if (lua_pcall(lua, filter ? 3 : 4, 0, 0) != 0) {
+		set_err(lua_tostring(lua, -1) ? lua_tostring(lua, -1) : "makro başarısız");
+		g_ctx.erase(copy);
+		return -1;
+	}
+	return copy;
+#else
+	(void)h; (void)row; (void)shim; (void)script; (void)name; (void)path; (void)filter; (void)video;
+	set_err("LuaJIT bu derlemede bulunmuyor");
+	return -1;
+#endif
+}
+
+int velnosub_abi_run_macro(int h, int row, const char *shim, const char *script,
+                          const char *name, const char *path) {
+	return run_script_action(h, row, shim, script, name, path, false);
+}
+
+int velnosub_abi_run_filter(int h, const char *shim, const char *script,
+                           const char *name, const char *path) {
+	return run_script_action(h, -1, shim, script, name, path, true);
+}
+
+int velnosub_abi_run_script(int h, int row, const char *shim, const char *script,
+                           const char *name, const char *path, int video, int filter) {
+	return run_script_action(h, row, shim, script, name, path, filter != 0, video);
+}
+
+int velnosub_abi_dialog_count(int h);
+int velnosub_abi_dialog_close(int h);
+
+#ifdef VELNOSUB_ABI_LUAJIT
+struct InteractiveScript {
+	std::unique_ptr<lua_State, decltype(&lua_close)> state{luaL_newstate(), lua_close};
+	lua_State *thread = nullptr;
+	int document = -1;
+	int dialog = -1;
+
+	~InteractiveScript() {
+		if (dialog >= 0)
+			velnosub_abi_dialog_close(dialog);
+		if (document >= 0)
+			g_ctx.erase(document);
+	}
+};
+
+static auto &interactive_scripts() {
+	static std::map<int, std::unique_ptr<InteractiveScript>> sessions;
+	return sessions;
+}
+
+// Returns 0 with a committed snapshot, 1 with a live dialog, or -1 on error.
+static int resume_interactive(InteractiveScript &run, int args, int *result) {
+	int status = lua_resume(run.thread, args);
+	if (status == 0) {
+		*result = std::exchange(run.document, -1);
+		return 0;
+	}
+	if (status == LUA_YIELD && lua_gettop(run.thread) == 1 && lua_type(run.thread, 1) == LUA_TNUMBER) {
+		int dialog = static_cast<int>(lua_tointeger(run.thread, 1));
+		if (velnosub_abi_dialog_count(dialog) > 0) {
+			run.dialog = dialog;
+			*result = dialog;
+			return 1;
+		}
+	}
+	set_err(status == LUA_YIELD ? "Lua geçerli bir form döndürmedi"
+		: lua_tostring(run.thread, -1) ? lua_tostring(run.thread, -1) : "makro başarısız");
+	return -1;
+}
+#endif
+
+int velnosub_abi_macro_start(int h, int row, const char *shim, const char *script,
+                            const char *name, const char *path, int video, int *token, int *result) {
+#ifdef VELNOSUB_ABI_LUAJIT
+	if (!token || !result || !g_ctx.count(h) || row < 0 ||
+	    row >= static_cast<int>(g_ctx.at(h)->file.Events.size())) {
+		set_err("makro için geçerli bir altyazı satırı seç");
+		return -1;
+	}
+	auto run = std::make_unique<InteractiveScript>();
+	auto *state = run->state.get();
+	if (!state || !load_macro(state, shim, script, video)) {
+		if (!state) set_err("Lua durumu oluşturulamadı");
+		return -1;
+	}
+	run->document = velnosub_abi_snapshot(h);
+	if (run->document < 0)
+		return -1;
+	run->thread = lua_newthread(state);
+	auto *lua = run->thread;
+	lua_getglobal(lua, "aegisub");
+	lua_pushboolean(lua, 1);
+	lua_setfield(lua, -2, "__interactive");
+	lua_getfield(lua, -1, "__run_on_handle");
+	lua_remove(lua, -2);
+	lua_pushinteger(lua, run->document);
+	lua_pushstring(lua, path);
+	lua_pushstring(lua, name);
+	lua_pushinteger(lua, row + 1);
+	int status = resume_interactive(*run, 4, result);
+	if (status == 1) {
+		*token = run->document;
+		interactive_scripts().emplace(*token, std::move(run));
+	}
+	return status;
+#else
+	(void)h; (void)row; (void)shim; (void)script; (void)name; (void)path; (void)video;
+	(void)token; (void)result;
+	set_err("LuaJIT bu derlemede bulunmuyor");
+	return -1;
+#endif
+}
+
+int velnosub_abi_macro_continue(int token, int button, int *result) {
+#ifdef VELNOSUB_ABI_LUAJIT
+	auto found = interactive_scripts().find(token);
+	if (found == interactive_scripts().end() || !result) {
+		set_err("bekleyen makro bulunamadı");
+		return -1;
+	}
+	auto &run = *found->second;
+	int old_dialog = std::exchange(run.dialog, -1);
+	lua_settop(run.thread, 0);
+	lua_pushinteger(run.thread, button + 1);
+	int status = resume_interactive(run, 1, result);
+	velnosub_abi_dialog_close(old_dialog);
+	if (status != 1)
+		interactive_scripts().erase(found);
+	return status;
+#else
+	(void)token; (void)button; (void)result;
+	set_err("LuaJIT bu derlemede bulunmuyor");
+	return -1;
+#endif
+}
+
+void velnosub_abi_macro_abort(int token) {
+#ifdef VELNOSUB_ABI_LUAJIT
+	interactive_scripts().erase(token);
+#else
+	(void)token;
+#endif
+}
+
+int velnosub_abi_duplicate_line(int h, int idx) {
+	try {
+		if (velnosub_core_duplicate_line(g_ctx.at(h)->file, idx) == 0)
+			return 0;
+		set_err("satır dışında indeks: " + std::to_string(idx));
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }
@@ -550,6 +888,21 @@ int velnosub_abi_line_meta_set(int h, int idx, const char *stil,
 	return -1;
 }
 
+int velnosub_abi_line_margins(int h, int idx, int left, int right, int vertical) {
+	try {
+		auto &events = g_ctx.at(h)->file.Events;
+		if (idx < 0 || idx >= static_cast<int>(events.size()))
+			return -1;
+		auto &line = *std::next(events.begin(), idx);
+		if (left >= 0) line.Margin[0] = left;
+		if (right >= 0) line.Margin[1] = right;
+		if (vertical >= 0) line.Margin[2] = vertical;
+		return 0;
+	}
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 // P4.6 dilim 1: libass önizleme kolü — tutamaç başına şarıtlı ASS_Renderer.
 // AssStyle::GetEntryData/AssDialogue::GetEntryData okuma-kolu (fabrika
 // dokunmuyor) — abi.so'dan çağrılabilir. Font: pkg'taki blob (ask..., fontconfig
@@ -684,6 +1037,20 @@ int velnosub_abi_render_open(int h, int gen, int yuk, const char *yol_font,
 		}
 		// bellekten seri: durum (düzenlemeler) birebir taşınır; PlayRes dahil
 		Ctx &c = *g_ctx.at(h);
+#ifdef __ANDROID__
+		::ass_set_fonts_dir(r.lib, "/system/fonts");
+#endif
+		for (auto const &attachment : c.file.Attachments) {
+			if (attachment.Group() != AssEntryGroup::FONT)
+				continue;
+			auto const &raw = attachment.GetEntryData();
+			auto header = raw.find('\n');
+			if (header == std::string::npos || header + 1 == raw.size())
+				continue;
+			auto bytes = agi::ass::UUDecode(raw.data() + header + 1, raw.data() + raw.size());
+			if (!bytes.empty() && bytes.size() <= static_cast<size_t>(INT32_MAX))
+				::ass_add_font(r.lib, attachment.GetFileName().c_str(), bytes.data(), static_cast<int>(bytes.size()));
+		}
 		std::string ser = ass_seri(c, -1);
 		r.track = ::ass_new_track(r.lib);
 		::ass_process_data(r.track, ser.data(), static_cast<int>(ser.size()));
@@ -1110,11 +1477,29 @@ extern "C" int velnosub_abi_style_add(int h, const char *ad) {
 		s.scalex = s.scaley = 100.0;
 		s.borderstyle = s.borderstyle == 3 ? 3 : 1;
 		s.UpdateData();
-		c.file.Styles.push_back(s);
+		auto style = std::make_unique<AssStyle>(s);
+		c.file.Styles.push_back(*style.release());
 		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
 		return static_cast<int>(c.file.Styles.size()) - 1;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_move_last_style(int h, int position) {
+	try {
+		auto &styles = g_ctx.at(h)->file.Styles;
+		auto count = static_cast<int>(std::distance(styles.begin(), styles.end()));
+		if (position < 0 || position >= count) {
+			set_err("stil ekleme konumu geçersiz");
+			return -1;
+		}
+		auto last = std::prev(styles.end());
+		auto target = std::next(styles.begin(), position);
+		if (target != last) styles.splice(target, styles, last);
+		return 0;
+	}
 	catch (std::exception const& e) { set_err(e.what()); }
 	return -1;
 }
@@ -1134,9 +1519,15 @@ extern "C" int velnosub_abi_style_delete(int h, int idx) {
 		std::string kalan;
 		for (auto const &s : c.file.Styles)
 			if (&s != &*it) { kalan = s.name; break; }
-		for (auto &e : c.file.Events)
-			if (e.Style == it->name) e.Style = kalan;
+		int row = 0;
+		for (auto const &event : c.file.Events) {
+			if (event.Style == it->name)
+				velnosub_core_set_line_meta(c.file, row, kalan.c_str(), nullptr, nullptr, -1, -1);
+			++row;
+		}
+		auto *removed = &*it;
 		c.file.Styles.erase(it);
+		delete removed;
 		c.file.Commit("velnosub abi", AssFile::COMMIT_STYLES);
 		return 0;
 	}
@@ -1230,7 +1621,7 @@ int velnosub_abi_dialog_open(const char *spec) {
 				set_err("ctl adı boş: " + a.sinif);
 				return -1;
 			}
-			if (a.sinif != "label" && a.deger.empty()) {
+			if (a.sinif != "label" && a.sinif != "edit" && a.sinif != "textbox" && a.deger.empty()) {
 				set_err("ctl değeri boş (label hariç): " + a.ad);
 				return -1;
 			}
@@ -1428,13 +1819,33 @@ int velnosub_abi_dialog_close(int h) {
 
 // ---- P4.3 omurgası: video kolu (BGRA kare teslimi) -------------------
 
-int velnosub_abi_video_open(const char *path) {
+using VideoCancel = int (*)(const void *);
+
+class VideoIndexRunner final : public agi::BackgroundRunner, private agi::ProgressSink {
+	VideoCancel cancel;
+	const void *state;
+
+	void SetIndeterminate() override {}
+	void SetTitle(std::string const&) override {}
+	void SetMessage(std::string const&) override {}
+	void SetProgress(int64_t, int64_t) override {}
+	void Log(std::string const&) override {}
+	void SetStayOpen(bool) override {}
+	bool IsCancelled() override { return cancel && cancel(state); }
+
+public:
+	VideoIndexRunner(VideoCancel cancel, const void *state) : cancel(cancel), state(state) {}
+	void Run(std::function<void(agi::ProgressSink *)> task) override { task(this); }
+};
+
+int velnosub_abi_video_open_cancel(const char *path, VideoCancel cancel, const void *state) {
 	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
 	if (!path || !*path) { set_err("video yolu boş"); return -1; }
 	try {
-		auto prov = VideoProviderFactory::GetProvider(agi::fs::path(path),
-		                                              std::string(), nullptr);
+		VideoIndexRunner runner(cancel, state);
+		auto prov = VideoProviderFactory::GetProvider(agi::fs::path(path), std::string(), &runner);
 		if (!prov) { set_err("video okuyucu bulunamadı: " + std::string(path)); return -1; }
+		std::lock_guard<std::mutex> lock(g_video_mutex);
 		int h = ++g_vnext;
 		g_video.emplace(h, std::move(prov));
 		return h;
@@ -1444,7 +1855,12 @@ int velnosub_abi_video_open(const char *path) {
 	return -1;
 }
 
+int velnosub_abi_video_open(const char *path) {
+	return velnosub_abi_video_open_cancel(path, nullptr, nullptr);
+}
+
 int velnosub_abi_video_info(int h, char *buf, int buflen) {
+	std::lock_guard<std::mutex> lock(g_video_mutex);
 	if (!g_video.count(h)) { set_err("tanımsız video tutamacı"); return -1; }
 	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
 	try {
@@ -1465,6 +1881,7 @@ int velnosub_abi_video_info(int h, char *buf, int buflen) {
 }
 
 int velnosub_abi_video_frame(int h, int n_kare, unsigned char *buf, int buflen) {
+	std::lock_guard<std::mutex> lock(g_video_mutex);
 	if (!g_video.count(h)) { set_err("tanımsız video tutamacı"); return -1; }
 	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
 	try {
@@ -1484,6 +1901,7 @@ int velnosub_abi_video_frame(int h, int n_kare, unsigned char *buf, int buflen) 
 }
 
 int velnosub_abi_video_geom(int h, int *out_w, int *out_h, double *out_fps, int *out_kare) {
+	std::lock_guard<std::mutex> lock(g_video_mutex);
 	if (!g_video.count(h)) { set_err("tanımsız video tutamacı"); return -1; }
 	try {
 		VideoProvider &v = *g_video.at(h);
@@ -1498,7 +1916,65 @@ int velnosub_abi_video_geom(int h, int *out_w, int *out_h, double *out_fps, int 
 	return -1;
 }
 
+int velnosub_abi_attach_font(int h, const char *filename) {
+	try {
+		if (!filename || !*filename) {
+			set_err("font yolu boş");
+			return -1;
+		}
+		auto &file = g_ctx.at(h)->file;
+		FT_Library library = nullptr;
+		if (FT_Init_FreeType(&library)) {
+			set_err("FreeType açılamadı");
+			return -1;
+		}
+		FT_Face face = nullptr;
+		auto error = FT_New_Face(library, filename, 0, &face);
+		if (face) FT_Done_Face(face);
+		FT_Done_FreeType(library);
+		if (error) {
+			set_err("font dosyası okunamadı");
+			return -1;
+		}
+		file.Attachments.emplace_back(agi::fs::path(filename), AssEntryGroup::FONT);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_video_timeline(int h, int *times, int count) {
+	std::lock_guard<std::mutex> lock(g_video_mutex);
+	try {
+		auto const &video = *g_video.at(h);
+		if (!times || count != video.GetFrameCount()) {
+			set_err("video zaman tablosu boyutu geçersiz");
+			return -1;
+		}
+		auto timeline = video.GetFPS();
+		for (int i = 0; i < count; ++i) times[i] = timeline.TimeAtFrame(i);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_video_keyframes(int h, int *keys, int count) {
+	std::lock_guard<std::mutex> lock(g_video_mutex);
+	try {
+		auto frames = g_video.at(h)->GetKeyFrames();
+		if (keys && count >= static_cast<int>(frames.size()))
+			std::copy(frames.begin(), frames.end(), keys);
+		return static_cast<int>(frames.size());
+	}
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 void velnosub_abi_video_close(int h) {
+	std::lock_guard<std::mutex> lock(g_video_mutex);
 	g_video.erase(h);
 }
 
@@ -1506,7 +1982,10 @@ void velnosub_abi_video_close(int h) {
 
 // ---- P5.5: ham s16 PCM'i AudioWave olarak kaydet (peak haritası taranır;
 // audio_open ham-PCM hem kutu-decode hattı da SONUNDA BURADAN geçer) ----
-static int ses_pcm_kayit_ekle(const char *path, int rate, int ch) {
+using CancelAudio = int (*)(const void *);
+static int ses_pcm_kayit_ekle(const char *path, int rate, int ch,
+                              bool gecici = false, CancelAudio cancel = nullptr,
+                              const void *cancel_state = nullptr) {
 	std::FILE *f = std::fopen(path, "rb");
 	if (!f) { set_err("ses dosyası açılamadı: " + std::string(path)); return -1; }
 	std::fseek(f, 0, SEEK_END);
@@ -1523,6 +2002,7 @@ static int ses_pcm_kayit_ekle(const char *path, int rate, int ch) {
 	aw->ch = ch;
 	aw->toplam_ornek = toplam;
 	aw->yol = path;
+	aw->gecici = gecici;
 	// peak haritası: 256 karelik kovalar, akış-tarayıcı
 	int64_t kovalar = (toplam + aw->kova_ornekleme - 1) / aw->kova_ornekleme;
 	aw->kova_min.assign((size_t)kovalar, 32767);
@@ -1532,9 +2012,10 @@ static int ses_pcm_kayit_ekle(const char *path, int rate, int ch) {
 	int64_t kova_id = 0;
 	int16_t dmin = 32767, dmax = -32768;
 	size_t okunan;
-	while ((okunan = std::fread(cane.data(), sizeof(int16_t), cane.size(), f)) > 0) {
-		size_t kare = okunan / ch;
-		for (size_t i = 0; i < kare; ++i) {
+	while ((okunan = std::fread(cane.data(), sizeof(int16_t) * ch, cane.size() / ch, f)) > 0) {
+		if (cancel && cancel(cancel_state))
+			break;
+		for (size_t i = 0; i < okunan; ++i) {
 			int16_t hedef = cane[i * ch]; // tek kanal örneklemesi
 			if (hedef < dmin) dmin = hedef;
 			if (hedef > dmax) dmax = hedef;
@@ -1550,8 +2031,18 @@ static int ses_pcm_kayit_ekle(const char *path, int rate, int ch) {
 			}
 		}
 	}
+	bool okuma_hatasi = std::ferror(f) || reset != toplam;
 	std::fclose(f);
+	if (okuma_hatasi) {
+		set_err("ses önbelleği okunamadı");
+		return -1;
+	}
+	if (reset % aw->kova_ornekleme) {
+		aw->kova_min.back() = dmin;
+		aw->kova_max.back() = dmax;
+	}
 	// dosya imleci kapatıldı; oynatma yol'dan yeniden açar
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	int h = ++g_anext;
 	g_audio.emplace(h, std::move(aw));
 	return h;
@@ -1568,17 +2059,17 @@ int velnosub_abi_audio_open(const char *path, int rate, int ch) {
 // akışını s16 stereo 48000'e çözer, önbellek dosyasına (VELNOSUB_CACHE altı)
 // yazar; AudioWave kaydı o önbellekten kurulur → peak/oynatma hattı aynen
 // kalır (Oboe dosyadan akar). Çok kanallı girişler kanonik stereo'ya düşer.
-extern "C" int velnosub_abi_audio_file_open(const char *in_path) {
+static int ses_dosya_ac(const char *in_path, CancelAudio cancel, const void *cancel_state) {
 	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
 	if (!in_path || !*in_path) { set_err("ses yolu boş"); return -1; }
 	const int hedef_rate = 48000, hedef_ch = 2;
 	std::string onbellek;
 	if (const char *cb = std::getenv("VELNOSUB_CACHE"); cb && *cb)
-		onbellek = std::string(cb) + "/user-ses.pcm";
+		onbellek = std::string(cb) + "/velnosub-ses-XXXXXX";
 	else if (const char *ex = std::getenv("VELNOSUB_EXTDIR"); ex && *ex)
-		onbellek = std::string(ex) + "/user-ses.pcm";
+		onbellek = std::string(ex) + "/velnosub-ses-XXXXXX";
 	else
-		onbellek = "user-ses.pcm";
+		onbellek = "velnosub-ses-XXXXXX";
 	AVFormatContext *fmt = nullptr;
 	AVCodecContext *cc = nullptr;
 	SwrContext *swr = nullptr;
@@ -1616,49 +2107,81 @@ extern "C" int velnosub_abi_audio_file_open(const char *in_path) {
 			set_err(std::string("çözücü açılamadı: ") + co->name);
 			break;
 		}
-		// kanonik giriş düzeni: N kanal → varsayılan N-maske (mono/stereo/5.1)
-		int64_t in_layout =
-		    av_get_default_channel_layout(cc->channels > 0 ? cc->channels : 2);
-		swr = swr_alloc_set_opts(nullptr, AV_CH_LAYOUT_STEREO, AV_SAMPLE_FMT_S16,
-		                         hedef_rate, in_layout, cc->sample_fmt,
-		                         cc->sample_rate, 0, nullptr);
-		if (!swr || swr_init(swr) < 0) {
+		AVChannelLayout in_layout = {};
+		AVChannelLayout out_layout = AV_CHANNEL_LAYOUT_STEREO;
+		int rc;
+		if (cc->ch_layout.order == AV_CHANNEL_ORDER_UNSPEC) {
+			av_channel_layout_default(&in_layout, cc->ch_layout.nb_channels);
+			rc = 0;
+		} else {
+			rc = av_channel_layout_copy(&in_layout, &cc->ch_layout);
+		}
+		if (rc >= 0)
+			rc = swr_alloc_set_opts2(&swr, &out_layout, AV_SAMPLE_FMT_S16, hedef_rate,
+			                        &in_layout, cc->sample_fmt, cc->sample_rate, 0, nullptr);
+		av_channel_layout_uninit(&in_layout);
+		if (rc < 0 || !swr || swr_init(swr) < 0) {
 			set_err("resamplama kurulumu başarısız");
 			break;
 		}
-		cik = std::fopen(onbellek.c_str(), "wb");
-		if (!cik) { set_err("önbellek yazılamaz: " + onbellek); break; }
+		int fd = mkstemp(onbellek.data());
+		if (fd < 0) { set_err("ses önbelleği oluşturulamadı"); break; }
+		cik = fdopen(fd, "wb");
+		if (!cik) {
+			close(fd);
+			set_err("ses önbelleği açılamadı");
+			break;
+		}
 		pkt = av_packet_alloc();
 		frm = av_frame_alloc();
 		if (!pkt || !frm) { set_err("ffmpeg tamponları kurulamadı"); break; }
 		std::vector<uint8_t> tampon(1 << 16);
 		const int kare_bayt = hedef_ch * 2;
-		while (av_read_frame(fmt, pkt) >= 0) {
-			if (pkt->stream_index != si) { av_packet_unref(pkt); continue; }
-			if (avcodec_send_packet(cc, pkt) < 0) { av_packet_unref(pkt); continue; }
-			while (avcodec_receive_frame(cc, frm) == 0) {
-				const uint8_t *gir[8] = {};
-				for (int c = 0; c < 8; ++c) gir[c] = frm->data[c];
-				uint8_t *cikis[1] = { tampon.data() };
-				// tek çağrı yeter: kalan örnekler swr içi tampona düşer (boşalt sıfır-örnekle)
-				int alind = swr_convert(swr, cikis, (int)(tampon.size() / kare_bayt),
-				                        gir, frm->nb_samples);
-				if (alind > 0)
-					std::fwrite(tampon.data(), kare_bayt, alind, cik);
+		auto yaz = [&](int adet) {
+			return adet >= 0 && std::fwrite(tampon.data(), kare_bayt, adet, cik)
+				== static_cast<size_t>(adet);
+		};
+		auto cozumle = [&](const AVPacket *packet) {
+			if (avcodec_send_packet(cc, packet) < 0)
+				return false;
+			int sonuc;
+			while ((sonuc = avcodec_receive_frame(cc, frm)) == 0) {
+				uint8_t *cikis[] = {tampon.data()};
+				int duzlem = av_sample_fmt_is_planar(static_cast<AVSampleFormat>(frm->format))
+					? frm->ch_layout.nb_channels : 1;
+				std::vector<const uint8_t *> giris(frm->extended_data, frm->extended_data + duzlem);
+				int adet = swr_convert(swr, cikis, tampon.size() / kare_bayt,
+				                       giris.data(), frm->nb_samples);
 				av_frame_unref(frm);
+				if (!yaz(adet))
+					return false;
 			}
+			return sonuc == AVERROR(EAGAIN) || sonuc == AVERROR_EOF;
+		};
+		bool saglam = true;
+		int okuma;
+		while ((okuma = av_read_frame(fmt, pkt)) >= 0) {
+			if (cancel && cancel(cancel_state)) {
+				saglam = false;
+				break;
+			}
+			if (pkt->stream_index == si)
+				saglam = cozumle(pkt);
 			av_packet_unref(pkt);
+			if (!saglam)
+				break;
 		}
-		{ // swr içi işlenmemiş örnekleri boşalt
-			uint8_t *cikis[1] = { tampon.data() };
-			int alind;
-			while ((alind = swr_convert(swr, cikis, (int)(tampon.size() / kare_bayt),
-			                            nullptr, 0)) > 0)
-				std::fwrite(tampon.data(), kare_bayt, alind, cik);
+		saglam = saglam && okuma == AVERROR_EOF && cozumle(nullptr);
+		while (saglam) {
+			uint8_t *cikis[] = {tampon.data()};
+			int adet = swr_convert(swr, cikis, tampon.size() / kare_bayt, nullptr, 0);
+			if (adet == 0)
+				break;
+			saglam = yaz(adet);
 		}
-		std::fclose(cik);
+		tamam = std::fclose(cik) == 0 && saglam;
 		cik = nullptr;
-		tamam = true;
+		if (!tamam) set_err("ses çözülemedi veya önbelleğe yazılamadı");
 	} while (false);
 	av_frame_free(&frm);
 	av_packet_free(&pkt);
@@ -1670,7 +2193,24 @@ extern "C" int velnosub_abi_audio_file_open(const char *in_path) {
 		std::remove(onbellek.c_str());
 		return -1;
 	}
-	return ses_pcm_kayit_ekle(onbellek.c_str(), hedef_rate, hedef_ch);
+	int h = ses_pcm_kayit_ekle(onbellek.c_str(), hedef_rate, hedef_ch,
+	                           true, cancel, cancel_state);
+	if (h < 0)
+		std::remove(onbellek.c_str());
+	return h;
+}
+
+int velnosub_abi_audio_file_open_cancel(const char *path, CancelAudio cancel,
+                                        const void *cancel_state) {
+	try {
+		return ses_dosya_ac(path, cancel, cancel_state);
+	}
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_audio_file_open(const char *path) {
+	return velnosub_abi_audio_file_open_cancel(path, nullptr, nullptr);
 }
 
 // ---- P6.4: kutu-İÇİ metin altyazı (MKV S_TEXT/*, MP4 mov_text …) ------
@@ -1780,6 +2320,60 @@ extern "C" int velnosub_abi_subtitle_examine(const char *in_path) {
 	return sayi; // 0 = metin akışı yok; <0 = hata (set_err)
 }
 
+// ASS paketlerini yeniden kodlamadan yaz. Muxer başlık, stil tablosu ve
+// olay zamanlarını kapsayıcıdaki codec bilgisi ve zaman tabanından alır.
+static int ass_akisini_yaz(AVFormatContext *input, AVStream *source, const char *dest) {
+	AVFormatContext *output = nullptr;
+	AVPacket *packet = av_packet_alloc();
+	int count = 0;
+	int rc = AVERROR(ENOMEM);
+	do {
+		if (!packet)
+			break;
+		rc = avformat_alloc_output_context2(&output, nullptr, "ass", dest);
+		if (rc < 0)
+			break;
+		auto stream = avformat_new_stream(output, nullptr);
+		if (!stream) { rc = AVERROR(ENOMEM); break; }
+		rc = avcodec_parameters_copy(stream->codecpar, source->codecpar);
+		if (rc < 0)
+			break;
+		stream->codecpar->codec_tag = 0;
+		stream->time_base = source->time_base;
+		rc = avio_open(&output->pb, dest, AVIO_FLAG_WRITE);
+		if (rc < 0)
+			break;
+		rc = avformat_write_header(output, nullptr);
+		if (rc < 0)
+			break;
+		while ((rc = av_read_frame(input, packet)) >= 0) {
+			if (packet->stream_index == source->index) {
+				packet->stream_index = stream->index;
+				av_packet_rescale_ts(packet, source->time_base, stream->time_base);
+				rc = av_interleaved_write_frame(output, packet);
+				if (rc < 0)
+					break;
+				++count;
+			}
+			av_packet_unref(packet);
+		}
+		if (rc == AVERROR_EOF)
+			rc = av_write_trailer(output);
+	} while (false);
+	av_packet_free(&packet);
+	if (output && output->pb) {
+		int close_result = avio_closep(&output->pb);
+		if (rc >= 0)
+			rc = close_result;
+	}
+	avformat_free_context(output);
+	if (rc < 0 || count == 0) {
+		set_err("ASS akışı yazılamadı");
+		return -1;
+	}
+	return count;
+}
+
 extern "C" int velnosub_abi_subtitle_extract(
     const char *in_path, int rock_idx, const char *dest) {
 	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
@@ -1808,6 +2402,13 @@ extern "C" int velnosub_abi_subtitle_extract(
 		    !alt_metin_kodek((int)st->codecpar->codec_id)) {
 			set_err("akış metin altyazı değil");
 			break;
+		}
+		if (st->codecpar->codec_id == AV_CODEC_ID_ASS &&
+		    agi::fs::path(dest).extension() == ".ass") {
+			int rc = ass_akisini_yaz(fmt, st, dest);
+			avformat_close_input(&fmt);
+			if (rc < 0) std::remove(dest);
+			return rc;
 		}
 		const AVCodec *co = avcodec_find_decoder(st->codecpar->codec_id);
 		if (!co) {
@@ -1859,7 +2460,9 @@ extern "C" int velnosub_abi_subtitle_extract(
 				if (!metin.empty()) {
 					int64_t bas = pkt_ms + sub.start_display_time;
 					int64_t son = pkt_ms + sub.end_display_time;
-					if (son <= bas) son = bas + 500;
+					if (son <= bas && pkt->duration > 0)
+					son = pkt_ms + av_rescale_q(pkt->duration, st->time_base, ms_q);
+				if (son <= bas) son = bas + 500;
 					++olay;
 					std::fprintf(cik, "%d\n%s --> %s\n%s\n\n", olay,
 					             srt_saati(bas).c_str(),
@@ -1889,6 +2492,7 @@ extern "C" int velnosub_abi_subtitle_extract(
 }
 
 int velnosub_abi_audio_len(int h) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	int64_t t = g_audio.at(h)->toplam_ornek;
 	if (t > INT32_MAX) return INT32_MAX; // kare sayısı int/64 ayrımı için üst kırpma
@@ -1896,11 +2500,13 @@ int velnosub_abi_audio_len(int h) {
 }
 
 int64_t velnosub_abi_audio_len64(int h) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	return g_audio.at(h)->toplam_ornek;
 }
 
 int velnosub_abi_audio_info(int h, char *buf, int buflen) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	if (!buf || buflen <= 0) { set_err("boş tampon"); return -1; }
 	AudioWave &a = *g_audio.at(h);
@@ -1917,6 +2523,7 @@ int velnosub_abi_audio_info(int h, char *buf, int buflen) {
 
 int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
 	                         int16_t *minv, int16_t *maxv) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	if (kovalar <= 0 || !minv || !maxv) { set_err("boş kova işaretçisi"); return -1; }
 	AudioWave &a = *g_audio.at(h);
@@ -1947,6 +2554,7 @@ int velnosub_abi_audio_peaks(int h, int64_t d0, int64_t adet, int kovalar,
 // sütun konumu hesabı taşmaz ve görünür aralık dışına veri okunmaz.
 int velnosub_abi_audio_spectrum(int h, int64_t d0, int64_t adet,
                                 int cols, int rows, unsigned char *out) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	if (cols < 1 || cols > 256 || rows < 1 || rows > 256 || !out) {
 		set_err("spektrogram boyutu geçersiz");
@@ -2081,6 +2689,7 @@ static void ses_kurulum_ipligi(int h, std::shared_ptr<AudioPlayer> pbc) {
 }
 
 int velnosub_abi_audio_play(int h, int64_t d0, int64_t adet) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 	if (!g_audio.count(h)) { set_err("tanımsız ses tutamacı"); return -1; }
 	AudioWave &a = *g_audio.at(h);
 	if (d0 < 0 || adet <= 0 || d0 + adet > a.toplam_ornek) {
@@ -2138,6 +2747,7 @@ int velnosub_abi_audio_stop(int) { return 0; }
 #endif
 
 void velnosub_abi_audio_close(int h) {
+	std::lock_guard<std::mutex> lock(g_audio_mutex);
 #ifdef VELNOSUB_ABI_OBOE
 	velnosub_abi_audio_stop(h);
 #endif
@@ -2319,3 +2929,107 @@ int velnosub_abi_text_extents(const char *yol_font, double boyut,
 }
 
 } // extern "C"
+
+#ifdef __ANDROID__
+namespace {
+std::mutex document_mutex;
+int document_status = 0;
+std::string document_path;
+std::atomic<bool> close_requested{false};
+using WakeEditor = void (*)();
+std::atomic<WakeEditor> wake_editor{nullptr};
+
+void wake_document_ui() {
+	if (auto wake = wake_editor.load())
+		wake();
+}
+
+jbyteArray document_bytes(JNIEnv *env, const char *value) {
+	auto size = static_cast<jsize>(std::strlen(value));
+	auto bytes = env->NewByteArray(size);
+	if (bytes && size)
+		env->SetByteArrayRegion(bytes, 0, size, reinterpret_cast<const jbyte *>(value));
+	return bytes;
+}
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_velnoxy_velnosubui_DocumentActivity_documentResult(
+	JNIEnv *env, jclass, jint status, jbyteArray path) {
+	{
+		std::lock_guard<std::mutex> lock(document_mutex);
+		auto len = env->GetArrayLength(path);
+		document_path.resize(len);
+		if (len)
+			env->GetByteArrayRegion(path, 0, len, reinterpret_cast<jbyte *>(document_path.data()));
+		document_status = env->ExceptionCheck() ? -1 : status;
+	}
+	wake_document_ui();
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_velnoxy_velnosubui_DocumentActivity_requestClose(JNIEnv *, jclass) {
+	close_requested.store(true);
+	wake_document_ui();
+}
+
+extern "C" int velnosub_abi_document_take_close() {
+	return close_requested.exchange(false);
+}
+
+extern "C" void velnosub_abi_document_set_wake(WakeEditor wake) {
+	wake_editor.store(wake);
+}
+
+extern "C" int velnosub_abi_document_pick(JavaVM *vm, jobject activity,
+                                         int kind, const char *path, const char *title) {
+	JNIEnv *env = nullptr;
+	bool attached = vm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6) == JNI_EDETACHED;
+	if (attached && vm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+		return -1;
+	if (!env)
+		return -1;
+
+	auto cls = env->GetObjectClass(activity);
+	bool ok = false;
+	if (kind < 0) {
+		auto method = cls ? env->GetMethodID(cls, "closeEditor", "()V") : nullptr;
+		if (method)
+			env->CallVoidMethod(activity, method);
+		ok = method && !env->ExceptionCheck();
+	} else {
+		{
+			std::lock_guard<std::mutex> lock(document_mutex);
+			document_status = 0;
+			document_path.clear();
+		}
+		auto method = cls ? env->GetMethodID(cls, "pickDocument", "(I[B[B)V") : nullptr;
+		auto jpath = method ? document_bytes(env, path) : nullptr;
+		auto jtitle = jpath && !env->ExceptionCheck() ? document_bytes(env, title) : nullptr;
+		if (jtitle && !env->ExceptionCheck()) {
+			env->CallVoidMethod(activity, method, kind, jpath, jtitle);
+			ok = !env->ExceptionCheck();
+		}
+		env->DeleteLocalRef(jtitle);
+		env->DeleteLocalRef(jpath);
+	}
+	if (env->ExceptionCheck())
+		env->ExceptionClear();
+	env->DeleteLocalRef(cls);
+	if (attached)
+		vm->DetachCurrentThread();
+	return ok ? 0 : -1;
+}
+
+extern "C" int velnosub_abi_document_poll(char *path, size_t len) {
+	std::lock_guard<std::mutex> lock(document_mutex);
+	int status = document_status;
+	document_status = 0;
+	if (status != 1)
+		return status;
+	if (document_path.size() >= len)
+		return -1;
+	std::memcpy(path, document_path.c_str(), document_path.size() + 1);
+	return 1;
+}
+#endif

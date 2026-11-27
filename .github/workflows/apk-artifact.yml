@@ -7,8 +7,7 @@ on:
     inputs:
       apk_path:
         description: "APK yolu (repo içinde)"
-        required: false
-        default: "apk-release/velnosub-ui-0.1.0-alpha9.apk"
+        required: true
 permissions:
   contents: read
 jobs:

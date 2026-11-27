@@ -153,8 +153,13 @@ extern "C" fn lib_yuklendi_isareti() {
 }
 
 #[cfg(target_os = "android")]
+static DOCUMENT_ACTIVITY: std::sync::Mutex<Option<android_activity::AndroidApp>> =
+	std::sync::Mutex::new(None);
+
+#[cfg(target_os = "android")]
 #[no_mangle]
 fn android_main(app: android_activity::AndroidApp) {
+	*DOCUMENT_ACTIVITY.lock().unwrap() = Some(app.clone());
 	// --- alpha kapsam (ruling 5): asset kopyası + tek örnek açılış ---
 	// internal_data_path: android-activity-0.6.1/src/lib.rs:1272
 	let _ = BAS.set(std::time::Instant::now());
@@ -183,8 +188,13 @@ fn android_main(app: android_activity::AndroidApp) {
 		// dizini tarar (uzanti_listele)
 		std::env::set_var("VELNOSUB_EXTDIR", &dis);
 	}
-	// P5.5: kutu-sesi decode önbelleği (abi: audio_file_open → user-ses.pcm)
-	std::env::set_var("VELNOSUB_CACHE", &baz);
+	// The core resolves its paths during initialization. NativeActivity does
+	// not supply the shell's HOME and /tmp is unavailable on Android.
+	let cache = baz.join("cache");
+	let cache = if std::fs::create_dir_all(&cache).is_ok() { &cache } else { &baz };
+	std::env::set_var("HOME", &baz);
+	std::env::set_var("TMPDIR", cache);
+	std::env::set_var("VELNOSUB_CACHE", cache);
 	not_yaz("A0 android_main girdi");
 	not_yaz(&format!(
 		"A1 filesDir={} sdk={}",
@@ -201,16 +211,31 @@ fn android_main(app: android_activity::AndroidApp) {
 	not_yaz("A1d DejaVuSans.ttf tamam");
 	varlik_yaz(&app, "velnosub/default_config.json", &baz.join("default_config.json"));
 	not_yaz("A1e default_config.json tamam");
+	let include_dir = baz.join("automation");
+	if std::fs::create_dir_all(include_dir.join("aegisub")).is_ok() {
+		for name in [
+			"karaskel.lua", "karaskel-auto4.lua", "utils.lua", "utils-auto4.lua",
+			"unicode.lua", "cleantags.lua", "moonscript.lua", "lfs.lua", "re.lua",
+			"aegisub/argcheck.moon", "aegisub/ffi.moon", "aegisub/lfs.moon",
+			"aegisub/re.moon", "aegisub/unicode.moon", "aegisub/util.moon",
+		] {
+			varlik_yaz(&app, &format!("velnosub/share/lua/inc/{name}"), &include_dir.join(name));
+		}
+		std::env::set_var("VELNOSUB_AEGIINC", &include_dir);
+		std::env::set_var("VELNOSUB_DATA_DIR", &include_dir);
+	}
+	let scripts = baz.join("scripts");
+	if std::fs::create_dir_all(&scripts).is_ok() {
+		std::env::set_var("VELNOSUB_SCRIPT_DIR", scripts);
+	}
+	std::env::set_var("VELNOSUB_USER_DIR", &baz);
+
 	// abi.rs CWD-fallbacklerini abs yola bağla (Android'de cwd=/ = read-only);
 	// fonts/config/ayar kayıt dosyaları filesDir'den okunur/yazılır
 	std::env::set_var("VELNOSUB_CONFIG_JSON", baz.join("default_config.json"));
 	std::env::set_var("VELNOSUB_UI_JSON", baz.join("velnosub-ui.json"));
 	std::env::set_var("VELNOSUB_FONT", baz.join("DejaVuSans.ttf"));
-	std::env::set_var("VELNOSUB_SAVE", baz.join("kayit.ass"));
 	not_yaz("A1f VE env yolları set edildi");
-	// eğri dosyalar: open=sabit deneme dosyası, save=Kayıt hedefi
-	let open = Some(baz.join("karaskel-dene.ass").display().to_string());
-	let save = Some(baz.join("kayit.ass").display().to_string());
 
 	let viewport = ViewportBuilder::default()
 		.with_inner_size([440.0, 320.0])
@@ -226,7 +251,7 @@ fn android_main(app: android_activity::AndroidApp) {
 		..Default::default()
 	};
 	not_yaz("A2 event-loop kurulum tamam — run_native çağrılıyor");
-	kos(open, save, options);
+	kos(None, None, options);
 }
 
 /// APK varlığı asset manager'dan okur filesDir'e yazar (mevcutsa üstüne).

@@ -52,6 +52,13 @@ pub fn bolmeler(gen: f32, yuk: f32, video_oran: Option<f32>) -> Bolmeler {
 	bolmeler_ust(gen, yuk * 0.55, video_oran)
 }
 
+/// Keep part of the editor viewport available for the subtitle grid.
+pub(crate) fn workbench_max_height(height: f32) -> f32 {
+	let height = height.max(0.0);
+	let grid_height = (height * 0.25).clamp(64.0, 140.0).min(height);
+	height - grid_height
+}
+
 /// Üst çalışma alanı yüksekliği zaten biliniyorsa (yeniden
 /// boyutlandırılabilir panel) aynı bölmeleri doğrudan üretir.
 pub(crate) fn bolmeler_ust(
@@ -73,6 +80,17 @@ pub(crate) fn bolmeler_ust(
 	}
 }
 
+/// Size of the frame in UI points. A fixed percentage uses video pixels per screen pixel.
+pub(crate) fn video_frame_size(
+	video: [f32; 2], panel: [f32; 2], percentage: Option<u16>, pixels_per_point: f32,
+) -> [f32; 2] {
+	let scale = match percentage {
+		None => (panel[0] / video[0]).min(panel[1] / video[1]),
+		Some(percent) => f32::from(percent) / 100.0 / pixels_per_point,
+	};
+	video.map(|axis| axis * scale)
+}
+
 #[cfg(test)]
 mod tests {
 	use super::*;
@@ -83,6 +101,29 @@ mod tests {
 			(a - b).abs() < 0.5,
 			"{ne}: beklenen {b}, gelen {a}"
 		);
+	}
+
+	#[test]
+	fn video_fit_uses_both_panel_dimensions_without_stretching() {
+		assert_eq!(video_frame_size([1920.0, 1080.0], [960.0, 800.0], None, 1.0), [960.0, 540.0]);
+		assert_eq!(video_frame_size([1080.0, 1920.0], [640.0, 480.0], None, 1.0), [270.0, 480.0]);
+	}
+
+	#[test]
+	fn fixed_video_zoom_is_independent_of_ui_scale_and_panel_size() {
+		for pixels_per_point in [0.8, 1.0, 2.0] {
+			let size = video_frame_size([640.0, 360.0], [300.0, 200.0], Some(150), pixels_per_point);
+			yakin(size[0] * pixels_per_point, 960.0, "video width in pixels");
+			yakin(size[1] * pixels_per_point, 540.0, "video height in pixels");
+		}
+	}
+
+	#[test]
+	fn subtitle_grid_keeps_space_after_workbench_resize() {
+		assert_eq!(workbench_max_height(900.0), 760.0);
+		assert_eq!(workbench_max_height(300.0), 225.0);
+		assert_eq!(workbench_max_height(40.0), 0.0);
+		assert_eq!(workbench_max_height(-1.0), 0.0);
 	}
 
 	#[test]

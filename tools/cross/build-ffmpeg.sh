@@ -34,7 +34,7 @@ DL "https://ffmpeg.org/releases/ffmpeg-$FF_VER.tar.xz" "$TARBALL"
 BUILD=$WORK/ffmpeg-build-$mode
 [ -d "$BUILD" ] || tar -xf "$TARBALL" --transform "s|ffmpeg-$FF_VER|ffmpeg-build-$mode|" -C "$WORK"
 
-TOOLBIN=$(echo /root/velsub/ndk/r29/toolchains/llvm/prebuilt/*/bin | head -1)
+TOOLBIN=$(echo "${NDK_ROOT:-/root/velsub/ndk/r29}"/toolchains/llvm/prebuilt/*/bin | head -1)
 CCX=$TOOLBIN/$TRIP$API-clang
 [ -x "$CCX" ] || { echo "eksik: $CCX"; exit 1; }
 
@@ -50,9 +50,10 @@ CC="$CCX" ./configure \
     --disable-programs --disable-doc --disable-network --disable-avdevice \
     --disable-postproc --disable-avfilter --disable-autodetect \
     --enable-swresample --enable-swscale \
-    --enable-demuxer=mov,matroska,avi,ogg,flv,wav,ass,srt \
-    --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,flac,opus,vorbis,pcm_s16le,pcm_f32le,srt,ass,ssa,mov_text,webvtt \
+    --enable-demuxer=mov,matroska,avi,ogg,flv,wav,ass,srt,mp3,flac,mpegts,wv,aac \
+    --enable-decoder=h264,hevc,vp8,vp9,aac,mp3,flac,opus,vorbis,pcm_s16le,pcm_f32le,wavpack,srt,ass,ssa,mov_text,webvtt \
     --enable-parser=h264,hevc,aac,vorbis,opus,flac \
+    --enable-muxer=ass \
     --enable-protocol=file \
     $XASM \
     > "$WORK/ffmpeg-configure-$mode.log" 2>&1) || { tail -20 "$WORK/ffmpeg-configure-$mode.log"; exit 1; }

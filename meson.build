@@ -112,19 +112,32 @@ deps += dependency('libass', version: '>=0.9.7',
                    fallback: ['libass', 'libass_dep'])
 
 boost_modules = ['chrono', 'filesystem', 'thread', 'locale', 'regex']
-if not get_option('local_boost')
-    boost_dep = dependency('boost', version: '>=1.70.0',
+android_cross = meson.is_cross_build() and host_machine.system() == 'android'
+if android_cross
+    android_boost_dir = meson.get_external_property('boost_librarydir')
+    android_boost_libs = []
+    foreach module: boost_modules + ['atomic', 'system']
+        android_boost_libs += cxx.find_library('boost_' + module,
+            static: true, required: true, dirs: [android_boost_dir])
+    endforeach
+    boost_dep = declare_dependency(
+        dependencies: android_boost_libs,
+        compile_args: ['-isystem', meson.get_external_property('boost_includedir')])
+else
+    if not get_option('local_boost')
+        boost_dep = dependency('boost', version: '>=1.70.0',
                             modules: boost_modules + ['system'],
                             required: false,
                             static: get_option('default_library') == 'static')
-endif
+    endif
 
-if get_option('local_boost') or not boost_dep.found()
-    boost_dep = []
-    boost = subproject('boost')
-    foreach module: boost_modules
-        boost_dep += boost.get_variable('boost_' + module + '_dep')
-    endforeach
+    if get_option('local_boost') or not boost_dep.found()
+        boost_dep = []
+        boost = subproject('boost')
+        foreach module: boost_modules
+            boost_dep += boost.get_variable('boost_' + module + '_dep')
+        endforeach
+    endif
 endif
 
 deps += boost_dep
@@ -480,7 +493,7 @@ if get_option('velnosub_mobile')
     # cross'ta .so linki boost dosyalarını find_library ile açıkça alır;
     # host'ta (sanitey) boost_dep masaüstünün tamlığını sürer.
     velnosub_boost_libs = []
-    if meson.is_cross_build()
+    if meson.is_cross_build() and not android_cross
         velnosub_boost_dir = meson.get_external_property('boost_librarydir')
         foreach aseg : ['system', 'atomic', 'chrono', 'filesystem', 'locale', 'regex', 'thread']
             velnosub_boost_libs += cxx.find_library('boost_' + aseg,
@@ -516,6 +529,11 @@ if get_option('velnosub_mobile')
         install: true)
 
     # P2.2: ASS aç → düzenle → kaydet CLI dumanı (cihazda koşar).
+    abi_luajit = dependency('luajit', required: false)
+    if abi_luajit.found()
+        luabins_dependencies = [abi_luajit]
+        subdir('vendor/luabins/src')
+    endif
     subdir('tools/cross')
 endif
 

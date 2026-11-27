@@ -57,6 +57,15 @@ extern "C" int velnosub_core_insert_line(AssFile &file, int idx, const char *met
 	return 0;
 }
 
+extern "C" int velnosub_core_duplicate_line(AssFile &file, int idx) {
+	if (idx < 0 || idx >= static_cast<int>(file.Events.size()))
+		return -1;
+	auto source = std::next(file.Events.begin(), idx);
+	file.Events.insert(std::next(source), *new AssDialogue(*source));
+	file.Commit("velnosub abi", AssFile::COMMIT_DIAG_ADDREM);
+	return 0;
+}
+
 extern "C" int velnosub_core_delete_line(AssFile &file, int idx) {
 	if (idx < 0 || idx >= static_cast<int>(file.Events.size()))
 		return -1;

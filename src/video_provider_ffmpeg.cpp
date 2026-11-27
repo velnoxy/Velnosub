@@ -19,7 +19,7 @@
 /// @ingroup video_input
 ///
 /// FFmpeg 6.1 statik kitaplıklarıyla (build-ffmpeg.sh çıktısı) kare-doğru
-/// okuma: PTS tablosu birikimi (ts tabanlı geri sarma) + tek kare önbellek.
+/// okuma: tam PTS ve ana kare dizini + tek kare önbellek.
 /// Aegisub çekirdek arayüzüne (AGI_CORE) wx'siz derlenir; masa kolunda bu
 /// dosya hiç derlenmez (-Dvelnosub_mobile kapısı).
 
@@ -35,16 +35,17 @@ extern "C" {
 #include "include/aegisub/video_provider.h"
 #include "video_frame.h"
 
+#include <libaegisub/background_runner.h>
+#include <libaegisub/exception.h>
 #include <libaegisub/fs.h>
 #include <libaegisub/vfr.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <limits>
 #include <string>
 #include <vector>
-
-namespace agi { class BackgroundRunner; }
 
 namespace {
 class FFmpegVideoProvider final : public VideoProvider {
@@ -62,6 +63,8 @@ class FFmpegVideoProvider final : public VideoProvider {
 
 	/// arama durumu: her karenin PTS'i (akış time_base) sırayla birikir
 	std::vector<int64_t> frame_pts;
+	std::vector<int> keyframes;
+	bool exact_pts = true;
 	/// decoder konumu: son çözümlü karenin numarası (-1 = hiç çözülmedi)
 	int cur_frame_no = -1;
 	/// frame_buf'un karşılığı (tek karelik önbellek)
@@ -100,7 +103,52 @@ class FFmpegVideoProvider final : public VideoProvider {
 			}
 			av_packet_free(&pkt);
 		}
-		return true;
+		return got;
+	}
+
+	void seek_to(int64_t timestamp) {
+		if (av_seek_frame(fmt, stream_idx, timestamp, AVSEEK_FLAG_BACKWARD) < 0)
+			throw VideoDecodeError("ffmpeg video provider: konuma gidilemedi");
+		avcodec_flush_buffers(codec_ctx);
+		av_frame_unref(cur_frame);
+		cur_frame_no = buf_no = -1;
+	}
+
+	void rewind() {
+		auto start = fmt->streams[stream_idx]->start_time;
+		seek_to(start == AV_NOPTS_VALUE ? 0 : start);
+	}
+
+	void index_frames(agi::ProgressSink *progress) {
+		int64_t pts;
+		while (step_decode(pts)) {
+			if (progress && progress->IsCancelled())
+				throw agi::UserCancelException("video dizinleme iptal edildi");
+			if (frame_pts.size() == static_cast<size_t>(std::numeric_limits<int>::max()))
+				throw VideoOpenError("ffmpeg video provider: kare dizini çok büyük");
+			if (cur_frame->flags & AV_FRAME_FLAG_KEY)
+				keyframes.push_back(static_cast<int>(frame_pts.size()));
+			if (pts == AV_NOPTS_VALUE || (!frame_pts.empty() && pts <= frame_pts.back()))
+				exact_pts = false;
+			frame_pts.push_back(pts);
+		}
+		if (frame_pts.empty())
+			throw VideoOpenError("ffmpeg video provider: okunabilir video karesi yok");
+		if (exact_pts && frame_pts.size() > 1) {
+			std::vector<int> times;
+			times.reserve(frame_pts.size());
+			for (auto stamp : frame_pts) {
+				auto ms = av_rescale_q(stamp - frame_pts.front(),
+					fmt->streams[stream_idx]->time_base, {1, 1000});
+				if (ms > std::numeric_limits<int>::max() || (!times.empty() && ms <= times.back())) {
+					times.clear();
+					break;
+				}
+				times.push_back(static_cast<int>(ms));
+			}
+			if (!times.empty()) fps = agi::vfr::Framerate(std::move(times));
+		}
+		rewind();
 	}
 
 	/// frame_buf'i güncel dec hattından BGRA'ya ölçekle ve önbelleğe işle
@@ -118,7 +166,14 @@ class FFmpegVideoProvider final : public VideoProvider {
 	}
 
 public:
-	FFmpegVideoProvider(agi::fs::path const& filename) {
+	FFmpegVideoProvider(agi::fs::path const& filename, agi::BackgroundRunner *runner) {
+		try { open(filename, runner); }
+		catch (...) { close(); throw; }
+	}
+	~FFmpegVideoProvider() override { close(); }
+
+private:
+	void open(agi::fs::path const& filename, agi::BackgroundRunner *runner) {
 		avformat_network_init();
 
 		std::string path = filename.generic_string();
@@ -164,17 +219,23 @@ public:
 			throw VideoOpenError("ffmpeg video provider: swscale kurulamadı");
 
 		cur_frame = av_frame_alloc();
+		if (!cur_frame) throw VideoOpenError("ffmpeg video provider: kare tamponu yok");
 		frame_buf.resize((size_t)width * height * 4);
+		if (runner) runner->Run([&](agi::ProgressSink *progress) { index_frames(progress); });
+		else index_frames(nullptr);
 	}
 
-	~FFmpegVideoProvider() {
+	void close() {
 		if (cur_frame) av_frame_free(&cur_frame);
 		if (scaler) sws_freeContext(scaler);
 		if (codec_ctx) avcodec_free_context(&codec_ctx);
 		if (fmt) avformat_close_input(&fmt);
 	}
 
+public:
 	void GetFrame(int n, VideoFrame &frame) override {
+		if (n < 0 || n >= GetFrameCount())
+			throw VideoDecodeError("ffmpeg video provider: kare dizin dışında");
 		if (buf_no == n) {
 			// tek kare önbellek isabeti
 			frame.data.resize(frame_buf.size());
@@ -186,59 +247,42 @@ public:
 			return;
 		}
 
-		int pos = cur_frame_no;
-
-		// geri sarma: birikmiş PTS tablosundan ts'i hedefle
-		if (pos >= n) {
-			if (n < 0 || n >= (int)frame_pts.size())
-				throw VideoDecodeError("ffmpeg video provider: geri sarma için PTS kaydı yok (kare " + std::to_string(n) + ")");
-			int64_t target = frame_pts[n];
-			avcodec_flush_buffers(codec_ctx);
-			if (av_seek_frame(fmt, stream_idx, target, AVSEEK_FLAG_BACKWARD) < 0)
-				throw VideoDecodeError("ffmpeg video provider: arama başarısız (kare " + std::to_string(n) + ")");
-			avcodec_flush_buffers(codec_ctx);
-			// hedef PTS'e kadar çöz (ek kareleri sayma); kare hedefe geldiğinde dur
-			for (int guard = 0;; ++guard) {
-				int64_t pts;
-				if (!step_decode(pts))
-					throw VideoDecodeError("ffmpeg video provider: arama sonrası kare bitti");
-				if (pts >= target || guard >= 512) break;
-			}
-			pos = n;
-		}
-
-		while (pos < n) {
+		bool jump = n < cur_frame_no || n - cur_frame_no > 32;
+		if (jump && exact_pts) {
+			auto target = frame_pts[n];
+			seek_to(target);
 			int64_t pts;
-			if (!step_decode(pts))
-				throw VideoDecodeError("ffmpeg video provider: kare bitti (istenen " + std::to_string(n) + ")");
-			++pos;
-			if (pos >= (int)frame_pts.size())
-				frame_pts.push_back(pts);
+			while (step_decode(pts)) {
+				if (pts == target) {
+					cur_frame_no = n;
+					fill_cache(frame);
+					return;
+				}
+				if (pts != AV_NOPTS_VALUE && pts > target) break;
+			}
+			rewind();
+		} else if (n < cur_frame_no) {
+			rewind();
 		}
-		cur_frame_no = pos;
+		while (cur_frame_no < n) {
+			int64_t pts;
+			if (!step_decode(pts)) throw VideoDecodeError("ffmpeg video provider: kare okunamadı");
+			++cur_frame_no;
+		}
 
 		fill_cache(frame);
 	}
 
 	void SetColorSpace(std::string const& matrix) override { (void)matrix; }
 
-	int GetFrameCount() const override {
-		// PTS tablosu tamamen birikmediyse süre × fps kestirimi kullanılır
-		if (fmt->duration > 0 && fps.FPS() > 0.0)
-			return (int)((fmt->duration / (double)AV_TIME_BASE) * fps.FPS() + 0.5);
-		return 1;
-	}
+	int GetFrameCount() const override { return static_cast<int>(frame_pts.size()); }
 
 	int GetWidth() const override { return width; }
 	int GetHeight() const override { return height; }
 	double GetDAR() const override { return dar; }
 	agi::vfr::Framerate GetFPS() const override { return fps; }
 
-	std::vector<int> GetKeyFrames() const override {
-		// P3.2: keyframe tablosu bu sağlayıcıda henüz üretilmez (dahili keyframe
-		// üretimi ayrı adım); boş liste düşme riski sıfır.
-		return {};
-	}
+	std::vector<int> GetKeyFrames() const override { return keyframes; }
 
 	std::string GetColorSpace() const override {
 		AVStream *st = fmt->streams[stream_idx];
@@ -258,8 +302,8 @@ public:
 };
 } // namespace
 
-std::unique_ptr<VideoProvider> CreateFFmpegVideoProvider(agi::fs::path const& filename, std::string const& colormatrix, agi::BackgroundRunner *) {
-	return std::unique_ptr<VideoProvider>(new FFmpegVideoProvider(filename));
+std::unique_ptr<VideoProvider> CreateFFmpegVideoProvider(agi::fs::path const& filename, std::string const&, agi::BackgroundRunner *runner) {
+	return std::make_unique<FFmpegVideoProvider>(filename, runner);
 }
 
 #endif // WITH_VELNOSUB_FFMPEG

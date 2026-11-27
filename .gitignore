@@ -50,3 +50,5 @@ subprojects/xxHash-*
 
 # Rust derleme kırıntıları
 velnosub-ui/target/
+
+/.android-build/

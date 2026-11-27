@@ -1,0 +1,24 @@
+#include <climits>
+
+extern "C" int velnosub_abi_open(const char *path);
+extern "C" int velnosub_abi_save(int handle, const char *path);
+
+// Some exceptions thrown by the core carry a foreign type across the Android
+// shared libraries. Keep them on the C++ side of the Rust FFI boundary.
+extern "C" int velnosub_ui_open_document(const char *path) noexcept {
+	try {
+		return velnosub_abi_open(path);
+	}
+	catch (...) {
+		return INT_MIN;
+	}
+}
+
+extern "C" int velnosub_ui_save_document(int handle, const char *path) noexcept {
+	try {
+		return velnosub_abi_save(handle, path);
+	}
+	catch (...) {
+		return INT_MIN;
+	}
+}

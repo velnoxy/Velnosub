@@ -5,9 +5,13 @@
 # Kullanım: bash smoke.sh <apk-yolu>
 # Yol SHELL'in (uid 2000) OKUMA bildiği bir yer olmalı: /sdcard/... — /root
 # (proot uygulama-özel) shell'e kapalıdır.
-set -u
-RAW="${1:?apk yolu verilcek}"
-RISH=/root/rish
+set -euo pipefail
+RAW="${1:?APK yolu gerekli}"
+if [[ ! $RAW =~ ^/[[:alnum:]/._-]+$ ]] || [[ ! -r $RAW ]]; then
+    echo "Okunabilir bir mutlak APK yolu gerekli."
+    exit 1
+fi
+RISH=${RISH:-/root/rish}
 PKG=com.velnoxy.velnosubui
 
 # alpha10 dersi: pm install /sdcard-FUSE yolunu da okuyamaz — APK /sdcard'dan
@@ -18,20 +22,17 @@ timeout -k 4 60 "$RISH/rish" -c "cp $RAW $STAGE" < /dev/null 2>&1 | tail -1
 APK=$STAGE
 
 echo "== 1) kurulum (rish pm install) =="
-timeout -k 4 120 "$RISH/rish" -c "pm install -r $APK" < /dev/null 2>&1 | tail -2
-# P5.5: kendi dosyaları — /sdcard read izni (targetSdk 28 runtime izni)
-timeout -k 4 20 "$RISH/rish" -c "pm grant $PKG android.permission.READ_EXTERNAL_STORAGE" < /dev/null 2>&1 | tail -1
-
+timeout -k 4 120 "$RISH/rish" -c "pm install -r $APK" < /dev/null | grep -Fx Success
 echo "== 2) önce güvenli kapanış (DONMA/Make it ...) =="
 timeout -k 4 30 "$RISH/rish" -c "am force-stop $PKG" < /dev/null 2>&1 | tail -1
 sleep 2
 
 echo "== 3) açılış (am start) =="
-timeout -k 4 30 "$RISH/rish" -c "am start -n $PKG/android.app.NativeActivity" < /dev/null 2>&1 | tail -2
+timeout -k 4 30 "$RISH/rish" -c "am start -n $PKG/.DocumentActivity" < /dev/null 2>&1 | tail -2
 sleep 12
 
 echo "== 4) process kanıtı =="
-timeout -k 4 30 "$RISH/rish" -c "pidof $PKG" < /dev/null 2>&1 | tail -1
+timeout -k 4 30 "$RISH/rish" -c "pidof $PKG" < /dev/null | grep -E '^[0-9]+( [0-9]+)*$'
 
 echo "== 5) breadcrumb tail (dahili filesDir; run-as) =="
 timeout -k 4 30 "$RISH/rish" -c "run-as $PKG cat files/velnosub-boot.txt 2>/dev/null | tail -6" < /dev/null 2>&1 | tail -8
@@ -43,6 +44,6 @@ echo "== 7) logcat 마지막 velnosub PANIC/Диагностика =="
 timeout -k 4 30 "$RISH/rish" -c "logcat -d -t 300 | grep -iE 'velnosub|FATAL|beginning of crash' | tail -12" < /dev/null 2>&1 | tail -14
 
 echo "== 8) dropbox (çökme kimliği var mı?) =="
-timeout -k 4 60 "$RISH/rish" -c "dumpsys dropbox --print 2>/dev/null | grep -A 3 'AndroidRuntime.*$PKG\|native_crash.*$PKG' | head -12" < /dev/null 2>&1 | tail -14
+timeout -k 4 60 "$RISH/rish" -c "dumpsys dropbox --print 2>/dev/null | grep -A 3 'AndroidRuntime.*$PKG\|native_crash.*$PKG' | head -12" < /dev/null 2>&1 | tail -14 || true
 
 echo "== 9) SMOKE BİTİŞ =="

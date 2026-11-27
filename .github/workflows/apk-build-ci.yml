@@ -4,12 +4,18 @@ name: apk-build-ci
 
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [feature]
   push:
     branches: [feature]
     paths:
+      - '.github/workflows/apk-build-ci.yml'
+      - 'meson.build'
+      - 'meson_options.txt'
       - 'src/**'
       - 'libaegisub/**'
       - 'subprojects/**'
+      - 'tests/**'
       - 'tools/cross/**'
       - 'velnosub-ui/**'
 
@@ -17,68 +23,118 @@ permissions:
   contents: read
 
 env:
-  DOTNET_NOLOGO: "1"
+  ROOT: ${{ github.workspace }}/.android-build
 
 jobs:
-  deps:
+  host-tests:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Linux derleme bağımlılıkları
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg meson ninja-build pkg-config gettext libboost-all-dev \
+            libicu-dev libass-dev libfreetype-dev libuchardet-dev zlib1g-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libluajit-5.1-dev
+      - name: C++ ve Rust testleri
+        run: |
+          meson setup build-host-check -Dvelnosub_mobile=true -Dlocal_boost=false \
+            -Dalsa=disabled -Dopenal=disabled -Dlibpulse=disabled -Dportaudio=disabled \
+            -Dffms2=disabled -Dbestsource=disabled -Dvapoursynth=disabled -Davisynth=disabled \
+            -Dfftw3=disabled -Dhunspell=disabled -Dbuild_appimage=false
+          ninja -C build-host-check tools/cross/libvelnosub-abi.so tests/applied_test_setup
+          meson test -C build-host-check --print-errorlogs
+          export LD_LIBRARY_PATH="$PWD/build-host-check:$PWD/build-host-check/tools/cross"
+          python3 tests/mobile_abi_regression.py
+          cd velnosub-ui
+          cargo test --locked --lib
+
+  deps:
+    strategy:
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    runs-on: ubuntu-latest
+    env:
+      ABI: ${{ matrix.abi }}
     outputs:
       hit: ${{ steps.cache.outputs.cache-hit || 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: NDK r29 kur (root beklenen konum)
+      - name: NDK r29 kur
         run: |
-          sudo chmod 0755 /root 2>/dev/null || true
-          sudo mkdir -p /root/velsub/ndk && sudo chown -R $USER /root/velsub
-          test -d /root/velsub/ndk/r29 || \
-            (curl -sL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o /tmp/ndk.zip \
-             && unzip -q /tmp/ndk.zip -d /root/velsub/ndk \
-             && mv /root/velsub/ndk/android-ndk-r29* /root/velsub/ndk/r29)
+          mkdir -p "$ROOT/ndk"
+          curl -fsSL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o "$RUNNER_TEMP/ndk.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$ROOT/ndk"
+          mv "$ROOT"/ndk/android-ndk-r29* "$ROOT/ndk/r29"
       - uses: actions/cache@v4
         id: cache
         with:
-          path: /root/velsub/ndk-deps/arm64-v8a
-          key: ndk-deps-arm64-v3-${{ hashFiles('tools/cross/build-deps.sh', 'tools/cross/build-ffmpeg.sh', 'tools/cross/build-luajit.sh', 'tools/cross/build-oboe.sh') }}
+          path: ${{ env.ROOT }}/ndk-deps/${{ matrix.abi }}
+          key: ndk-deps-${{ matrix.abi }}-v1-${{ hashFiles('tools/cross/build-deps.sh', 'tools/cross/build-ffmpeg.sh', 'tools/cross/build-luajit.sh', 'tools/cross/build-oboe.sh') }}
       - name: bağımlılıklar (ICU+Boost+ffmpeg+luajit+oboe)
         if: steps.cache.outputs.cache-hit != 'true'
         run: PHASE=deps bash tools/cross/apk-ui/ci-setup.sh
 
   apk:
+    strategy:
+      matrix:
+        include:
+          - abi: arm64-v8a
+            target: aarch64-linux-android
+          - abi: x86_64
+            target: x86_64-linux-android
     runs-on: ubuntu-latest
     needs: deps
+    env:
+      ABI: ${{ matrix.abi }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: NDK r29 kur (root beklenen konum)
+      - name: NDK r29 kur
         run: |
-          sudo chmod 0755 /root 2>/dev/null || true
-          sudo mkdir -p /root/velsub/ndk && sudo chown -R $USER /root/velsub
-          test -d /root/velsub/ndk/r29 || \
-            (curl -sL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o /tmp/ndk.zip \
-             && unzip -q /tmp/ndk.zip -d /root/velsub/ndk \
-             && mv /root/velsub/ndk/android-ndk-r29* /root/velsub/ndk/r29)
+          mkdir -p "$ROOT/ndk"
+          curl -fsSL https://dl.google.com/android/repository/android-ndk-r29-linux.zip -o "$RUNNER_TEMP/ndk.zip"
+          unzip -q "$RUNNER_TEMP/ndk.zip" -d "$ROOT/ndk"
+          mv "$ROOT"/ndk/android-ndk-r29* "$ROOT/ndk/r29"
       - uses: actions/cache@v4
         with:
-          path: /root/velsub/ndk-deps/arm64-v8a
-          key: ndk-deps-arm64-v3-${{ hashFiles('tools/cross/build-deps.sh', 'tools/cross/build-ffmpeg.sh', 'tools/cross/build-luajit.sh', 'tools/cross/build-oboe.sh') }}
+          path: ${{ env.ROOT }}/ndk-deps/${{ matrix.abi }}
+          key: ndk-deps-${{ matrix.abi }}-v1-${{ hashFiles('tools/cross/build-deps.sh', 'tools/cross/build-ffmpeg.sh', 'tools/cross/build-luajit.sh', 'tools/cross/build-oboe.sh') }}
       - name: rust toolchain (aarch64-linux-android)
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: aarch64-linux-android
+          targets: ${{ matrix.target }}
       - name: native (meson + ninja)
         run: PHASE=native bash tools/cross/apk-ui/ci-setup.sh
       - name: rust cdylib
         run: PHASE=rust bash tools/cross/apk-ui/ci-setup.sh
       - name: apk paketle
         run: PHASE=apk bash tools/cross/apk-ui/ci-setup.sh
+      - name: KVM erişimini etkinleştir
+        if: matrix.abi == 'x86_64'
+        run: |
+          sudo chown "$USER" /dev/kvm
+          sudo chmod u+rw /dev/kvm
+      - name: Android API 29 açılış ve belge testleri
+        if: matrix.abi == 'x86_64'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 29
+          arch: x86_64
+          script: >-
+            bash tools/cross/apk-ui/smoke-adb.sh tools/cross/apk-ui/velnosub-ui-0.1.1-alpha16-x86_64.apk
+            && PHASE=test-android bash tools/cross/apk-ui/ci-setup.sh
       - name: artifact yükle
         uses: actions/upload-artifact@v4
         with:
-          name: velnosub-ui-apk-ci-r${{ github.run_number }}
+          name: velnosub-ui-${{ matrix.abi }}-ci-r${{ github.run_number }}
           path: |
             tools/cross/apk-ui/velnosub-ui-*.apk
+            !tools/cross/apk-ui/*-unsigned.apk
+            !tools/cross/apk-ui/*-aligned.apk
           if-no-files-found: error
           retention-days: 30

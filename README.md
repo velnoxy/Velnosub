@@ -1,6 +1,6 @@
 # velnosub
 
-velnosub, [Aegisub](https://github.com/arch1t3cht/Aegisub)'ın Android/iOS portudur.
+velnosub, [Aegisub](https://github.com/arch1t3cht/Aegisub)'ın Android portudur.
 Bu depo bağımsız bir depodur; kaynak kod tabanı [arch1t3cht/Aegisub](https://github.com/arch1t3cht/Aegisub)
 (`feature` dalının `9bfd500` noktası) üzerinde yürür ve Aegisub'a atıf korunur.
 Aegisub'ın özgün README'si değişmeden [`README-Aegisub.md`](README-Aegisub.md) dosyasında durur.
@@ -59,6 +59,77 @@ Notlar:
   (ögel `JOBS=1` gibi proot konaklarında derlemeyi teke düşürmek için).
 - libass 0.17'de `ass_add_font`'ın ad parametresi font seçim anahtarı değildir;
   ASS stilinin istediği family eşleşmezse `--defaultfont` yolu dosyadan çözer.
+
+## Android arayüzü ve APK
+
+Android varsayılan olarak klasik Aegisub düzeniyle açılır. Üstte menü ve araç
+çubuğu, çalışma alanında solda video, sağda ses ve satır düzenleyici, altta
+ise altyazı tablosu yer alır. Dar ekranda tablonun diğer sütunları yatay
+kaydırmayla açılır. Kompakt sekmeli düzen Görünüm menüsünden seçilebilir.
+
+Video açıldığında paneldeki **Video ölçeği** menüsü görüntüyü en-boy
+oranını koruyarak sığdırır veya sabit bir yakınlaştırma yüzdesi uygular.
+%100’de bir video pikseli bir ekran pikseline karşılık gelir. Görüntü
+panele sığmazsa video alanında kaydırılabilir.
+
+Güncel alpha APK'sı, başarılı `apk-build-ci` çalışmasının artifact bölümünde
+yer alır. Paketin desteklediği mimari varsayılan olarak arm64-v8a ve alt sınırı Android 10'dur
+(API 29). [APK derlemeleri](https://github.com/velnoxy/Velnosub/actions/workflows/apk-build-ci.yml)
+
+Temiz bir çalışma dizininde NDK r29, SDK platformu android-34, build-tools
+34.0.0, JDK, Meson, Ninja, CMake, pkg-config, gettext, Rust ve Android Rust hedefini
+kurduktan sonra:
+
+```sh
+rustup target add aarch64-linux-android
+NDK_ROOT=/path/to/android-ndk-r29 ANDROID_HOME=/path/to/android-sdk \
+  bash tools/cross/apk-ui/ci-setup.sh
+```
+
+x86_64 emülatör paketi için `rustup target add x86_64-linux-android`
+çalıştır ve aynı derleme komutuna `ABI=x86_64` ekle.
+
+Varsayılan bağımlılık dizini `.android-build` altındadır. `ROOT`, `DEPS_ROOT`,
+`BT` ve `PF` ile konumları değiştirebilirsin. Android APK, `tools/cross/apk-ui`
+altına yazılır. Yerel Rust testleri için host ABI kütüphanesi
+`build-host-check/tools/cross` altında olmalı veya `VELNOSUB_ABI_DIR` ile
+gösterilmeli. Dinamik yükleme yoluna hem ABI hem core derleme dizinini ekle ve
+`velnosub-ui` dizininde `cargo test --locked --lib` çalıştır.
+
+x86_64 APK derlemesinden sonra Android 10 emülatörü bağlıyken aynı NDK
+ve derleme dizinleriyle cihaz regresyonlarını da çalıştırabilirsin:
+
+```sh
+ABI=x86_64 NDK_ROOT=/path/to/android-ndk-r29 PHASE=test-android \
+  bash tools/cross/apk-ui/ci-setup.sh
+```
+
+Üretim paketi için `REL=1`, `RELEASE_KEYSTORE`, `RELEASE_KEY_ALIAS`,
+`RELEASE_STORE_PASSWORD`, `RELEASE_KEY_PASSWORD`, `RELEASE_VERSION_CODE`
+ve `RELEASE_VERSION_NAME` gerekir. Anahtar ve parolaları yayın ortamında
+sakla. Farklı imzalı alpha ve üretim paketleri aynı uygulama kimliğinde
+yerinde güncellenemez.
+
+Alpha 16’te SRT dışa aktarma, video zaman damgası ve ana kare dizini,
+ASS dosyasına gömülü font ekleme, komut paleti ve Lua/MoonScript dosyası
+yükleme bulunur. Otomasyon yöneticisinde paketlenmiş karaoke şablonunu
+uygulayabilir veya seçtiğin scriptin makrolarını çalıştırabilirsin.
+Bir makro form açtığında, formu yanıtlayana kadar betik bekler. Makro
+iptal edilirse açık belge korunur. Standart `aegisub.re`,
+`aegisub.lfs`, `aegisub.unicode` ve `luabins` modülleri paketlenir.
+Scriptler uygulama yetkileriyle çalışır. `os.execute` ve `io.popen`
+devre dışıdır. FFI kullanan scriptler için bu bir güvenlik sınırı oluşturmaz.
+
+Linux ABI regresyonları için, aynı `LD_LIBRARY_PATH` ile depo kökünde
+`python3 tests/mobile_abi_regression.py` çalıştır. FFmpeg ve ffprobe gereklidir.
+
+İsteğe bağlı olarak Google Maven AAPT2 ve bundletool ile imzasız bir
+Android App Bundle üret:
+
+```sh
+AAPT2=/path/to/aapt2 BUNDLETOOL_JAR=/path/to/bundletool.jar \
+  tools/cross/apk-ui/build-aab.sh tools/cross/apk-ui/velnosub-ui-0.1.1-alpha16.apk velnosub.aab
+```
 
 ## Lisans ve atıf
 

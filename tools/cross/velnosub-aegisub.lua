@@ -33,6 +33,12 @@ int velnosub_abi_dialog_set(int h, int idx, const char *deger);
 int velnosub_abi_dialog_show(int h, int dugme);
 int velnosub_abi_dialog_showid(int h);
 int velnosub_abi_dialog_close(int h);
+int velnosub_abi_line_meta_set(int h, int idx, const char *style, const char *actor, const char *effect,
+                               int comment, int layer);
+int velnosub_abi_line_margins(int h, int idx, int left, int right, int vertical);
+int velnosub_abi_style_add(int h, const char *name);
+int velnosub_abi_style_write(int h, int idx, const char *data);
+int velnosub_abi_move_last_style(int h, int position);
 int velnosub_abi_line_times_set(int h, int idx, long long ms_bas, long long ms_son);
 int velnosub_abi_text_extents(const char *yol_font, double boyut,
                               int kalin, int italik, double harf_bos,
@@ -329,6 +335,46 @@ local function cozunurluk_oku(bilgi)
 	return px, py
 end
 
+-- LuaJIT builds without 5.2 compatibility ignore __ipairs on userdata.
+local native_ipairs = ipairs
+function ipairs(value)
+	if type(value) == "userdata" then
+		local meta = getmetatable(value)
+		if type(meta) == "table" and meta.__ipairs then
+			return meta.__ipairs(value)
+		end
+	end
+	return native_ipairs(value)
+end
+
+local function set_dialogue_fields(h, index, line)
+	local comment = line.comment == nil and -1 or (line.comment and 1 or 0)
+	if abi.velnosub_abi_line_meta_set(h, index, line.style, line.actor, line.effect,
+	    comment, tonumber(line.layer) or -1) ~= 0 then
+		error(hatasi("line_meta_set"), 2)
+	end
+	if abi.velnosub_abi_line_margins(h, index, tonumber(line.margin_l) or -1,
+	    tonumber(line.margin_r) or -1, tonumber(line.margin_t or line.margin_b) or -1) ~= 0 then
+		error(hatasi("line_margins"), 2)
+	end
+end
+
+local function write_style(h, index, line)
+	local function flag(value) return value and 1 or 0 end
+	local function color(value) return tostring(value):gsub("&$", "") end
+	local name, font = tostring(line.name), tostring(line.fontname)
+	if name:find("|", 1, true) or font:find("|", 1, true) then error("stil adı geçersiz", 2) end
+	local fields = {name, font, line.fontsize,
+		color(line.color1), color(line.color2), color(line.color3), color(line.color4),
+		table.concat({flag(line.bold), flag(line.italic), flag(line.underline), flag(line.strikeout)}, ","),
+		line.align, table.concat({line.margin_l, line.margin_r, line.margin_t or line.margin_b}, ","),
+		line.encoding, table.concat({line.scale_x, line.scale_y, line.spacing, line.angle}, ","),
+		table.concat({line.borderstyle, line.outline, line.shadow}, ",")}
+	if abi.velnosub_abi_style_write(h, index, table.concat(fields, "|")) ~= 0 then
+		error(hatasi("style_write"), 2)
+	end
+end
+
 local function subs_nesne(h, dosya_yolu)
 	local nev = abi.velnosub_abi_event_count(h)
 	if nev < 0 then error(hatasi("event_count"), 3) end
@@ -375,7 +421,25 @@ local function subs_nesne(h, dosya_yolu)
 					return cozunurluk_oku(bilgi)
 				end
 			end
-			if i == "insert_line" then
+			if i == "append" then
+				return function(...)
+					for j = 1, select("#", ...) do
+						proxy:insert_line(toplam() + 1, select(j, ...))
+					end
+				end
+			elseif i == "delete" then
+				return function(...)
+					local positions = { ... }
+					table.sort(positions, function(a, b) return a > b end)
+					local last
+					for _, position in ipairs(positions) do
+						if position ~= last then
+							proxy:delete_line(position)
+							last = position
+						end
+					end
+				end
+			elseif i == "insert_line" then
 				return function(_, konum, satir)
 					local v = tam_sayi(konum)
 					local o0 = v and (v - ofset) or nil
@@ -401,6 +465,7 @@ local function subs_nesne(h, dosya_yolu)
 						error(hatasi("insert_line"), 2)
 					end
 					nev = nev + 1
+					set_dialogue_fields(h, o0 - 1, satir)
 				end
 			elseif i == "delete_line" then
 				return function(_, konum)
@@ -431,15 +496,31 @@ local function subs_nesne(h, dosya_yolu)
 	end
 	mt.__newindex = function(_, i, satir)
 		local i0 = tam_sayi(i)
+		if i0 and type(satir) == "table" and satir.class == "style" then
+			if i0 < -nbilgi and -i0 <= ofset + 1 then
+				local position = -i0 - nbilgi - 1
+				local index = abi.velnosub_abi_style_add(h, satir.name)
+				if index < 0 then error(hatasi("style_add"), 2) end
+				write_style(h, index, satir)
+				if abi.velnosub_abi_move_last_style(h, position) ~= 0 then
+					error(hatasi("style_insert"), 2)
+				end
+				nsty = nsty + 1
+				ofset = ofset + 1
+				return
+			elseif i0 > nbilgi and i0 <= ofset then
+				write_style(h, i0 - nbilgi - 1, satir)
+				return
+			end
+		end
 		if not i0 or i0 <= ofset or i0 > toplam() then
-			-- bilgi/stil bölgesi ABI yazımına kapalı (dilim kapsamı dışı)
-			error("Requested out-of-range line from subtitle file: "
-			      .. tostring(i), 2)
+			error("Requested out-of-range line from subtitle file: " .. tostring(i), 2)
 		end
 		local j0 = i0 - ofset
 		if type(satir) ~= "table" then
 			error("satır ataması tablo olmalı (" .. type(satir) .. ")", 2)
 		end
+		set_dialogue_fields(h, j0 - 1, satir)
 		-- P5.2: alan yazımı — text flyweight vekiliyle, zamanlar ms
 		-- tamsayısıyla; verilmeyen alanlar mevcut değerinde kalır
 		if satir.text ~= nil then
@@ -698,6 +779,10 @@ local function deger_dizgesi(c)
 	elseif deger == nil then
 		if sinif == "dropdown" and type(c.items) == "table" then
 			deger = tostring(c.items[1] or "")
+		elseif sinif == "edit" or sinif == "textbox" then
+			deger = tostring(c.text or "")
+		elseif sinif == "intedit" or sinif == "floatedit" then
+			deger = "0"
 		else
 			deger = ""
 		end
@@ -717,7 +802,7 @@ local function kontrol_satiri(c)
 	local satir = "ctl|" .. sinif .. "|" .. ad .. "|" .. baslik .. "|"
 	             .. deger_dizgesi(c)
 	if sinif == "intedit" or sinif == "floatedit" then
-		satir = satir .. "|" .. tostring(c.min or 0) .. "," .. tostring(c.max or 0)
+		satir = satir .. "|" .. tostring(c.min or -2147483648) .. "," .. tostring(c.max or 2147483647)
 	elseif sinif == "dropdown" then
 		local ogeler = {}
 		for _, o in ipairs(type(c.items) == "table" and c.items or {}) do
@@ -784,6 +869,9 @@ local function display(dlg, buttons)
 		end
 	end
 	local secim = cevap_btn or 1
+	if aegisub.__interactive then
+		secim = coroutine.yield(cd)
+	end
 	if abi.velnosub_abi_dialog_show(cd, secim - 1) < 0 then
 		local e = hatasi("dialog_show")
 		abi.velnosub_abi_dialog_close(cd)
@@ -804,6 +892,7 @@ end
 
 -- ---- makro kayıtları -------------------------------------------------
 local makrolar = {}
+local filtreler = {}
 -- P5.2 dilim B: pump açık dosyayı burada tutar (aegisub.file_name kolu)
 local acik_dosya_yolu = nil
 
@@ -814,6 +903,45 @@ local function register_macro(ad, aciklama, isleme, denetim)
 		denetim = denetim,
 	}
 	print(("[AUSR] makro kaydı: %s (%s)"):format(ad, aciklama or ""))
+end
+
+function aegisub.__macro_names(filters)
+	local names = {}
+	for name in pairs(filters and filtreler or makrolar) do
+		if type(name) == "string" and not name:find("[\r\n%z]") then
+			names[#names + 1] = name
+		end
+	end
+	table.sort(names)
+	return table.concat(names, "\n")
+end
+
+-- Uygulama makroyu geçici belge tutamacı üzerinde çalıştırır.
+function aegisub.__run_on_handle(h, path, name, row)
+	local macro = assert(makrolar[name], "makro kayıtlı değil: " .. tostring(name))
+	local subs, offset = subs_nesne(h, path)
+	acik_dosya_yolu = path
+	local active = row + offset
+	local selected = {active}
+	if macro.denetim and not macro.denetim(subs, selected, active) then
+		error("makro mevcut seçim için kullanılamıyor")
+	end
+	macro.isleme(subs, selected, active)
+end
+
+function aegisub.__run_filter(h, path, name)
+	local filter = assert(filtreler[name], "filtre kayıtlı değil: " .. tostring(name))
+	local subs = subs_nesne(h, path)
+	acik_dosya_yolu = path
+	local settings = filter.settings and filter.settings(subs, false) or {}
+	if type(settings) == "table" then
+		local defaults = {}
+		for _, field in ipairs(settings) do
+			if field.name then defaults[field.name] = field.value end
+		end
+		settings = defaults
+	end
+	filter.run(subs, settings)
 end
 
 -- ---- pompa: arg tablosundan --ass/--macro/--btn/--val/--sel/--save -----
@@ -940,6 +1068,7 @@ end
 -- unicode.moon kardeşliği (karaskel hattı); require 'aegisub.unicode'
 -- yolu package.preload ile yakalanır (unicode.lua bunu ister)
 package.preload = package.preload or {}
+if not aegisub.__native_modules then
 package.preload["aegisub.unicode"] = function()
 	local unicode = {}
 	-- byte genişliği: s'in i'inci baytında başlayan karakterin uzunluğu
@@ -1000,6 +1129,7 @@ package.preload["aegisub.unicode"] = function()
 	unicode.to_fold_case = unicode.to_upper_case
 	return unicode
 end
+end
 
 -- ---- yüzey monte ----------------------------------------------------
 aegisub.dialog = { display = display }
@@ -1028,36 +1158,36 @@ aegisub.debug = {
 aegisub.set_undo_point = function(ad)
 	aegisub.log("undo noktası (mobil hatta kayıt yok): " .. tostring(ad))
 end
-aegisub.register_filter = function(ad, aciklama, kategori, isleme)
-	aegisub.log(("filter kaydı (mobil dilimde koşulmaz): %s (%d adet işlemci)")
-	             :format(tostring(ad), type(isleme) == "table" and #isleme or 1))
+aegisub.register_filter = function(name, description, priority, run, settings)
+	filtreler[name] = {run = run, settings = settings}
 end
-aegisub.cancel = function() end
--- P5.2 dilim B: video köprüsü + zarif yüzey parçaları (upstream auto4
--- davranışı: video yüklü değilken frame_from_ms/ms_from_frame/video_size
--- nil döner; mobil hatta otomasyon kolu videoyu Lua yüzeyine açmıyor)
+aegisub.cancel = function() error("makro iptal edildi", 0) end
 aegisub.lua_automation_version = 4
+local video = aegisub.__video
+aegisub.__video = nil
 aegisub.frame_from_ms = function(ms)
-	if tam_sayi(ms) == nil then
-		error("frame_from_ms: ms tamsayı olmalı", 2)
+	ms = assert(tam_sayi(ms), "frame_from_ms: ms tamsayı olmalı")
+	if not video or #video.times == 0 then return nil end
+	local first, last = 1, #video.times
+	while first < last do
+		local mid = math.floor((first + last + 1) / 2)
+		if video.times[mid] <= ms then first = mid else last = mid - 1 end
 	end
-	print("[AUSB] frame_from_ms: video yüklü değil → nil")
-	return nil
+	return first - 1
 end
-aegisub.ms_from_frame = function(k)
-	if tam_sayi(k) == nil then
-		error("ms_from_frame: kare tamsayı olmalı", 2)
-	end
-	print("[AUSB] ms_from_frame: video yüklü değil → nil")
-	return nil
+aegisub.ms_from_frame = function(frame)
+	frame = assert(tam_sayi(frame), "ms_from_frame: kare tamsayı olmalı")
+	return video and video.times[frame + 1] or nil
 end
 aegisub.video_size = function()
-	print("[AUSB] video_size: video yüklü değil → nil")
-	return nil
+	if video then return video.width, video.height end
 end
 aegisub.keyframes = function()
-	print("[AUSB] keyframes: video yok → boş küme")
-	return {}
+	local keys = {}
+	if video then
+		for index, key in ipairs(video.keyframes) do keys[index] = key end
+	end
+	return keys
 end
 aegisub.file_name = function()
 	if not acik_dosya_yolu then return nil end
@@ -1286,15 +1416,22 @@ aegisub.project_properties = function()
 		keyframes_file = "",
 	}
 end
-aegisub.decode_path = function(yol)
-	local kullanici = os.getenv("VELNOSUB_USER_DIR") or (
-		os.getenv("HOME") and (os.getenv("HOME") .. "/.velnosub") or "/data/local/tmp/velnosub-user")
-	local oge = tostring(yol)
-	oge = oge:gsub("^%?user", kullanici)
-	oge = oge:gsub("^%?data", os.getenv("VELNOSUB_DATA_DIR") or ".")
-	oge = oge:gsub("^%?script", os.getenv("VELNOSUB_SCRIPT_DIR") or ".")
-	oge = oge:gsub("^%?temp", "/tmp")
-	return oge
+aegisub.decode_path = function(path)
+	local original = tostring(path)
+	local token, suffix = original:match("^%?(%a+)(.*)$")
+	if not token or (suffix ~= "" and not suffix:match("^[/\\]")) then
+		return original
+	end
+	local user = os.getenv("VELNOSUB_USER_DIR") or
+		((os.getenv("HOME") or ".") .. "/.velnosub")
+	local roots = {
+		user = user,
+		["local"] = user,
+		data = os.getenv("VELNOSUB_DATA_DIR") or ".",
+		script = os.getenv("VELNOSUB_SCRIPT_DIR") or ".",
+		temp = os.getenv("VELNOSUB_CACHE") or os.getenv("TMPDIR") or "/tmp",
+	}
+	return roots[token] and (roots[token] .. suffix) or original
 end
 aegisub.__stub = nil
 print("[AUST] aegisub yüzeyi gerçek ABI hattında (P5.1/P5.2)")
