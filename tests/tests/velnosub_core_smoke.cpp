@@ -45,25 +45,33 @@ std::string const& default_config() {
 	return data;
 }
 
-agi::fs::path temp_path(std::string const& name) {
-	return boost::filesystem::temp_directory_path() / name;
-}
 }
 
 class CoreSmoke : public ::testing::Test {
 protected:
+	agi::fs::path directory;
+
 	void SetUp() override {
-		ASSERT_FALSE(default_config().empty());
+		ASSERT_FALSE(default_config().empty()) << "Could not open default_config.json";
+		directory = boost::filesystem::temp_directory_path() /
+			boost::filesystem::unique_path("velnosub-smoke-%%%%-%%%%");
+		boost::filesystem::create_directory(directory);
 		if (!config::opt)
 			config::opt = new agi::Options(
 				"", {default_config().data(), default_config().size()},
 				agi::Options::FLUSH_SKIP);
 	}
+
+	void TearDown() override {
+		boost::system::error_code error;
+		if (!directory.empty())
+			boost::filesystem::remove_all(directory, error);
+	}
 };
 
 TEST_F(CoreSmoke, LoadEditSaveRoundTrip) {
-	auto const in_path = temp_path("velnosub-smoke-in.ass");
-	auto const out_path = temp_path("velnosub-smoke-out.ass");
+	auto const in_path = directory / "input.ass";
+	auto const out_path = directory / "output.ass";
 
 	{
 		std::ofstream in(in_path.c_str());

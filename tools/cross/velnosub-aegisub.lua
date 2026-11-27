@@ -8,6 +8,17 @@
 -- [AUS2] makro koştu, [AUS3] yazıldı, [AUS4] kalıcılık, [AUS5] pump tamam.
 
 local ffi = require("ffi")
+local context = aegisub.__mobile_context or {}
+aegisub.__mobile_context = nil
+
+local function parent_dir(path)
+	return path and path:match("^(.*)[/\\][^/\\]+$") or nil
+end
+
+local script_dir = parent_dir(context.script)
+if script_dir then
+	package.path = script_dir .. "/?.lua;" .. script_dir .. "/?/init.lua;" .. package.path
+end
 
 ffi.cdef[[
 int velnosub_abi_init(const char *config_json_path);
@@ -922,7 +933,11 @@ function aegisub.__run_on_handle(h, path, name, row)
 	local subs, offset = subs_nesne(h, path)
 	acik_dosya_yolu = path
 	local active = row + offset
-	local selected = {active}
+	local selected = {}
+	for _, index in ipairs(context.selected or {}) do
+		selected[#selected + 1] = index + offset
+	end
+	if #selected == 0 then selected[1] = active end
 	if macro.denetim and not macro.denetim(subs, selected, active) then
 		error("makro mevcut seçim için kullanılamıyor")
 	end
@@ -1132,7 +1147,27 @@ end
 end
 
 -- ---- yüzey monte ----------------------------------------------------
-aegisub.dialog = { display = display }
+local function file_dialog(title, default_dir, default_file, field, action)
+	if not aegisub.__interactive then return nil end
+	local prefix = default_dir and default_dir ~= "" and (default_dir .. "/") or ""
+	local button, values = display({
+		{class = "label", label = title},
+		{class = "edit", name = field, value = prefix .. (default_file or "")},
+	}, {action, "Vazgeç"})
+	local path = values[field]
+	if button == action and path and path ~= "" then return path end
+end
+
+aegisub.dialog = {
+	display = display,
+	open = function(title, default_dir, default_file, wildcard, multiple)
+		if multiple then error("Mobil dosya seçicisi tek dosya açar", 2) end
+		return file_dialog(title or "Dosya aç", default_dir, default_file, "__velnosub_open_file", "Dosya seç")
+	end,
+	save = function(title, default_dir, default_file)
+		return file_dialog(title or "Dosya kaydet", default_dir, default_file, "__velnosub_save_file", "Kaydet")
+	end,
+}
 aegisub.register_macro = register_macro
 aegisub.unregister_macro = function(a) makrolar[a] = nil end
 aegisub.progress = {
@@ -1165,6 +1200,10 @@ aegisub.cancel = function() error("makro iptal edildi", 0) end
 aegisub.lua_automation_version = 4
 local video = aegisub.__video
 aegisub.__video = nil
+if video then
+	video.times = context.times or video.times
+	video.keyframes = context.keyframes or video.keyframes
+end
 aegisub.frame_from_ms = function(ms)
 	ms = assert(tam_sayi(ms), "frame_from_ms: ms tamsayı olmalı")
 	if not video or #video.times == 0 then return nil end
@@ -1397,21 +1436,19 @@ aegisub.parse_karaoke_data = function(satir)
 end
 
 aegisub.project_properties = function()
-	print("[AUSB] proje özetleri: mobil hatta nötr değerler")
-
 	return {
 		automation_scripts = false,
 		export_filters = false,
 		export_encoding = "",
 		style_storage = 0,
-		video_zoom = 100.0,
-		ar_value = 0.0,
+		video_zoom = context.zoom or 100.0,
+		ar_value = context.ratio or 0.0,
 		scroll_position = -1,
 		active_row = 0,
 		ar_mode = 0,
-		video_position = 0,
-		audio_file = "",
-		video_file = "",
+		video_position = context.position or 0,
+		audio_file = context.audio_file or "",
+		video_file = context.video_file or "",
 		timecodes_file = "",
 		keyframes_file = "",
 	}
@@ -1428,7 +1465,9 @@ aegisub.decode_path = function(path)
 		user = user,
 		["local"] = user,
 		data = os.getenv("VELNOSUB_DATA_DIR") or ".",
-		script = os.getenv("VELNOSUB_SCRIPT_DIR") or ".",
+		script = script_dir or os.getenv("VELNOSUB_SCRIPT_DIR") or ".",
+		audio = parent_dir(context.audio_file),
+		video = parent_dir(context.video_file),
 		temp = os.getenv("VELNOSUB_CACHE") or os.getenv("TMPDIR") or "/tmp",
 	}
 	return roots[token] and (roots[token] .. suffix) or original

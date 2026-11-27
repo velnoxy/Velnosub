@@ -58,7 +58,7 @@ new_version_h="\
 #define RESOURCE_BASE_VERSION ${resource_version}"
 
 osx_bundle_sed="\
-s/@PLIST_VERSION@/${git_version_str}/g
+s|@PLIST_VERSION@|${git_version_str}|g
 s/@PLIST_BUILD_DATE@/${build_date}/g
 / *@LOCALIZATIONS@/ {
   r languages
@@ -67,7 +67,7 @@ s/@PLIST_BUILD_DATE@/${build_date}/g
 
 # Write it only if it's changed to avoid spurious rebuilds
 # This bizzare comparison method is due to that newlines in shell variables are very exciting
-case "$(cat ${version_h_path} 2> /dev/null)"
+case "$(cat "${version_h_path}" 2> /dev/null)"
 in
   "${new_version_h}");;
   *)

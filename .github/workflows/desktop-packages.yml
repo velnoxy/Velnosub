@@ -1,0 +1,154 @@
+name: Desktop packages
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [feature]
+    paths:
+      - '.github/workflows/desktop-packages.yml'
+      - 'meson.build'
+      - 'meson_options.txt'
+      - 'src/**'
+      - 'libaegisub/**'
+      - 'automation/**'
+      - 'packages/**'
+      - 'po/**'
+      - 'subprojects/**'
+      - 'tests/**'
+      - 'tools/desktop/**'
+      - 'tools/version.*'
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          python -m pip install meson==1.7.2 ninja
+          sudo apt-get update
+          sudo apt-get install -y libwxgtk3.2-dev libglu1-mesa-dev libx11-dev libass-dev libfontconfig-dev libfreetype-dev libboost-chrono-dev libboost-filesystem-dev libboost-thread-dev libboost-locale-dev libboost-regex-dev libboost-system-dev libicu-dev zlib1g-dev libasound2-dev libffms2-dev libfftw3-dev libhunspell-dev libuchardet-dev libpulse-dev libopenal-dev libxxhash-dev libgtest-dev libgmock-dev gettext appstream desktop-file-utils xvfb xauth x11-utils
+      - name: Build and test
+        run: |
+          meson setup build --buildtype=release --prefix=/usr -Dbuild_appimage=true -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
+          meson compile -C build
+          meson test -C build --print-errorlogs
+      - name: Package and open ASS in AppImage
+        run: |
+          curl --fail --location --retry 3 https://github.com/linuxdeploy/linuxdeploy/releases/download/1-alpha-20250213-2/linuxdeploy-x86_64.AppImage -o "$RUNNER_TEMP/linuxdeploy"
+          curl --fail --location --retry 3 https://github.com/AppImage/appimagetool/releases/download/1.9.0/appimagetool-x86_64.AppImage -o "$RUNNER_TEMP/appimagetool"
+          chmod +x "$RUNNER_TEMP/linuxdeploy" "$RUNNER_TEMP/appimagetool"
+          LINUXDEPLOY="$RUNNER_TEMP/linuxdeploy" APPIMAGETOOL="$RUNNER_TEMP/appimagetool" tools/desktop/package-appimage.sh build dist
+          tools/desktop/smoke-linux.sh dist/Velnosub-linux-x86_64.AppImage
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Velnosub-linux-x86_64
+          path: dist/Velnosub-linux-x86_64.AppImage
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 80
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Install build and packaging tools
+        shell: pwsh
+        run: |
+          python -m pip install meson==1.7.2 ninja
+          choco install -y innosetup nasm
+          Invoke-WebRequest 'https://github.com/mlocati/gettext-iconv-windows/releases/download/v0.21-v1.16/gettext0.21-iconv1.16-static-64.zip' -OutFile "$env:RUNNER_TEMP/gettext.zip"
+          Expand-Archive "$env:RUNNER_TEMP/gettext.zip" "$env:RUNNER_TEMP/gettext"
+          "$env:RUNNER_TEMP/gettext/bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Build and test
+        shell: pwsh
+        run: |
+          meson setup build --buildtype=release -Ddefault_library=static -Db_vscrt=mt --force-fallback-for=zlib,harfbuzz,freetype2,fribidi,libpng -Dfreetype2:harfbuzz=disabled -Dharfbuzz:freetype=disabled -Dharfbuzz:cairo=disabled -Dharfbuzz:glib=disabled -Dharfbuzz:gobject=disabled -Dharfbuzz:tests=disabled -Dharfbuzz:docs=disabled -Dharfbuzz:icu=disabled -Dfribidi:tests=false -Dfribidi:docs=false -Dlibass:fontconfig=disabled -Dffmpeg:libdav1d=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
+          meson compile -C build
+          meson test -C build --print-errorlogs
+      - name: Build and smoke test the Windows packages
+        shell: pwsh
+        run: |
+          ./tools/desktop/package-windows.ps1 -BuildDir build -OutputDir dist
+          foreach ($kind in @('setup', 'portable')) {
+            $target = Join-Path $env:RUNNER_TEMP "Velnosub-$kind"
+            $package = (Resolve-Path "dist/Velnosub-windows-x64-$kind.exe").Path
+            $installer = Start-Process $package -ArgumentList @('/VERYSILENT', '/SUPPRESSMSGBOXES', "/DIR=`"$target`"") -Wait -PassThru
+            if ($installer.ExitCode -ne 0) { throw "$kind returned $($installer.ExitCode)" }
+            $editor = Join-Path $target 'Velnosub.exe'
+            if (!(Test-Path (Join-Path $target 'automation/autoload/kara-templater.lua')) -or !(Test-Path $editor)) { throw "Incomplete $kind payload" }
+            if ((Test-Path (Join-Path $target 'config.json')) -ne ($kind -eq 'portable')) { throw "Incorrect $kind configuration" }
+            $fixture = (Resolve-Path 'tools/cross/apk-ui/seed/karaskel-dene.ass').Path
+            $process = Start-Process $editor -ArgumentList "`"$fixture`"" -PassThru
+            try {
+              $opened = $false
+              for ($attempt = 0; $attempt -lt 30; $attempt++) {
+                Start-Sleep -Seconds 1
+                $process.Refresh()
+                if ($process.HasExited) { throw "$kind editor exited with $($process.ExitCode)" }
+                if ($process.MainWindowTitle -like '*karaskel-dene.ass*') { $opened = $true; break }
+              }
+              if (!$opened) { throw "$kind did not open the ASS fixture" }
+            } finally {
+              if (!$process.HasExited) { Stop-Process -Id $process.Id }
+            }
+          }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Velnosub-windows-x64
+          path: dist/Velnosub-windows-x64-*
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install build and packaging tools
+        run: |
+          python -m pip install meson==1.7.2 ninja
+          brew install pkgconf gettext wxwidgets libass ffms2 zlib icu4c fftw hunspell uchardet googletest dylibbundler
+      - name: Build and test
+        run: |
+          export PATH="$(brew --prefix gettext)/bin:$(brew --prefix wxwidgets)/bin:$PATH"
+          export PKG_CONFIG_PATH="$(brew --prefix icu4c)/lib/pkgconfig:$(brew --prefix zlib)/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+          export LDFLAGS="-Wl,-headerpad_max_install_names"
+          meson setup build --buildtype=release -Dbuild_osx_bundle=true -Dlocal_boost=true -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
+          meson compile -C build
+          meson test -C build --print-errorlogs
+      - name: Package and verify DMG
+        run: tools/desktop/package-macos.sh build dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Velnosub-macos-${{ matrix.arch }}
+          path: dist/Velnosub-macos-${{ matrix.arch }}.dmg
+          if-no-files-found: error

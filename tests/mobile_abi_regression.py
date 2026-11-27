@@ -68,6 +68,7 @@ aegisub.register_macro("Timing", "", check_timing)
             assert read_frame(frame) == sequential[frame], frame
         callback = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)(lambda _: 1)
         assert abi.velnosub_abi_video_open_cancel(bytes(video), callback, None) < 0
+        assert abi.velnosub_abi_video_open(bytes(workdir / "missing.mp4")) < 0
         assert read_frame(0) == sequential[0]
     finally:
         abi.velnosub_abi_video_close(h)

@@ -10,6 +10,8 @@ pub mod ass_tags;
 pub mod audio_timing;
 pub mod layout;
 pub mod visual_geom;
+mod video_metadata;
+mod spelling;
 
 use eframe::egui;
 use egui::ViewportBuilder;

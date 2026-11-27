@@ -43,7 +43,7 @@ mkdir -p %{_vpath_builddir}
 cp git_version.h %{_vpath_builddir}/git_version.h
 
 %build
-%meson --datadir=share/velnosub -Dffms2=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
+%meson --datadir=share/velnosub --localedir=share/velnosub/locale -Dffms2=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
 %meson_build
 
 %install
@@ -62,9 +62,9 @@ sed -e 's|<id>aegisub.desktop</id>|<id>com.velnoxy.velnosub</id>|' \
     -e 's|>aegisub.desktop</launchable>|>com.velnoxy.velnosub.desktop</launchable>|' \
     -e 's|>aegisub</binary>|>velnosub</binary>|' \
     -e 's|<name>Aegisub</name>|<name>Velnosub</name>|' \
-    %{buildroot}%{_datadir}/velnosub/metainfo/aegisub.appdata.xml \
+    %{buildroot}%{_datadir}/velnosub/metainfo/com.velnoxy.velnosub.appdata.xml \
     > %{buildroot}%{_datadir}/metainfo/com.velnoxy.velnosub.appdata.xml
-rm %{buildroot}%{_datadir}/velnosub/{applications/aegisub.desktop,metainfo/aegisub.appdata.xml}
+rm %{buildroot}%{_datadir}/velnosub/{applications/aegisub.desktop,metainfo/com.velnoxy.velnosub.appdata.xml}
 desktop-file-validate %{buildroot}%{_datadir}/applications/com.velnoxy.velnosub.desktop
 
 %check

@@ -27,6 +27,49 @@ Masaüstü (mevcut Aegisub yolu korunur):
 meson setup build && ninja -C build
 ```
 
+
+### Masaüstü paketleri
+
+Masaüstü paketleri mevcut wxWidgets editöründen üretilir. GitHub Actions'taki
+**Desktop packages** iş akışı paketleri artifact olarak kaydeder.
+
+| Platform | GitHub Actions çıktısı |
+|---|---|
+| Windows x64 | Kullanıcı hesabına kurulan setup EXE, kendi klasörüne açılan portable EXE ve portable ZIP |
+| Linux x86_64 | AppImage |
+| macOS Apple Silicon ve Intel | Her mimari için ayrı DMG |
+
+Windows portable paketinde `Velnosub.exe` uygulamayı açar ve ayarlar
+paketin klasöründe saklanır. Klasörün yazılabilir olması gerekir.
+Windows paketleri imzasızdır. macOS paketleri yerel doğrulama için ad hoc
+imzalanır ve Apple notarization içermez.
+
+Yerelde yapılandırma, derleme ve test için Meson ve Ninja kullanılır.
+İş akışındaki ilgili platform adımı, gereken derleme bağımlılıklarını listeler.
+Paketleme komutları başarılı derlemenin ardından çalıştırılır.
+
+```sh
+# Linux x86_64, linuxdeploy ve appimagetool yollarını ayarla
+meson setup build --buildtype=release --prefix=/usr -Dbuild_appimage=true
+meson compile -C build
+meson test -C build --print-errorlogs
+LINUXDEPLOY=/path/to/linuxdeploy APPIMAGETOOL=/path/to/appimagetool \
+  tools/desktop/package-appimage.sh build dist
+tools/desktop/smoke-linux.sh dist/Velnosub-linux-x86_64.AppImage
+
+# macOS, yerel mimari
+meson setup build --buildtype=release -Dbuild_osx_bundle=true
+meson compile -C build
+meson test -C build --print-errorlogs
+tools/desktop/package-macos.sh build dist
+```
+
+Windows'ta MSVC ve Inno Setup gereken hedefi derledikten sonra
+`./tools/desktop/package-windows.ps1 -BuildDir build -OutputDir dist`
+komutunu PowerShell'de çalıştır.
+
+### Android çekirdek derlemesi
+
 Android arm64-v8a (NDK r29 aarch64-host; detaylar velnosub-docs'taki Faz 2 planında):
 
 ```sh
@@ -70,7 +113,17 @@ kaydırmayla açılır. Kompakt sekmeli düzen Görünüm menüsünden seçilebi
 Video açıldığında paneldeki **Video ölçeği** menüsü görüntüyü en-boy
 oranını koruyarak sığdırır veya sabit bir yakınlaştırma yüzdesi uygular.
 %100’de bir video pikseli bir ekran pikseline karşılık gelir. Görüntü
-panele sığmazsa video alanında kaydırılabilir.
+panele sığmazsa video alanında kaydırılabilir. **En-boy oranı** menüsünde
+kaynak oranı, 4:3, 16:9, 2.39:1 veya özel bir değer seçilebilir.
+**Zaman dosyaları** menüsü Aegisub timecode v1/v2 ve keyframe v1 dosyalarını
+açar. Video değiştiğinde yeni kaynağın kendi zamanları ve ana kareleri kullanılır.
+
+Tablodaki **Çoklu seç** düğmesi toplu çoğaltma, silme, yorum ve zaman
+kaydırmayı açar. Toplu çoğaltma, silme ve yorum değişikliği tek adımda geri
+alınabilir. Tablo odağında Ctrl+A tüm satırları seçer, Ctrl+D çoğaltır
+ve Delete siler. Komut paletindeki **Çeviri asistanı** taslakları bir defada
+uygular. **Yazım denetimi**, kullanıcının seçtiği UTF-8 Hunspell
+`.aff` ve `.dic` dosyalarını kullanır.
 
 Güncel alpha APK'sı, başarılı `apk-build-ci` çalışmasının artifact bölümünde
 yer alır. Paketin desteklediği mimari varsayılan olarak arm64-v8a ve alt sınırı Android 10'dur
@@ -115,7 +168,11 @@ ASS dosyasına gömülü font ekleme, komut paleti ve Lua/MoonScript dosyası
 yükleme bulunur. Otomasyon yöneticisinde paketlenmiş karaoke şablonunu
 uygulayabilir veya seçtiğin scriptin makrolarını çalıştırabilirsin.
 Bir makro form açtığında, formu yanıtlayana kadar betik bekler. Makro
-iptal edilirse açık belge korunur. Standart `aegisub.re`,
+iptal edilirse açık belge korunur. Android’de `aegisub.dialog.open` tek
+dosya seçer. `aegisub.dialog.save` bir geçici çıktı yolu verir ve makro
+başarılı olunca hedefi Android dosya seçicisine sorar. Çıktı iptal
+edilirse makronun altyazı değişiklikleri uygulanmaz. Joker karakter
+filtreleri ve çoklu dosya seçimi henüz kapsam dışındadır. Standart `aegisub.re`,
 `aegisub.lfs`, `aegisub.unicode` ve `luabins` modülleri paketlenir.
 Scriptler uygulama yetkileriyle çalışır. `os.execute` ve `io.popen`
 devre dışıdır. FFI kullanan scriptler için bu bir güvenlik sınırı oluşturmaz.

@@ -40,6 +40,7 @@ jobs:
       - name: Build RPM and run unit tests
         shell: bash
         run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           root="$RUNNER_TEMP/rpmbuild"
           source="$RUNNER_TEMP/velnosub-source"
           mkdir -p "$root/SOURCES" "$source/velnosub-0.1.1" dist

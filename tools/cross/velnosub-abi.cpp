@@ -1852,6 +1852,7 @@ int velnosub_abi_video_open_cancel(const char *path, VideoCancel cancel, const v
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }
+	catch (...) { set_err("Video dosyası açılamadı: " + std::string(path)); }
 	return -1;
 }
 
