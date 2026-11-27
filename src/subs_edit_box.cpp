@@ -72,6 +72,7 @@
 #include <wx/radiobut.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
+#include <wx/wrapsizer.h>
 #include <wx/spinctrl.h>
 
 namespace {
@@ -115,7 +116,7 @@ SubsEditBox::SubsEditBox(wxWindow *parent, agi::Context *context)
 	using std::bind;
 
 	// Top controls
-	top_sizer = new wxBoxSizer(wxHORIZONTAL);
+	top_sizer = new wxWrapSizer(wxHORIZONTAL);
 
 	comment_box = new wxCheckBox(this,-1,_("&Comment"));
 	comment_box->SetToolTip(_("Comment this line out. Commented lines don't show up on screen."));
@@ -147,7 +148,7 @@ SubsEditBox::SubsEditBox(wxWindow *parent, agi::Context *context)
 	top_sizer->Add(char_count, wxSizerFlags().Expand());
 
 	// Middle controls
-	middle_left_sizer = new wxBoxSizer(wxHORIZONTAL);
+	middle_left_sizer = new wxWrapSizer(wxHORIZONTAL);
 
 	layer = new wxSpinCtrl(this,-1,"",wxDefaultPosition, wxDefaultSize, wxSP_ARROW_KEYS | wxTE_PROCESS_ENTER,0,0x7FFFFFFF,0);
 #ifndef __WXGTK3__
@@ -172,7 +173,7 @@ SubsEditBox::SubsEditBox(wxWindow *parent, agi::Context *context)
 	middle_left_sizer->AddSpacer(5);
 
 	// Middle-bottom controls
-	middle_right_sizer = new wxBoxSizer(wxHORIZONTAL);
+	middle_right_sizer = new wxWrapSizer(wxHORIZONTAL);
 	MakeButton("edit/style/bold");
 	MakeButton("edit/style/italic");
 	MakeButton("edit/style/underline");
@@ -436,6 +437,9 @@ void SubsEditBox::RefreshWorkspaceSource() {
 void SubsEditBox::SetFluentWorkspace(bool enabled) {
 	fluentWorkspace = enabled;
 	edit_ctrl->SetFluentWorkspace(enabled);
+	const int editorHeight = enabled ? FromDIP(80) : wxDefaultCoord;
+	edit_ctrl->SetMinSize(wxSize(wxDefaultCoord, editorHeight));
+	secondary_editor->SetMinSize(wxSize(wxDefaultCoord, editorHeight));
 	GetSizer()->Show(workspaceSourceLabel, enabled);
 	GetSizer()->Show(workspaceTranslationLabel, enabled);
 	GetSizer()->Show(split_box, !enabled, true);
@@ -447,7 +451,7 @@ void SubsEditBox::SetFluentWorkspace(bool enabled) {
 	if (enabled) {
 		GetSizer()->Show(secondary_editor);
 		GetSizer()->Hide(bottom_sizer);
-		SetMinSize(GetSizer()->GetMinSize());
+		SetMinSize(wxSize(FromDIP(390), wxDefaultCoord));
 		RefreshWorkspaceSource();
 		Layout();
 	}
@@ -591,6 +595,11 @@ void SubsEditBox::SetDurationField() {
 }
 
 void SubsEditBox::OnSize(wxSizeEvent &evt) {
+	if (fluentWorkspace) {
+		evt.Skip();
+		return;
+	}
+
 	int availableWidth = GetVirtualSize().GetWidth();
 	int midMin = middle_left_sizer->GetMinSize().GetWidth();
 	int botMin = middle_right_sizer->GetMinSize().GetWidth();

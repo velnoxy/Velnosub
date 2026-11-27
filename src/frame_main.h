@@ -29,6 +29,7 @@
 
 #include <memory>
 #include <wx/frame.h>
+#include <wx/scrolwin.h>
 #include <wx/timer.h>
 
 class AegisubApp;
@@ -75,7 +76,7 @@ class FrameMain : public wxFrame {
 	void EnableToolBar(agi::OptionValue const& opt);
 
 	bool fluentWorkspace = false;
-	wxPanel *workspacePanel = nullptr;
+	wxScrolledWindow *workspacePanel = nullptr;
 	wxPanel *workspaceInspector = nullptr;
 	wxSizer *mediaSizer = nullptr;
 	wxButton *playSelection = nullptr;

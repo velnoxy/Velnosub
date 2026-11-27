@@ -198,7 +198,8 @@ void FrameMain::EnableToolBar(agi::OptionValue const& opt) {
 
 void FrameMain::InitContents() {
 	StartupLog("Create background panel");
-	auto Panel = workspacePanel = new wxPanel(this, -1, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL | wxCLIP_CHILDREN);
+	auto Panel = workspacePanel = new wxScrolledWindow(this, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+		wxTAB_TRAVERSAL | wxCLIP_CHILDREN | wxHSCROLL | wxVSCROLL);
 
 	StartupLog("Create subtitles grid");
 	context->subsGrid = new BaseGrid(Panel, context.get());
@@ -238,6 +239,9 @@ void FrameMain::InitWorkspaceInspector(wxPanel *parent) {
 		auto control = new wxButton(owner, wxID_ANY, label);
 		control->SetBackgroundColour(accent);
 		control->SetForegroundColour(text);
+		control->Bind(wxEVT_UPDATE_UI, [this, command](wxUpdateUIEvent& event) {
+			event.Enable(cmd::get(command)->Validate(context.get()));
+		});
 		control->Bind(wxEVT_BUTTON, [this, command](wxCommandEvent&) {
 			auto action = cmd::get(command);
 			if (action->Validate(context.get()))
@@ -327,8 +331,11 @@ void FrameMain::SetFluentWorkspace(bool enabled) {
 		ToolsSizer->Insert(0, audioBox, 0, wxEXPAND);
 	}
 	workspacePanel->SetBackgroundColour(enabled ? wxColour(23, 24, 32) : GetBackgroundColour());
-	playSelection->Show(enabled);
-	playSelection->Enable(showVideo && context->project->VideoProvider());
+	playSelection->Show(enabled && showVideo && context->project->VideoProvider());
+	if (!enabled)
+		workspacePanel->Scroll(0, 0);
+	workspacePanel->SetScrollRate(enabled ? FromDIP(12) : 0, enabled ? FromDIP(12) : 0);
+	MainSizer->SetItemMinSize(context->subsGrid, wxSize(-1, enabled ? FromDIP(96) : -1));
 	workspaceInspector->Show(enabled);
 	context->subsGrid->SetFluentWorkspace(enabled);
 	editBox->SetFluentWorkspace(enabled);
@@ -361,9 +368,9 @@ void FrameMain::SetDisplayMode(int video, int audio) {
 
 	videoBox->Show(showVideo);
 	audioBox->Show(showAudio);
-	playSelection->Enable(showVideo);
+	playSelection->Show(fluentWorkspace && showVideo);
 
-	MainSizer->Layout();
+	workspacePanel->Layout();
 	Layout();
 
 	if (didFreeze) Thaw();

@@ -7054,9 +7054,13 @@ impl GridApp {
 	/// Ayarlar bölümü: düzen seçimi canlı etkilidir ve hep dosyaya yazılır;
 	/// ayrıca ilk seçim ekranına dönüş gerçek bir eylemdir.
 	fn ayarlar_bolum(&mut self, ui: &mut egui::Ui) {
-		ui.add_space(8.0);
-		ui.heading("Ayarlar");
-		self.ayarlar_icerik(ui);
+		egui::ScrollArea::vertical()
+			.id_salt("mobil-ayarlar")
+			.show(ui, |ui| {
+				ui.add_space(8.0);
+				ui.heading("Ayarlar");
+				self.ayarlar_icerik(ui);
+			});
 	}
 
 	/// Ayarlar içeriği: mobil Ayarlar sekmesinde ve masaüstündeki Ayarlar
@@ -7136,7 +7140,6 @@ impl GridApp {
 			self.duzen = Duzen::Secim;
 		}
 		ui.add_space(12.0);
-		ui.label(RichText::new(format!("ayar dosyası: {}", ayar_yolu())).weak());
 		if self.note.starts_with("ayar yazılamadı") {
 			ui.label(
 				RichText::new(&self.note)
@@ -7177,40 +7180,39 @@ impl GridApp {
 	fn mobil_cerceve(&mut self, ui: &mut egui::Ui) {
 		let mut etiketler: Vec<(Sekme, String)> = vec![(
 			Sekme::Altyazi,
-			format!("{} Altyazı", ikon::SUBTITLES),
+			format!("{}\nAltyazı", ikon::SUBTITLES),
 		)];
 		if self.video.is_some() {
-			etiketler.push((Sekme::Video, format!("{} Video", ikon::VIDEO)));
+			etiketler.push((Sekme::Video, format!("{}\nVideo", ikon::VIDEO)));
 		}
 		if self.audio.is_some() {
-			etiketler.push((Sekme::Ses, format!("{} Ses", ikon::AUDIO)));
+			etiketler.push((Sekme::Ses, format!("{}\nSes", ikon::AUDIO)));
 		}
 		if !self.stiller.is_empty() {
-			etiketler.push((Sekme::Stil, format!("{} Stil", ikon::PALETTE)));
+			etiketler.push((Sekme::Stil, format!("{}\nStil", ikon::PALETTE)));
 		}
 		if self.dialog.is_some() {
-			etiketler.push((Sekme::Form, format!("{} Form", ikon::TUNE)));
+			etiketler.push((Sekme::Form, format!("{}\nForm", ikon::TUNE)));
 		}
-		etiketler.push((Sekme::Ayarlar, format!("{} Ayarlar", ikon::SETTINGS)));
+		etiketler.push((Sekme::Ayarlar, format!("{}\nAyarlar", ikon::SETTINGS)));
 		if !etiketler.iter().any(|(s, _)| *s == self.aktif) {
 			self.aktif = Sekme::Altyazi;
 		}
 		Panel::bottom("vtabs").show(ui, |su| {
 			su.add_space(6.0);
-			// sekme genişliği kalan alana oranlanır: en dar pencerede de
-			// taşma olmaz (satır yatay kaydırma yok);
-			// denetim 1: dar genişlikte etiket kırpılmasın — düğme iç
-			// padding'i daralır, metin boyu sekme genişliğine uyarlanır
-			// (9–15.5pt bandı)
 			let adet = etiketler.len().max(1) as f32;
-			let gen = ((su.available_width() - 8.0) / adet).max(44.0);
-			su.horizontal(|k| {
-				k.spacing_mut().button_padding = egui::vec2(4.0, 8.0);
+			let bosluk = 4.0;
+			let gen = ((su.available_width() - bosluk * (adet - 1.0)) / adet)
+				.floor()
+				.max(48.0);
+			su.spacing_mut().item_spacing.x = bosluk;
+			su.horizontal_wrapped(|k| {
+				k.spacing_mut().button_padding = egui::vec2(2.0, 4.0);
 				for (s, ad) in &etiketler {
-					let metin_boyu = (gen * 0.22).clamp(9.0, 15.5);
+					let metin_boyu = (gen * 0.24).clamp(11.5, 15.0);
 					if k.add(
 						egui::Button::new(RichText::new(ad).size(metin_boyu))
-							.min_size(egui::vec2(gen, 44.0))
+							.min_size(egui::vec2(gen, 48.0))
 							.selected(self.aktif == *s),
 					).clicked() {
 						self.aktif = *s;
