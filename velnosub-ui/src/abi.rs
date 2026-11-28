@@ -56,7 +56,7 @@ mod ikon {
 extern "C" {
 	fn velnosub_abi_init(config_json_path: *const c_char) -> c_int;
 	fn velnosub_abi_new_document() -> c_int;
-	fn velnosub_ui_open_document(in_path: *const c_char) -> c_int;
+	fn velnosub_ui_open_document(in_path: *const c_char, encoding: *const c_char) -> c_int;
 	fn velnosub_abi_event_count(h: c_int) -> c_int;
 	fn velnosub_abi_style_count(h: c_int) -> c_int;
 	fn velnosub_abi_line_text(
@@ -120,7 +120,7 @@ extern "C" {
 	fn velnosub_abi_attach_font(h: c_int, filename: *const c_char) -> c_int;
 	fn velnosub_abi_close(h: c_int);
 	fn velnosub_abi_last_error() -> *const c_char;
-	fn velnosub_abi_video_open_cancel(
+	fn velnosub_ui_open_video(
 		path: *const c_char, cancel: extern "C" fn(*const std::ffi::c_void) -> c_int,
 		state: *const std::ffi::c_void,
 	) -> c_int;
@@ -150,6 +150,13 @@ extern "C" {
 	fn velnosub_abi_script_size(
 		h: c_int, out_w: *mut c_int, out_h: *mut c_int,
 	) -> c_int;
+	fn velnosub_abi_resample(h: c_int, width: c_int, height: c_int, aspect_mode: c_int) -> c_int;
+	fn velnosub_abi_karaoke_read(h: c_int, row: c_int, out: *mut c_char, capacity: c_int) -> c_int;
+	fn velnosub_abi_karaoke_edit(h: c_int, row: c_int, operation: c_int, index: c_int, value: c_int) -> c_int;
+	fn velnosub_abi_catalog_store(h: c_int, index: c_int, path: *const c_char) -> c_int;
+	fn velnosub_abi_catalog_import(h: c_int, path: *const c_char) -> c_int;
+	fn velnosub_abi_kanji_match(h: c_int, row: c_int, offset: c_int, destination: *const c_char,
+		source_length: *mut c_int, destination_length: *mut c_int) -> c_int;
 	fn velnosub_abi_render_line(
 		h: c_int, idx: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
@@ -160,7 +167,7 @@ extern "C" {
 	fn velnosub_abi_audio_open(
 		path: *const c_char, rate: c_int, ch: c_int,
 	) -> c_int;
-	fn velnosub_abi_audio_file_open_cancel(
+	fn velnosub_ui_open_audio(
 		path: *const c_char, cancel: extern "C" fn(*const std::ffi::c_void) -> c_int,
 		cancel_state: *const std::ffi::c_void,
 	) -> c_int;
@@ -473,12 +480,20 @@ fn bgra_to_image(d: &[u8], w: usize, hgt: usize) -> egui::ColorImage {
 }
 
 impl VideoSection {
+	fn timeline(&self) -> &[i32] {
+		self.external_times.as_deref().unwrap_or(&self.zamanlar)
+	}
+
+	fn keyframes(&self) -> &[i32] {
+		self.external_keys.as_deref().unwrap_or(&self.ana_kareler)
+	}
+
 	fn kare_zamani(&self, frame: i32) -> i32 {
-		self.zamanlar[frame.clamp(0, self.kareler - 1) as usize]
+		self.timeline()[frame.clamp(0, self.kareler - 1) as usize]
 	}
 
 	fn zamandaki_kare(&self, ms: i64) -> i32 {
-		self.zamanlar.partition_point(|&start| i64::from(start) <= ms).saturating_sub(1) as i32
+		self.timeline().partition_point(|&start| i64::from(start) <= ms).saturating_sub(1) as i32
 	}
 
 	fn en_yakin_kare_zamani(&self, ms: i64) -> i64 {
@@ -567,10 +582,13 @@ fn alt_tsv_okes() -> Vec<(i64, String, String)> {
 	kareler: i32,
 	zamanlar: Vec<i32>,
 	ana_kareler: Vec<i32>,
+	external_times: Option<Vec<i32>>,
+	external_keys: Option<Vec<i32>>,
 	frame: i32,
 	info: String,
 	dok: Option<egui::TextureHandle>,
 	olcek_yuzdesi: Option<u16>,
+	preview_ratio: Option<f32>,
 	// P6.4: medya yolu iç altyazı seçici; akslar = (stream idx, codec, dil);
 	// oynatma çiftes (kare-timer) + birim kare biriktirici
 	yol: String,
@@ -823,7 +841,7 @@ fn clip_dik_oku(metin: &str) -> Result<Option<((f64, f64, f64, f64), bool)>, ()>
 	} else {
 		return Ok(None);
 	};
-	if ass_tags::vektor_noktalari(metin, ad).is_some() {
+	if ham.bytes().any(|ch| ch.is_ascii_alphabetic()) {
 		return Err(());
 	}
 	let s = sayilar_al(&ham);
@@ -854,6 +872,10 @@ fn clip_vektor_yaz(
 	noktalar: &[(f64, f64)],
 	iclip: bool,
 ) -> String {
+	let source_tag = if ass_tags::etiket_al(metin, "iclip").is_some() { "iclip" } else { "clip" };
+	if ass_tags::complex_clip(metin, source_tag) {
+		return ass_tags::vektor_yaz(metin, source_tag, noktalar, true);
+	}
 	let m = ass_tags::etiket_sil(metin, "clip");
 	let m = ass_tags::etiket_sil(&m, "iclip");
 	ass_tags::vektor_yaz(
@@ -870,7 +892,7 @@ fn clip_vektor_oku(metin: &str) -> Option<(Vec<(f64, f64)>, bool)> {
 		if let Some(mut p) = ass_tags::vektor_noktalari(metin, ad) {
 			// `vektor_yaz(kapali=true)` ilk noktaya dönen kapanışı ekler;
 			// düzenleme listesinde bu yinelenen noktayı göstermeyiz.
-			if p.len() > 1 && p.first() == p.last() {
+			if !ass_tags::complex_clip(metin, ad) && p.len() > 1 && p.first() == p.last() {
 				p.pop();
 			}
 			if !p.is_empty() {
@@ -909,6 +931,7 @@ enum SesMod {
 /// P4.4: açılı ses kolu + görünür aralık dalga/spektrum durumu.
 pub struct AudioSection {
 	handle: c_int,
+	path: String,
 	// Gerçek künye: `audio_info` dizgesinden çözülür (yoksa 48000/2).
 	rate: c_int,
 	ch: c_int,
@@ -1354,6 +1377,10 @@ fn dialog_model(dh: c_int) -> Result<DialogSection, String> {
 /// dizin gezinti + uzantı süzgeci + tek-dokunuş seçim + AÇ onayı.
 #[derive(Clone, Copy, PartialEq)]
 enum SecimTur {
+	Timecodes,
+	Keyframes,
+	DictionaryRules,
+	DictionaryWords,
 	Altyazi,
 	Video,
 	Ses,
@@ -1383,6 +1410,9 @@ impl Tarayici {
 
 	fn uzantilar(&self) -> &'static [&'static str] {
 		match self.tur {
+			SecimTur::Timecodes | SecimTur::Keyframes => &["txt", "v1", "v2"],
+			SecimTur::DictionaryRules => &["aff"],
+			SecimTur::DictionaryWords => &["dic"],
 			SecimTur::Altyazi => &["ass", "ssa", "srt", "txt"],
 			SecimTur::Video => &["mkv", "mp4", "webm", "avi", "mov", "m4v", "ts"],
 			SecimTur::Lua => &["lua", "moon"],
@@ -1413,7 +1443,26 @@ extern "C" fn wake_document_ui() {
 }
 
 #[cfg(target_os = "android")]
+struct MacroExport {
+	path: std::path::PathBuf,
+	document: Option<c_int>,
+	name: String,
+}
+
+#[cfg(target_os = "android")]
+impl Drop for MacroExport {
+	fn drop(&mut self) {
+		if let Some(document) = self.document.take() {
+			unsafe { velnosub_abi_close(document) };
+		}
+		GridApp::remove_saf_stage(&self.path);
+	}
+}
+
+#[cfg(target_os = "android")]
 enum AndroidBelge {
+	MacroOpen,
+	MacroSave(MacroExport),
 	Ac(SecimTur),
 	Kaydet(std::path::PathBuf, bool),
 }
@@ -1427,6 +1476,7 @@ extern "C" {
 	fn velnosub_abi_document_poll(path: *mut c_char, len: usize) -> c_int;
 	fn velnosub_abi_document_take_close() -> c_int;
 	fn velnosub_abi_document_set_wake(wake: Option<extern "C" fn()>);
+	fn velnosub_abi_appearance(out: *mut u32);
 }
 
 struct PendingVideo {
@@ -1452,7 +1502,7 @@ impl Drop for OpenedVideo {
 
 struct PendingAudio {
 	cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-	result: std::sync::mpsc::Receiver<Result<OpenedAudio, String>>,
+	result: std::sync::mpsc::Receiver<Result<(OpenedAudio, String), String>>,
 }
 
 struct OpenedAudio(Option<c_int>);
@@ -1477,7 +1527,6 @@ extern "C" fn audio_cancelled(state: *const std::ffi::c_void) -> c_int {
 }
 
 struct LuaScript {
-	path: String,
 	source: CString,
 	names: Vec<String>,
 	#[cfg(target_os = "android")]
@@ -1489,9 +1538,86 @@ struct HistoryEntry {
 	revision: u64,
 }
 
+struct Misspelling {
+	row: usize,
+	span: std::ops::Range<usize>,
+	revision: u64,
+	word: String,
+	replacement: String,
+	suggestions: Vec<String>,
+}
+
+struct Translation {
+	revision: u64,
+	row: usize,
+	block: usize,
+	drafts: std::collections::BTreeMap<(usize, usize), String>,
+}
+
+struct TimingProcessor {
+	revision: u64,
+	styles: std::collections::BTreeMap<String, bool>,
+	selected_only: bool,
+	options: crate::timing_processor::Options,
+}
+
+struct ResampleDialog {
+	revision: u64,
+	source: (i32, i32),
+	width: i32,
+	height: i32,
+	aspect_mode: i32,
+}
+
+struct Syllable {
+	start: i32,
+	end: i32,
+	text: String,
+}
+
+struct KaraokeDialog {
+	row: usize,
+	revision: u64,
+	syllables: Vec<Syllable>,
+	selected: usize,
+	boundary: i32,
+	split_at: usize,
+	drag_boundary: bool,
+	peaks: Option<(Vec<i16>, Vec<i16>)>,
+}
+
+struct KanjiDialog {
+	revision: u64,
+	source_row: usize,
+	target_row: usize,
+	source: Vec<Syllable>,
+	target: Vec<String>,
+	matches: Vec<(usize, usize)>,
+	source_count: usize,
+	target_count: usize,
+}
+
 pub struct GridApp {
-	lua_script: Option<LuaScript>,
+	subtitle_encoding: &'static str,
+	preferred_theme: Option<Tema>,
+	system_colors: bool,
+	high_contrast: bool,
+	appearance_key: Option<(Tema, u32, u32, bool)>,
+	hotkeys: crate::hotkeys::Hotkeys,
+	hotkeys_window: bool,
+	hotkey_capture: Option<crate::hotkeys::Action>,
+	multi_select: bool,
+	marked_rows: std::collections::BTreeSet<usize>,
+	translation: Option<Translation>,
+	spelling_open: bool,
+	dictionary_rules: Option<String>,
+	dictionary_words: Option<String>,
+	dictionary: Option<spellbook::Dictionary>,
+	misspelling: Option<Misspelling>,
+	lua_scripts: std::collections::BTreeMap<String, LuaScript>,
 	macro_form: Option<MacroForm>,
+	#[cfg(target_os = "android")]
+	macro_export: Option<MacroExport>,
 	lua_window: bool,
 	command_query: Option<String>,
 	handle: Option<c_int>,
@@ -1549,9 +1675,14 @@ pub struct GridApp {
 	shift_win: bool,
 	shift_ms: i32,
 	shift_tum: bool,
+	timing_processor: Option<TimingProcessor>,
+	resample_dialog: Option<ResampleDialog>,
+	karaoke_dialog: Option<KaraokeDialog>,
+	kanji_dialog: Option<KanjiDialog>,
 	// P8.1: tam stil yöneticisi penceresi + seçili stil
 	stil_win: bool,
 	stil_sec: usize,
+	catalog_name: String,
 	// P8.1: dosya özellikleri (Aegisub File → Properties portu)
 	ozellik_win: bool,
 }
@@ -1584,6 +1715,10 @@ fn ayar_yolu() -> String {
 	std::env::var("VELNOSUB_UI_JSON").unwrap_or_else(|_| "velnosub-ui.json".into())
 }
 
+fn hotkeys_path() -> std::path::PathBuf {
+	std::path::PathBuf::from(ayar_yolu()).with_extension("keys")
+}
+
 /// Arayüz teması: koyu varsayılan; açık tema Ayarlar'dan seçilir
 /// (denetim bulgu 7).
 #[derive(PartialEq, Clone, Copy)]
@@ -1597,6 +1732,8 @@ pub enum Tema {
 pub struct Ayar {
 	pub duzen: Option<String>,
 	pub tema: Option<String>,
+	system_colors: bool,
+	high_contrast: bool,
 }
 
 /// `{ "anahtar": "deger" }` biçimi için sade tarayıcı: anahtarı bulup
@@ -1619,6 +1756,8 @@ pub fn ayar_yukle() -> Ayar {
 	let bos = Ayar {
 		duzen: None,
 		tema: None,
+		system_colors: false,
+		high_contrast: false,
 	};
 	let icerik = match std::fs::read_to_string(ayar_yolu()) {
 		Ok(k) => k,
@@ -1627,13 +1766,23 @@ pub fn ayar_yukle() -> Ayar {
 	Ayar {
 		duzen: deger_bul(&icerik, "ui"),
 		tema: deger_bul(&icerik, "tema"),
+		system_colors: deger_bul(&icerik, "sistem_renkleri").as_deref() == Some("açık"),
+		high_contrast: deger_bul(&icerik, "yüksek_kontrast").as_deref() == Some("açık"),
 	}
 }
 
-pub fn ayar_yaz(duzen: &str, tema: &str) -> std::io::Result<()> {
+#[cfg(test)]
+fn ayar_yaz(duzen: &str, tema: &str) -> std::io::Result<()> {
+	let settings = ayar_yukle();
+	write_appearance(duzen, tema, settings.system_colors, settings.high_contrast)
+}
+
+fn write_appearance(duzen: &str, tema: &str, system_colors: bool, high_contrast: bool) -> std::io::Result<()> {
+	let enabled = |value| if value { "açık" } else { "kapalı" };
 	std::fs::write(
 		ayar_yolu(),
-		format!("{{ \"ui\": \"{duzen}\", \"tema\": \"{tema}\" }}"),
+		format!("{{ \"ui\": \"{duzen}\", \"tema\": \"{tema}\", \"sistem_renkleri\": \"{}\", \"yüksek_kontrast\": \"{}\" }}",
+			enabled(system_colors), enabled(high_contrast)),
 	)
 }
 
@@ -1671,13 +1820,44 @@ pub fn stil_tamir(style: &mut egui::Style, tema: Tema) {
 	style.visuals.weak_text_color = Some(zayif);
 }
 
-/// Anlık üçüncü kolu oku: bu çerçevedeki etkin tema (Ui stilinden).
-fn tema_simdi(ui: &egui::Ui) -> Tema {
-	if ui.style().visuals.dark_mode {
-		Tema::Koyu
+fn apply_material_colors(style: &mut egui::Style, (theme, accent, surface, high_contrast): (Tema, u32, u32, bool)) {
+	use egui::Color32;
+	let rgb = |color: u32| Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
+	let accent = rgb(accent);
+	let surface = rgb(surface);
+	let dark = theme == Tema::Koyu;
+	style.visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+	stil_tamir(style, theme);
+	let visuals = &mut style.visuals;
+	let foreground = if kontrast(Color32::BLACK, accent) >= kontrast(Color32::WHITE, accent) {
+		Color32::BLACK
 	} else {
-		Tema::Acik
+		Color32::WHITE
+	};
+	visuals.panel_fill = surface;
+	visuals.window_fill = surface;
+	visuals.selection.bg_fill = accent;
+	visuals.selection.stroke.color = foreground;
+	visuals.widgets.active.bg_fill = accent;
+	visuals.widgets.active.weak_bg_fill = accent;
+	visuals.widgets.active.fg_stroke.color = foreground;
+	if high_contrast {
+		let contrast = if dark { Color32::WHITE } else { Color32::BLACK };
+		visuals.weak_text_color = Some(contrast);
+		visuals.widgets.noninteractive.fg_stroke.color = contrast;
+		visuals.widgets.inactive.fg_stroke.color = contrast;
 	}
+}
+
+fn system_appearance() -> [u32; 5] {
+	#[cfg(target_os = "android")]
+	{
+		let mut colors = [0; 5];
+		unsafe { velnosub_abi_appearance(colors.as_mut_ptr()) };
+		colors
+	}
+	#[cfg(not(target_os = "android"))]
+	{ [0; 5] }
 }
 
 impl GridApp {
@@ -1691,9 +1871,32 @@ impl GridApp {
 				.unwrap_or(-1);
 			let _ = INIT_OK.set(ok_rc == 0);
 		}
+		let settings = ayar_yukle();
 		let mut app = Self {
-			lua_script: None,
+			multi_select: false,
+			subtitle_encoding: "UTF-8",
+			preferred_theme: match settings.tema.as_deref() {
+				Some("sistem") => None,
+				Some("acik") => Some(Tema::Acik),
+				_ => Some(Tema::Koyu),
+			},
+			system_colors: settings.system_colors,
+			high_contrast: settings.high_contrast,
+			appearance_key: None,
+			hotkeys: crate::hotkeys::Hotkeys::load(&hotkeys_path()),
+			hotkeys_window: false,
+			hotkey_capture: None,
+			marked_rows: Default::default(),
+			translation: None,
+			spelling_open: false,
+			dictionary_rules: None,
+			dictionary_words: None,
+			dictionary: None,
+			misspelling: None,
+			lua_scripts: Default::default(),
 			macro_form: None,
+			#[cfg(target_os = "android")]
+			macro_export: None,
 			lua_window: false,
 			command_query: None,
 			handle: None,
@@ -1733,8 +1936,13 @@ impl GridApp {
 			shift_win: false,
 			shift_ms: 1000,
 			shift_tum: true,
+			timing_processor: None,
+			resample_dialog: None,
+			karaoke_dialog: None,
+			kanji_dialog: None,
 			stil_win: false,
 			stil_sec: 0,
+			catalog_name: "Varsayılan".into(),
 			ozellik_win: false,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
@@ -1875,13 +2083,195 @@ impl GridApp {
 		self.note = "Yazı tipi ASS belgesine eklendi".into();
 	}
 
+	fn load_spelling_file(&mut self, path: &str, rules: bool) {
+		let content = match std::fs::read_to_string(path) {
+			Ok(content) => content,
+			Err(e) => {
+				self.note = format!("UTF-8 sözlük dosyası okunamadı: {e}");
+				return;
+			}
+		};
+		if rules { self.dictionary_rules = Some(content); }
+		else { self.dictionary_words = Some(content); }
+		self.misspelling = None;
+		self.spelling_open = true;
+		let Some((aff, dic)) = self.dictionary_rules.as_ref().zip(self.dictionary_words.as_ref()) else {
+			return;
+		};
+		match spellbook::Dictionary::new(aff, dic) {
+			Ok(dictionary) => {
+				self.dictionary = Some(dictionary);
+				self.note = "Sözlük yüklendi".into();
+			}
+			Err(e) => self.note = format!("Sözlük yüklenemedi: {e}"),
+		}
+	}
+
+	fn find_misspelling(&mut self, start_row: usize, start_byte: usize) {
+		let Some(dictionary) = self.dictionary.as_ref() else { return };
+		self.misspelling = self.rows.iter().enumerate().skip(start_row).find_map(|(row, line)| {
+			if line.yorum { return None; }
+			let span = crate::spelling::words(&line.text).find(|span| {
+				(row != start_row || span.start >= start_byte) && !dictionary.check(&line.text[span.clone()])
+			})?;
+			let word = line.text[span.clone()].to_owned();
+			let mut suggestions = Vec::new();
+			dictionary.suggest(&word, &mut suggestions);
+			Some(Misspelling {
+				row, span, revision: self.current_revision, replacement: word.clone(), word, suggestions,
+			})
+		});
+		self.note = if self.misspelling.is_some() { String::new() } else { "Başka sözcük bulunamadı".into() };
+	}
+
+	fn spelling_window(&mut self, ctx: &egui::Context) {
+		let mut open = self.spelling_open;
+		if !open { return; }
+		if self.misspelling.as_ref().is_some_and(|word| word.revision != self.current_revision) {
+			self.misspelling = None;
+		}
+		egui::Window::new("Yazım denetimi").open(&mut open).show(ctx, |ui| {
+			ui.horizontal_wrapped(|ui| {
+				if ui.button(".aff aç…").clicked() { self.tarayici_ac(SecimTur::DictionaryRules); }
+				if ui.button(".dic aç…").clicked() { self.tarayici_ac(SecimTur::DictionaryWords); }
+				if ui.add_enabled(self.dictionary.is_some(), egui::Button::new("Baştan tara")).clicked() {
+					self.find_misspelling(0, 0);
+				}
+			});
+			if let Some(mut word) = self.misspelling.take() {
+				ui.label(format!("Satır {} · {}", word.row + 1, word.word));
+				ui.horizontal_wrapped(|ui| {
+					for suggestion in word.suggestions.iter().take(6) {
+						if ui.button(suggestion).clicked() { word.replacement.clone_from(suggestion); }
+					}
+				});
+				ui.text_edit_singleline(&mut word.replacement);
+				if ui.button("Değiştir").clicked() {
+					let mut text = self.rows[word.row].text.clone();
+					text.replace_range(word.span.clone(), &word.replacement);
+					let next = word.span.start + word.replacement.len();
+					if self.apply_row_batch(vec![word.row], "Yazım düzeltildi", |handle, row| edit_line(handle, row, &text)) {
+						self.find_misspelling(word.row, next);
+					} else {
+						self.misspelling = Some(word);
+					}
+				} else if ui.button("Atla").clicked() {
+					self.find_misspelling(word.row, word.span.end);
+				} else {
+					self.misspelling = Some(word);
+				}
+			}
+			ui.label(&self.note);
+		});
+		self.spelling_open = open;
+	}
+
+	fn open_translation(&mut self) {
+		let row = self.secili.unwrap_or(0);
+		let start = (row..self.rows.len()).chain(0..row).find(|&index| {
+			!self.translation_blocks(index).is_empty()
+		});
+		if let Some(row) = start {
+			self.translation = Some(Translation {
+				revision: self.current_revision,
+				row,
+				block: 0,
+				drafts: Default::default(),
+			});
+		}
+	}
+
+	fn translation_blocks(&self, row: usize) -> Vec<std::ops::Range<usize>> {
+		let Some(row) = self.rows.get(row).filter(|row| !row.yorum) else { return Vec::new() };
+		crate::ass_tags::translation_ranges(&row.text)
+	}
+
+	fn apply_translation(&mut self, state: &Translation) -> bool {
+		if state.revision != self.current_revision { return false; }
+		let mut translated = std::collections::BTreeMap::new();
+		let mut block_ranges = Vec::new();
+		let mut previous = None;
+		for (&(row, block), value) in state.drafts.iter().rev() {
+			if previous != Some(row) {
+				block_ranges = self.translation_blocks(row);
+				previous = Some(row);
+			}
+			let line = translated.entry(row).or_insert_with(|| self.rows[row].text.clone());
+			let text = value.replace("\r\n", "\\N").replace(['\r', '\n'], "\\N");
+			line.replace_range(block_ranges[block].clone(), &text);
+		}
+		let rows = translated.keys().copied().collect();
+		self.apply_row_batch(rows, "Çeviri uygulandı", |handle, row| {
+			edit_line(handle, row, &translated[&row])
+		})
+	}
+
+	fn translation_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.translation.take() else { return };
+		if state.revision != self.current_revision { return; }
+		let blocks = self.translation_blocks(state.row);
+		let Some(block) = blocks.get(state.block) else { return };
+		let source = &self.rows[state.row].text[block.clone()];
+		let key = (state.row, state.block);
+		let mut draft = state.drafts.get(&key).cloned().unwrap_or_default();
+		let mut cancel = false;
+		let mut apply = false;
+		let mut step = 0;
+		egui::Modal::new(egui::Id::new("translation")).show(ctx, |ui| {
+			ui.heading("Çeviri asistanı");
+			ui.label(format!("Satır {} / {} · Metin {} / {}", state.row + 1, self.rows.len(), state.block + 1, blocks.len()));
+			ui.label(source);
+			if ui.add(TextEdit::multiline(&mut draft).hint_text("Çeviriyi yaz")).changed() {
+				if draft == source {
+					state.drafts.remove(&key);
+				} else {
+					state.drafts.insert(key, draft.clone());
+				}
+			}
+			ui.horizontal_wrapped(|ui| {
+				if ui.add_enabled(state.row > 0 || state.block > 0, egui::Button::new("Önceki")).clicked() { step = -1; }
+				if ui.add_enabled(state.row + 1 < self.rows.len() || state.block + 1 < blocks.len(), egui::Button::new("Sonraki")).clicked() { step = 1; }
+				if ui.button("Kaynağı kullan").clicked() {
+					state.drafts.remove(&key);
+				}
+				apply = ui.add_enabled(!state.drafts.is_empty(), egui::Button::new("Uygula")).clicked();
+				cancel = ui.button("Vazgeç").clicked();
+			});
+		});
+		if apply {
+			if !self.apply_translation(&state) {
+				self.translation = Some(state);
+			}
+		} else if !cancel {
+			if step > 0 {
+				if state.block + 1 < blocks.len() {
+					state.block += 1;
+				} else if let Some(row) = (state.row + 1..self.rows.len()).find(|&row| !self.translation_blocks(row).is_empty()) {
+					state.row = row;
+					state.block = 0;
+				}
+			} else if step < 0 {
+				if state.block > 0 {
+					state.block -= 1;
+				} else if let Some((row, count)) = (0..state.row).rev().find_map(|row| {
+					let count = self.translation_blocks(row).len();
+					(count > 0).then_some((row, count))
+				}) {
+					state.row = row;
+					state.block = count - 1;
+				}
+			}
+			self.translation = Some(state);
+		}
+	}
+
 	fn komut_paleti(&mut self, ctx: &egui::Context) {
 		let Some(mut query) = self.command_query.take() else { return };
 		let mut open = true;
 		let selected = egui::Window::new("Komut paleti").open(&mut open).show(ctx, |ui| {
 			ui.text_edit_singleline(&mut query);
 			let terms = query.to_lowercase();
-			let commands: [(&str, fn(&mut Self)); 12] = [
+			let commands: [(&str, fn(&mut Self)); 18] = [
 				("Yeni altyazı", Self::request_new_document),
 				("Altyazı aç", |app| app.tarayici_ac(SecimTur::Altyazi)),
 				("Video aç", |app| app.tarayici_ac(SecimTur::Video)),
@@ -1890,7 +2280,13 @@ impl GridApp {
 				("Geri al", Self::geri_al),
 				("İleri al", Self::ileri_al),
 				("Ara ve değiştir", |app| app.ara_win = true),
+				("Çeviri asistanı", Self::open_translation),
+				("Yazım denetimi", |app| app.spelling_open = true),
 				("Zaman kaydır", |app| app.shift_win = true),
+				("Zamanlamayı düzelt", Self::open_timing_processor),
+				("Karaoke zamanlaması", Self::open_karaoke_dialog),
+				("Kanji zaman aktarımı", Self::open_kanji_dialog),
+				("ASS çözünürlüğünü uyarla", Self::open_resample_dialog),
 				("Stil yöneticisi", |app| app.stil_win = true),
 				("Otomasyon", |app| app.lua_window = true),
 				("Yazı tipi ekle", |app| app.tarayici_ac(SecimTur::Font)),
@@ -1949,7 +2345,7 @@ impl GridApp {
 				String::from_utf8_lossy(&buf[..length as usize]).lines().map(str::to_owned).collect()
 			};
 			Ok(LuaScript {
-				path: path.to_owned(), source, names,
+				source, names,
 				#[cfg(target_os = "android")]
 				filters,
 			})
@@ -1957,7 +2353,7 @@ impl GridApp {
 		match result {
 			Ok(script) => {
 				self.note = format!("{} makro yüklendi", script.names.len());
-				self.lua_script = Some(script);
+				self.lua_scripts.insert(path.to_owned(), script);
 			}
 			Err(error) => self.note = format!("Script yüklenemedi: {error}"),
 		}
@@ -1965,9 +2361,17 @@ impl GridApp {
 	}
 
 	fn lua_yonet(&mut self, ctx: &egui::Context) {
+		enum Action {
+			Macro(String, CString, String),
+			#[cfg(target_os = "android")]
+			Filter(CString, String),
+			Reload(String),
+			Remove(String),
+		}
 		let mut open = self.lua_window;
 		if !open { return; }
-		egui::Window::new("Otomasyon").open(&mut open).show(ctx, |ui| {
+		let mut action = None;
+		egui::Window::new("Otomasyon").open(&mut open).vscroll(true).show(ctx, |ui| {
 			if ui.button("Lua / MoonScript dosyası aç…").clicked() {
 				self.tarayici_ac(SecimTur::Lua);
 			}
@@ -1976,7 +2380,7 @@ impl GridApp {
 			}
 			if ui.button("Karaoke şablonunu uygula").clicked() {
 				let script = CString::new(include_str!("../../automation/autoload/kara-templater.lua")).unwrap();
-				self.makro_calistir(&script, "Apply karaoke template");
+				self.makro_calistir(&script, "Apply karaoke template", None);
 			}
 			#[cfg(target_os = "android")]
 			if ui.button("Karaoke şablonuyla ASS dışa aktar…").clicked() {
@@ -1984,53 +2388,88 @@ impl GridApp {
 				self.filtreli_disari_aktar(&script, "Karaoke template");
 			}
 
-			if let Some(script) = &self.lua_script {
-				let path = script.path.clone();
-				let mut selected = None;
-				ui.separator();
-				for name in &script.names {
-					if ui.button(name).clicked() {
-						selected = Some(name.clone());
+			for (path, script) in &self.lua_scripts {
+				let display = std::path::Path::new(path).file_name()
+					.and_then(|name| name.to_str()).unwrap_or(path);
+				egui::CollapsingHeader::new(display).id_salt(path).default_open(true).show(ui, |ui| {
+					for name in &script.names {
+						if ui.button(name).clicked() {
+							action = Some(Action::Macro(path.clone(), script.source.clone(), name.clone()));
+						}
 					}
-				}
-				#[cfg(target_os = "android")]
-				let filter = script.filters.iter().find(|name| {
-					ui.button(format!("{name} ile ASS dışa aktar…")).clicked()
-				}).cloned();
-
-				if let Some(name) = selected {
-					let source = self.lua_script.as_ref().unwrap().source.clone();
-					self.makro_calistir(&source, &name);
-				}
-				#[cfg(target_os = "android")]
-				if let Some(filter) = filter {
-					let source = self.lua_script.as_ref().unwrap().source.clone();
-					self.filtreli_disari_aktar(&source, &filter);
-				}
-
-				if ui.button("Yeniden yükle").clicked() {
-					self.lua_yukle(&path);
-				}
-				if ui.button("Scripti kaldır").clicked() {
-					self.lua_script = None;
-				}
+					#[cfg(target_os = "android")]
+					for filter in &script.filters {
+						if ui.button(format!("{filter} ile ASS dışa aktar…")).clicked() {
+							action = Some(Action::Filter(script.source.clone(), filter.clone()));
+						}
+					}
+					ui.horizontal_wrapped(|ui| {
+						if ui.button("Yeniden yükle").clicked() {
+							action = Some(Action::Reload(path.clone()));
+						}
+						if ui.button("Scripti kaldır").clicked() {
+							action = Some(Action::Remove(path.clone()));
+						}
+					});
+				});
 			}
 			ui.label(&self.note);
 		});
 		self.lua_window = open;
+		match action {
+			Some(Action::Macro(path, source, name)) => self.makro_calistir(&source, &name, Some(&path)),
+			#[cfg(target_os = "android")]
+			Some(Action::Filter(source, filter)) => self.filtreli_disari_aktar(&source, &filter),
+			Some(Action::Reload(path)) => self.lua_yukle(&path),
+			Some(Action::Remove(path)) => { self.lua_scripts.remove(&path); }
+			None => {}
+		}
 	}
 
 	fn makro_uygula(&mut self) {
 		let script = CString::new(include_str!("../../tools/cross/velnosub-demo-macro.lua")).unwrap();
-		self.makro_calistir(&script, "Ana harf");
+		self.makro_calistir(&script, "Ana harf", None);
 	}
 
-	fn makro_calistir(&mut self, script: &CStr, name: &str) {
-		let (Some(h), Some(row)) = (self.handle, self.secili) else {
+	fn makro_calistir(&mut self, script: &CStr, name: &str, script_path: Option<&str>) {
+		let selected = self.selected_rows();
+		let active = self.secili.filter(|row| selected.contains(row)).or_else(|| selected.first().copied());
+		let (Some(h), Some(row)) = (self.handle, active) else {
 			self.note = "makro için bir satır seç".into();
 			return;
 		};
-		let shim = CString::new(include_str!("../../tools/cross/velnosub-aegisub.lua")).unwrap();
+		use std::fmt::Write;
+		let mut shim = String::from("aegisub.__mobile_context = { selected = {");
+		for row in selected { write!(shim, "{},", row + 1).unwrap(); }
+		shim.push_str("},");
+		for (key, path) in [
+			("script", script_path),
+			("video_file", self.video.as_ref().map(|video| video.yol.as_str())),
+			("audio_file", self.audio.as_ref().map(|audio| audio.path.as_str())),
+		] {
+			if let Some(path) = path {
+				write!(shim, "{key}=\"").unwrap();
+				for byte in path.bytes() { write!(shim, "\\{byte:03}").unwrap(); }
+				shim.push_str("\",");
+			}
+		}
+		if let Some(video) = &self.video {
+			write!(shim, "position={},zoom={},ratio={},", video.frame, video.olcek_yuzdesi.unwrap_or(100),
+				video.preview_ratio.unwrap_or(video.w as f32 / video.hgt as f32)).unwrap();
+			for (key, values) in [
+				("times", video.external_times.as_ref()),
+				("keyframes", video.external_keys.as_ref()),
+			] {
+				if let Some(values) = values {
+					write!(shim, "{key}={{").unwrap();
+					for value in values { write!(shim, "{value},").unwrap(); }
+					shim.push_str("},");
+				}
+			}
+		}
+		shim.push_str("}\n");
+		shim.push_str(include_str!("../../tools/cross/velnosub-aegisub.lua"));
+		let shim = CString::new(shim).unwrap();
 		let Ok(macro_name) = CString::new(name) else { return };
 		let path = CString::new(self.path.as_deref().unwrap_or("")).unwrap_or_default();
 		let (mut token, mut result) = (-1, -1);
@@ -2044,15 +2483,35 @@ impl GridApp {
 
 	fn macro_step(&mut self, name: &str, token: c_int, status: c_int, next: c_int) {
 		match status {
-			0 => self.apply_macro_snapshot(name, next),
+			0 => {
+				#[cfg(target_os = "android")]
+				if let Some(mut export) = self.macro_export.take() {
+					export.document = Some(next);
+					if !export.path.is_file() {
+						self.note = "Makro kaydedilecek dosyayı yazmadı".into();
+						return;
+					}
+					let path = export.path.clone();
+					let title = path.file_name().unwrap_or_default().to_string_lossy();
+					self.android_belge_sec(AndroidBelge::MacroSave(export), 3, &path.to_string_lossy(), &title);
+					return;
+				}
+				self.apply_macro_snapshot(name, next);
+			}
 			1 => match dialog_model(next) {
 				Ok(dialog) => self.macro_form = Some(MacroForm { token, name: name.to_owned(), dialog }),
 				Err(error) => {
 					unsafe { velnosub_abi_macro_abort(token) };
+					#[cfg(target_os = "android")]
+					{ self.macro_export = None; }
 					self.note = format!("Makro formu açılamadı: {error}");
 				}
 			},
-			_ => self.note = format!("Makro hatası: {}", last_error()),
+			_ => {
+				#[cfg(target_os = "android")]
+				{ self.macro_export = None; }
+				self.note = format!("Makro hatası: {}", last_error());
+			}
 		}
 	}
 
@@ -2098,14 +2557,93 @@ impl GridApp {
 
 	fn geri_al(&mut self) {
 		self.gecmiste_ilerle(true);
+		self.clear_grid_selection();
 	}
 
 	fn ileri_al(&mut self) {
 		self.gecmiste_ilerle(false);
+		self.clear_grid_selection();
 	}
 
 	// ---------------- P5.4 gece: satır ekle/sil --------------------------
+	fn selected_rows(&self) -> Vec<usize> {
+		if self.multi_select {
+			self.marked_rows.iter().copied().filter(|&row| row < self.rows.len()).collect()
+		} else {
+			self.secili.into_iter().filter(|&row| row < self.rows.len()).collect()
+		}
+	}
+
+	fn select_grid_row(&mut self, row: usize) {
+		self.secili = Some(row);
+		if self.multi_select && !self.marked_rows.insert(row) {
+			self.marked_rows.remove(&row);
+		}
+	}
+
+	fn clear_grid_selection(&mut self) {
+		self.multi_select = false;
+		self.marked_rows.clear();
+	}
+
+	fn apply_row_batch(&mut self, rows: Vec<usize>, label: &str,
+		edit: impl Fn(c_int, usize) -> Result<(), String>,
+	) -> bool {
+		if rows.is_empty() { return false; }
+		let message = format!("{label} · {} satır", rows.len());
+		self.apply_document_edit(&message, |draft| {
+			for &row in rows.iter().rev() {
+				edit(draft, row)?;
+			}
+			Ok(())
+		})
+	}
+
+	fn apply_document_edit(&mut self, label: &str, edit: impl FnOnce(c_int) -> Result<(), String>) -> bool {
+		let Some(h) = self.handle else { return false };
+		let draft = unsafe { velnosub_abi_snapshot(h) };
+		if draft < 0 {
+			self.note = last_error();
+			return false;
+		}
+		if let Err(e) = edit(draft) {
+			unsafe { velnosub_abi_close(draft) };
+			self.note = format!("{label}: {e}");
+			return false;
+		}
+		self.gecmise_ekle(h);
+		self.handle = Some(draft);
+		unsafe { velnosub_abi_render_close(h) };
+		self.son_an = None;
+		self.typeset = None;
+		self.oniz = Oniz::default();
+		self.yerles();
+		self.note = label.into();
+		true
+	}
+
+	fn toggle_selected_comments(&mut self) {
+		let rows = self.selected_rows();
+		let comment = rows.iter().any(|&row| !self.rows[row].yorum);
+		self.apply_row_batch(rows, "Yorum durumu değiştirildi", |handle, row| {
+			meta_set(handle, row, None, None, None, Some(comment), None)
+		});
+	}
+
 	fn satir_ekle_tetik(&mut self, cogalt: bool) {
+		if cogalt && self.multi_select {
+			let rows = self.selected_rows();
+			if self.apply_row_batch(rows, "Satırlar çoğaltıldı", |handle, row| {
+				if unsafe { velnosub_abi_duplicate_line(handle, row as c_int) } == 0 {
+					Ok(())
+				} else {
+					Err(last_error())
+				}
+			}) {
+				self.clear_grid_selection();
+			}
+			return;
+		}
 		let Some(h) = self.handle else {
 			self.note = "açık dosya yok".into();
 			return;
@@ -2132,6 +2670,7 @@ impl GridApp {
 			Ok(()) => {
 				self.yerles();
 				self.secili = Some(idx);
+				self.clear_grid_selection();
 				self.note = if cogalt {
 					format!("satır çoğaltıldı → {}", idx + 1)
 				} else {
@@ -2143,6 +2682,14 @@ impl GridApp {
 	}
 
 	fn satir_sil_tetik(&mut self) {
+		if self.multi_select {
+			let rows = self.selected_rows();
+			if self.apply_row_batch(rows, "Satırlar silindi", satir_sil) {
+				self.secili = None;
+				self.clear_grid_selection();
+			}
+			return;
+		}
 		let Some(h) = self.handle else {
 			self.note = "açık dosya yok".into();
 			return;
@@ -2238,27 +2785,375 @@ impl GridApp {
 			self.note = "kaydırma sıfır".into();
 			return;
 		}
-		let idxler: Vec<usize> = if self.shift_tum {
+		let rows: Vec<usize> = if self.shift_tum {
 			(0..self.rows.len()).collect()
 		} else {
-			vec![self.secili.unwrap_or(0)]
+			self.selected_rows()
 		};
-		let mut yazi: Vec<Yazi> = Vec::new();
-		for i in idxler {
-			let Some(r) = self.rows.get(i) else { continue };
-			let (Ok(mb), Ok(ms)) = (ass_ms(&r.bas), ass_ms(&r.son)) else {
-				continue;
+		let mut times = std::collections::BTreeMap::new();
+		for row in rows {
+			let (Ok(start), Ok(end)) = (ass_ms(&self.rows[row].bas), ass_ms(&self.rows[row].son)) else {
+				self.note = format!("{} numaralı satırın zamanı geçersiz", row + 1);
+				return;
 			};
-			yazi.push(Yazi::BasVal(i, (mb + d as i64).max(0)));
-			yazi.push(Yazi::SonVal(i, (ms + d as i64).max(0)));
+			times.insert(row, ((start + i64::from(d)).max(0), (end + i64::from(d)).max(0)));
 		}
-		if yazi.is_empty() {
-			self.note = "kaydırılacak saat yok".into();
+		if times.is_empty() {
+			self.note = "Kaydırılacak satır seç".into();
 			return;
 		}
-		self.son_an = None;
-		self.yazlari_uygula(yazi);
-		self.note = format!("kaydırıldı: {d} ms");
+		self.apply_row_batch(times.keys().copied().collect(), &format!("Kaydırıldı: {d} ms"), |handle, row| {
+			let (start, end) = times[&row];
+			times_set(handle, row, start, end)
+		});
+	}
+
+	fn open_timing_processor(&mut self) {
+		let styles = self.rows.iter().filter(|row| !row.yorum)
+			.map(|row| (row.stil.clone(), true)).collect();
+		self.timing_processor = Some(TimingProcessor {
+			revision: self.current_revision,
+			styles,
+			selected_only: false,
+			options: crate::timing_processor::Options { bias: 50, ..Default::default() },
+		});
+	}
+
+	fn read_karaoke(&self, row: usize, selected: usize) -> Result<KaraokeDialog, String> {
+		let handle = self.handle.ok_or("Önce bir altyazı aç")?;
+		let len = unsafe { velnosub_abi_karaoke_read(handle, row as c_int, std::ptr::null_mut(), 0) };
+		if len < 0 { return Err(last_error()); }
+		let mut data = vec![0u8; len as usize + 1];
+		let read = unsafe { velnosub_abi_karaoke_read(handle, row as c_int, data.as_mut_ptr().cast(), len + 1) };
+		if read != len { return Err(last_error()); }
+		let text = std::str::from_utf8(&data[..len as usize]).map_err(|error| error.to_string())?;
+		let syllables = text.lines().map(|line| {
+			let mut fields = line.splitn(3, '\t');
+			let start: i32 = fields.next()?.parse().ok()?;
+			let duration: i32 = fields.next()?.parse().ok()?;
+			let text = fields.next()?.to_owned();
+			Some(Syllable { start, end: start.checked_add(duration)?, text })
+		}).collect::<Option<Vec<_>>>().ok_or("Hece zamanları okunamadı")?;
+		let line_start = syllables.first().ok_or("Hece bulunamadı")?.start;
+		let line_end = syllables.last().unwrap().end;
+		let peaks = self.audio.as_ref().and_then(|audio| {
+			let start = ms_ornek(i64::from(line_start), audio.rate);
+			let end = ms_ornek(i64::from(line_end), audio.rate).min(audio.toplam);
+			audio_peaks_cek(audio.handle, start, end - start, 240).ok()
+		});
+		let selected = selected.min(syllables.len() - 1);
+		let boundary = syllables[selected].start;
+		Ok(KaraokeDialog {
+			row, revision: self.current_revision, syllables, selected, boundary,
+			split_at: 1, drag_boundary: false, peaks,
+		})
+	}
+
+	fn open_karaoke_dialog(&mut self) {
+		let Some(row) = self.secili else { return };
+		if self.belge_bicimi() == "srt" {
+			self.note = "Karaoke etiketleri için altyazıyı ASS olarak aç".into();
+			return;
+		}
+		match self.read_karaoke(row, 0) {
+			Ok(state) => self.karaoke_dialog = Some(state),
+			Err(error) => self.note = error,
+		}
+	}
+
+	fn karaoke_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.karaoke_dialog.take() else { return };
+		if state.revision != self.current_revision { return; }
+		let mut open = true;
+		let mut action = None;
+		let mut play = false;
+		egui::Window::new("Karaoke zamanlaması").open(&mut open).default_width(360.0).vscroll(true).show(ctx, |ui| {
+			ui.label(format!("Satır {}", state.row + 1));
+			let start = state.syllables[0].start;
+			let end = state.syllables.last().unwrap().end;
+			let duration = (end - start).max(1) as f32;
+			let (response, painter) = ui.allocate_painter(egui::vec2(ui.available_width(), 92.0), egui::Sense::click_and_drag());
+			let rect = response.rect;
+			let x_at = |time: i32| rect.left() + (time - start) as f32 / duration * rect.width();
+			painter.rect_filled(rect, 4, ui.visuals().extreme_bg_color);
+			if let Some((lows, highs)) = &state.peaks {
+				for (index, (&low, &high)) in lows.iter().zip(highs).enumerate() {
+					let x = rect.left() + index as f32 * rect.width() / lows.len() as f32;
+					let y = |value: i16| rect.center().y - f32::from(value) / 32768.0 * rect.height() * 0.45;
+					painter.line_segment([egui::pos2(x, y(low)), egui::pos2(x, y(high))], ui.visuals().widgets.inactive.fg_stroke);
+				}
+			}
+			if let Some(pointer) = response.interact_pointer_pos() {
+				let fraction = ((pointer.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+				let ms = start + (fraction * duration).round() as i32;
+				if response.drag_started() {
+					state.drag_boundary = false;
+					if let Some((index, nearest)) = state.syllables.iter().enumerate().skip(1)
+						.min_by_key(|(_, syllable)| syllable.start.abs_diff(ms))
+					{
+						if (x_at(nearest.start) - pointer.x).abs() <= 24.0 {
+							state.selected = index;
+							state.split_at = 1;
+							state.drag_boundary = true;
+						}
+					}
+				}
+				if response.dragged() && state.drag_boundary {
+					let maximum = state.syllables[state.selected].end;
+					let minimum = state.syllables[state.selected - 1].start;
+					state.boundary = (((ms + 5) / 10) * 10).clamp(minimum, maximum);
+				}
+			}
+			if response.drag_stopped() {
+				state.drag_boundary = false;
+			}
+			for (index, syllable) in state.syllables.iter().enumerate() {
+				let x = x_at(if index == state.selected { state.boundary } else { syllable.start });
+				let stroke = if index == state.selected {
+					egui::Stroke::new(3.0, ui.visuals().selection.bg_fill)
+				} else { ui.visuals().widgets.active.fg_stroke };
+				painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], stroke);
+			}
+			ui.horizontal_wrapped(|ui| {
+				for (index, syllable) in state.syllables.iter().enumerate() {
+					if ui.selectable_label(index == state.selected, format!("{} · {} ms", syllable.text, syllable.end - syllable.start)).clicked() {
+						state.selected = index;
+						state.boundary = syllable.start;
+						state.split_at = 1;
+					}
+				}
+			});
+			let selected = &state.syllables[state.selected];
+			let chars = selected.text.chars().count();
+			if state.selected > 0 {
+				ui.horizontal_wrapped(|ui| {
+					ui.label("Hece başlangıcı");
+					ui.add(egui::DragValue::new(&mut state.boundary)
+						.range(state.syllables[state.selected - 1].start..=selected.end).suffix(" ms"));
+					if ui.add_enabled(state.boundary != selected.start, egui::Button::new("Sınırı uygula")).clicked() {
+						action = Some((3, state.boundary));
+					}
+				});
+			}
+			ui.horizontal_wrapped(|ui| {
+				play = ui.add_enabled(self.audio.is_some(), egui::Button::new("Heceyi oynat")).clicked();
+				if chars > 1 {
+					ui.add(egui::DragValue::new(&mut state.split_at).range(1..=chars - 1));
+					if ui.button("Karakterden sonra böl").clicked() {
+						let byte = selected.text.char_indices().nth(state.split_at).unwrap().0;
+						action = Some((1, byte as i32));
+					}
+				}
+				if ui.add_enabled(state.selected > 0, egui::Button::new("Öncekiyle birleştir")).clicked() {
+					action = Some((2, 0));
+				}
+				if ui.add_enabled(state.syllables.len() == 1, egui::Button::new("Sözcüklere böl")).clicked() {
+					action = Some((0, 0));
+				}
+			});
+		});
+		if play {
+			if let Some(mut audio) = self.audio.take() {
+				let part = &state.syllables[state.selected];
+				let start = ms_ornek(i64::from(part.start), audio.rate);
+				let end = ms_ornek(i64::from(part.end), audio.rate);
+				self.stop_timeline_playback();
+				self.ses_oynat(&mut audio, start, end - start);
+				self.audio = Some(audio);
+			}
+		}
+		if let Some((operation, value)) = action {
+			let KaraokeDialog { row, selected, .. } = state;
+			self.apply_document_edit("Karaoke zamanlaması güncellendi", |draft| {
+				if unsafe { velnosub_abi_karaoke_edit(draft, row as c_int, operation, selected as c_int, value) } == 0 {
+					Ok(())
+				} else { Err(last_error()) }
+			});
+			if let Ok(updated) = self.read_karaoke(row, selected) {
+				state = updated;
+			}
+		}
+		if open { self.karaoke_dialog = Some(state); }
+	}
+
+	fn open_kanji_dialog(&mut self) {
+		use unicode_segmentation::UnicodeSegmentation;
+		let Some(target_row) = self.secili.filter(|_| self.rows.len() > 1) else {
+			self.note = "Kaynak ve hedef için iki diyalog satırı gerekli".into();
+			return;
+		};
+		let target = &self.rows[target_row];
+		if self.belge_bicimi() == "srt" || target.yorum ||
+			target.text.contains(['{', '}']) || target.text.trim().is_empty() {
+			self.note = "Hedef olarak etiketsiz, boş olmayan bir ASS diyalogu seç".into();
+			return;
+		}
+		let source_row = if target_row == 0 { 1 } else { target_row - 1 };
+		self.kanji_dialog = Some(KanjiDialog {
+			revision: self.current_revision, source_row, target_row,
+			source: Vec::new(), target: target.text.graphemes(true).map(str::to_owned).collect(),
+			matches: Vec::new(), source_count: 1, target_count: 1,
+		});
+	}
+
+	fn kanji_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.kanji_dialog.take() else { return };
+		if self.current_revision != state.revision { return; }
+		let mut open = true;
+		let mut apply = false;
+		egui::Window::new("Kanji zaman aktarımı").open(&mut open)
+			.default_width(360.0).vscroll(true).show(ctx, |ui| {
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Kaynak satır");
+				let mut row = state.source_row + 1;
+				if ui.add(egui::DragValue::new(&mut row).range(1..=self.rows.len())).changed() {
+					state.source_row = row - 1;
+					state.source.clear();
+					state.matches.clear();
+				}
+				if ui.add_enabled(state.source_row != state.target_row, egui::Button::new("Hece zamanlarını yükle")).clicked() {
+					match self.read_karaoke(state.source_row, 0) {
+						Ok(source) => {
+							state.source = source.syllables;
+							state.matches.clear();
+							state.source_count = 1;
+							state.target_count = 1;
+						}
+						Err(error) => self.note = error,
+					}
+				}
+			});
+			if state.source.is_empty() { return; }
+			let (source, target) = state.matches.iter().fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+			let remaining_source = state.source.len() - source;
+			let remaining_target = state.target.len() - target;
+			state.source_count = state.source_count.min(remaining_source);
+			state.target_count = state.target_count.min(remaining_target);
+			ui.label(format!("Hedef satır {} · {} / {} karakter", state.target_row + 1, target, state.target.len()));
+			ui.label(state.source[source..].iter().map(|part| part.text.as_str()).collect::<Vec<_>>().join(" · "));
+			ui.label(state.target[target..].concat());
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Kaynak hece");
+				ui.add(egui::DragValue::new(&mut state.source_count).range(0..=remaining_source));
+				ui.label("Hedef karakter");
+				ui.add(egui::DragValue::new(&mut state.target_count).range(0..=remaining_target));
+			});
+			ui.horizontal_wrapped(|ui| {
+				if ui.add_enabled(remaining_source > 0 && remaining_target > 0, egui::Button::new("Otomatik eşleştir")).clicked() {
+					if let (Some(h), Ok(suffix)) = (self.handle, CString::new(state.target[target..].concat())) {
+						let (mut source_length, mut target_length) = (0, 0);
+						if unsafe { velnosub_abi_kanji_match(h, state.source_row as c_int, source as c_int, suffix.as_ptr(),
+							&mut source_length, &mut target_length) } == 0 {
+							state.source_count = (source_length as usize).min(remaining_source);
+							state.target_count = (target_length as usize).min(remaining_target);
+						} else { self.note = last_error(); }
+					}
+				}
+				if ui.add_enabled(state.source_count + state.target_count > 0, egui::Button::new("Eşleştir")).clicked() {
+					state.matches.push((state.source_count, state.target_count));
+					state.source_count = 1;
+					state.target_count = 1;
+				}
+				if ui.add_enabled(!state.matches.is_empty(), egui::Button::new("Son eşleşmeyi geri al")).clicked() {
+					if let Some((a, b)) = state.matches.pop() {
+						state.source_count = a;
+						state.target_count = b;
+					}
+				}
+				apply = ui.add_enabled(remaining_source == 0 && remaining_target == 0, egui::Button::new("Hedefe uygula")).clicked();
+			});
+			ui.label(&self.note);
+		});
+		if apply {
+			let mut text = String::new();
+			let (mut source, mut target) = (0, 0);
+			for &(source_count, target_count) in &state.matches {
+				let duration: i64 = state.source[source..source + source_count].iter()
+					.map(|part| i64::from(part.end) - i64::from(part.start)).sum();
+				text.push_str(&format!("{{\\k{}}}", duration / 10));
+				text.push_str(&state.target[target..target + target_count].concat());
+				source += source_count;
+				target += target_count;
+			}
+			if self.apply_row_batch(vec![state.target_row], "Kanji zamanları aktarıldı", |handle, row| {
+				edit_line(handle, row, &text)
+			}) { return; }
+		}
+		if open { self.kanji_dialog = Some(state); }
+	}
+
+	fn timing_processor_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.timing_processor.take() else { return };
+		if self.current_revision != state.revision { return; }
+		let mut open = true;
+		let mut apply = false;
+		egui::Window::new("Zamanlamayı düzelt").open(&mut open).vscroll(true).show(ctx, |ui| {
+			ui.checkbox(&mut state.selected_only, "Yalnız seçili satırlar");
+			ui.label("Uygulanacak stiller");
+			ui.horizontal_wrapped(|ui| {
+				for (style, enabled) in &mut state.styles {
+					ui.checkbox(enabled, style.as_str());
+				}
+			});
+			let options = &mut state.options;
+			let field = |ui: &mut egui::Ui, label: &str, value: &mut i64| {
+				ui.horizontal(|ui| {
+					ui.label(label);
+					ui.add(egui::DragValue::new(value).range(0..=60_000).suffix(" ms"));
+				});
+			};
+			field(ui, "Başlangıcı uzat", &mut options.lead_in);
+			field(ui, "Bitişi uzat", &mut options.lead_out);
+			field(ui, "Kapatılacak boşluk", &mut options.gap);
+			field(ui, "Düzeltilecek çakışma", &mut options.overlap);
+			ui.add(egui::Slider::new(&mut options.bias, 0..=100).text("Birleşim konumu (%)"));
+			ui.add_enabled_ui(self.video.as_ref().is_some_and(|video| !video.keyframes().is_empty()), |ui| {
+				ui.label("Ana kareye oturtma");
+				field(ui, "Başlangıç ana kareden önce", &mut options.start_before_key);
+				field(ui, "Başlangıç ana kareden sonra", &mut options.start_after_key);
+				field(ui, "Bitiş ana kareden önce", &mut options.end_before_key);
+				field(ui, "Bitiş ana kareden sonra", &mut options.end_after_key);
+			});
+			apply = ui.add_enabled(state.styles.values().any(|&enabled| enabled), egui::Button::new("Uygula")).clicked();
+		});
+		if apply {
+			self.apply_timing_processor(&state);
+		} else if open {
+			self.timing_processor = Some(state);
+		}
+	}
+
+	fn apply_timing_processor(&mut self, state: &TimingProcessor) {
+		let indices = if state.selected_only { self.selected_rows() } else { (0..self.rows.len()).collect() };
+		let mut lines = Vec::new();
+		for index in indices {
+			let row = &self.rows[index];
+			if row.yorum || !state.styles.get(&row.stil).copied().unwrap_or(false) { continue; }
+			let (Ok(start), Ok(end)) = (ass_ms(&row.bas), ass_ms(&row.son)) else {
+				self.note = format!("{} numaralı satırın zamanı geçersiz", index + 1);
+				return;
+			};
+			if end < start {
+				self.note = format!("{} numaralı satırın bitişi başlangıcından önce", index + 1);
+				return;
+			}
+			lines.push((index, [start, end]));
+		}
+		let original: std::collections::BTreeMap<_, _> = lines.iter().copied().collect();
+		let keys: Vec<i64> = self.video.as_ref().map(|video| {
+			video.keyframes().iter().map(|&frame| i64::from(video.kare_zamani(frame))).collect()
+		}).unwrap_or_default();
+		crate::timing_processor::process(&mut lines, state.options, &keys);
+		let changes: std::collections::BTreeMap<_, _> = lines.into_iter()
+			.filter(|(index, times)| original[index] != *times).collect();
+		if changes.is_empty() {
+			self.note = "Düzeltilecek zaman bulunamadı".into();
+			return;
+		}
+		self.apply_row_batch(changes.keys().copied().collect(), "Zamanlama düzeltildi", |handle, row| {
+			let [start, end] = changes[&row];
+			times_set(handle, row, start, end)
+		});
 	}
 
 	// ---------------- P5.4 gece: paylaşımlı diyalog pencereleri ---------
@@ -2273,6 +3168,10 @@ impl GridApp {
 				SecimTur::Ses => 2,
 				SecimTur::Lua => 4,
 				SecimTur::Font => 5,
+				SecimTur::Timecodes => 6,
+				SecimTur::Keyframes => 7,
+				SecimTur::DictionaryRules => 8,
+				SecimTur::DictionaryWords => 9,
 			};
 			self.android_belge_sec(AndroidBelge::Ac(tur), kind, "", "");
 		}
@@ -2379,6 +3278,8 @@ impl GridApp {
 					SecimTur::Ses => "AÇ (ses)",
 					SecimTur::Lua => "YÜKLE (script)",
 					SecimTur::Font => "EKLE (font)",
+					SecimTur::Timecodes | SecimTur::Keyframes |
+					SecimTur::DictionaryRules | SecimTur::DictionaryWords => "Aç",
 				};
 				p.horizontal(|h| {
 					if h.add(
@@ -2397,6 +3298,8 @@ impl GridApp {
 								SecimTur::Ses => self.ses_ac(&yolc),
 								SecimTur::Lua => self.lua_yukle(&yolc),
 								SecimTur::Font => self.font_ekle(&yolc),
+								SecimTur::Timecodes | SecimTur::Keyframes => self.load_video_metadata(&yolc, matches!(self.tarayici.tur, SecimTur::Timecodes)),
+								SecimTur::DictionaryRules | SecimTur::DictionaryWords => self.load_spelling_file(&yolc, matches!(self.tarayici.tur, SecimTur::DictionaryRules)),
 							}
 							self.tarayici.acik = false;
 						} else {
@@ -2413,6 +3316,10 @@ impl GridApp {
 
 	fn diyaloglar(&mut self, ui: &mut egui::Ui) {
 		self.tarayici_pencere(ui);
+		self.timing_processor_window(ui.ctx());
+		self.karaoke_window(ui.ctx());
+		self.kanji_window(ui.ctx());
+		self.resample_window(ui.ctx());
 		if self.ara_win {
 			let mut ap = self.ara_win;
 			egui::Window::new("Ara-Bul")
@@ -2601,6 +3508,7 @@ impl GridApp {
 			.default_width(640.0)
 			.resizable(true)
 			.show(ui.ctx(), |su| {
+				self.style_catalog_controls(su, sec);
 				su.horizontal(|sat| {
 					sat.vertical(|v| {
 						v.set_min_width(170.0);
@@ -2989,6 +3897,65 @@ impl GridApp {
 		}
 	}
 
+	fn style_catalog_controls(&mut self, ui: &mut egui::Ui, style_index: usize) {
+		let style = self.stiller.get(style_index).map(|style| style.name.clone());
+		if ui.add_enabled(style.is_some() && !self.selected_rows().is_empty(),
+			egui::Button::new("Stili seçili altyazı satırlarına uygula")).clicked() {
+			if let Some(style) = style {
+				let rows = self.selected_rows().into_iter()
+					.filter(|&row| self.rows[row].stil != style).collect();
+				self.apply_row_batch(rows, "Stil uygulandı", |handle, row| {
+					meta_set(handle, row, Some(&style), None, None, None, None)
+				});
+			}
+		}
+		let path = ayar_yolu();
+		let root = std::path::Path::new(&path).parent().unwrap_or_else(|| std::path::Path::new("."))
+			.join("catalog");
+		ui.collapsing("Stil depoları", |ui| {
+			let saved = std::fs::read_dir(&root).ok().into_iter().flatten().flatten();
+			let mut names: Vec<_> = saved.filter_map(|entry| {
+				let path = entry.path();
+				if path.extension()?.to_str()? != "sty" { return None; }
+				path.file_stem()?.to_str().map(str::to_owned)
+			}).collect();
+			names.sort_unstable();
+			ui.horizontal_wrapped(|ui| {
+				egui::ComboBox::from_id_salt("style-catalog")
+					.selected_text(&self.catalog_name).show_ui(ui, |ui| {
+						for name in names {
+							ui.selectable_value(&mut self.catalog_name, name.clone(), name);
+						}
+					});
+				ui.add(TextEdit::singleline(&mut self.catalog_name).hint_text("Yeni depo adı")
+					.desired_width(120.0));
+			});
+			let name = self.catalog_name.trim();
+			let valid = !name.is_empty() && name.chars().count() <= 64
+				&& name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'));
+			if !valid { return; }
+			let filename = root.join(format!("{name}.sty"));
+			let Ok(path) = CString::new(filename.as_os_str().as_encoded_bytes()) else { return };
+			ui.horizontal_wrapped(|ui| {
+				let store = ui.add_enabled(self.stiller.get(style_index).is_some(),
+					egui::Button::new("Seçili stili depoya kopyala")).clicked();
+				if let Some(handle) = self.handle.filter(|_| store) {
+					self.note = if unsafe { velnosub_abi_catalog_store(handle, style_index as c_int, path.as_ptr()) } == 0 {
+						"Stil depoya kopyalandı".into()
+					} else { last_error() };
+				}
+				if ui.add_enabled(filename.is_file(), egui::Button::new("Depodaki stilleri içe aktar")).clicked() {
+					if self.apply_document_edit("Depodaki stiller içe aktarıldı", |draft| {
+						if unsafe { velnosub_abi_catalog_import(draft, path.as_ptr()) } == 0 { Ok(()) }
+						else { Err(last_error()) }
+					}) {
+						self.load_styles();
+					}
+				}
+			});
+		});
+	}
+
 	/// P8.1: tek stil hücresini yaz + listeyi tazele.
 	fn stil_alan_yaz(&mut self, idx: usize, alan: usize, deger: String) {
 		let Some(h) = self.handle else {
@@ -3014,8 +3981,9 @@ impl GridApp {
 			return Err("Altyazı yolu bir dosya değil".into());
 		}
 		let in_c = CString::new(path.to_string()).map_err(|e| e.to_string())?;
+		let encoding = CString::new(self.subtitle_encoding).unwrap();
 		let h = document_io_result(
-			unsafe { velnosub_ui_open_document(in_c.as_ptr()) },
+			unsafe { velnosub_ui_open_document(in_c.as_ptr(), encoding.as_ptr()) },
 			"Altyazı dosyası okunamadı",
 		)?;
 		let ev = unsafe { velnosub_abi_event_count(h) };
@@ -3054,6 +4022,9 @@ impl GridApp {
 		}
 		self.yerles();
 		self.secili = None;
+		self.clear_grid_selection();
+		self.misspelling = None;
+		self.translation = None;
 		self.son_an = None;
 		self.typeset = None;
 		self.oniz = Oniz::default();
@@ -3162,6 +4133,12 @@ impl GridApp {
 
 	#[cfg(target_os = "android")]
 	fn saf_yaz(&mut self, h: c_int, name: &str, format: &str, export_only: bool) {
+		self.saf_stage(name, format, export_only, |_, cpath| write_document(h, cpath));
+	}
+
+	#[cfg(target_os = "android")]
+	fn saf_stage(&mut self, name: &str, format: &str, export_only: bool,
+		write: impl FnOnce(&std::path::Path, &CStr) -> Result<(), String>) {
 		if self.android_belge.is_some() { return; }
 
 		let dir = std::env::var_os("VELNOSUB_CACHE").map(std::path::PathBuf::from)
@@ -3176,7 +4153,7 @@ impl GridApp {
 			self.note = format!("Kayıt hazırlığı başarısız: {error}");
 			return;
 		}
-		if let Err(error) = write_document(h, &cpath) {
+		if let Err(error) = write(&path, &cpath) {
 			self.note = format!("kayıt hatası: {error}");
 			Self::remove_saf_stage(&path);
 			return;
@@ -3251,10 +4228,13 @@ impl GridApp {
 		}
 		let belge = self.android_belge.take().unwrap();
 		if status != 1 {
-			if let AndroidBelge::Kaydet(path, _) = belge {
-				Self::remove_saf_stage(&path);
+			if let AndroidBelge::Kaydet(path, _) = &belge {
+				Self::remove_saf_stage(path);
 			}
 			self.note = if status == 2 { "dosya işlemi iptal edildi" } else { "dosya okunamadı veya yazılamadı" }.into();
+			if status == 2 && matches!(belge, AndroidBelge::MacroOpen) {
+				if let Some(form) = self.macro_form.take() { self.submit_macro_form(form, 1); }
+			}
 			return;
 		}
 		let path = CStr::from_bytes_until_nul(&buf).unwrap().to_string_lossy();
@@ -3266,6 +4246,15 @@ impl GridApp {
 			AndroidBelge::Ac(SecimTur::Ses) => self.ses_ac(&path),
 			AndroidBelge::Ac(SecimTur::Lua) => self.lua_yukle(&path),
 			AndroidBelge::Ac(SecimTur::Font) => self.font_ekle(&path),
+			AndroidBelge::Ac(SecimTur::Timecodes) => self.load_video_metadata(&path, true),
+			AndroidBelge::Ac(SecimTur::Keyframes) => self.load_video_metadata(&path, false),
+			AndroidBelge::Ac(SecimTur::DictionaryRules) => self.load_spelling_file(&path, true),
+			AndroidBelge::Ac(SecimTur::DictionaryWords) => self.load_spelling_file(&path, false),
+			AndroidBelge::MacroOpen => self.finish_macro_open(&path),
+			AndroidBelge::MacroSave(mut output) => {
+				let next = output.document.take().unwrap();
+				self.apply_macro_snapshot(&output.name, next);
+			}
 			AndroidBelge::Kaydet(staged, true) => {
 				Self::remove_saf_stage(&staged);
 				self.note = "Dosya dışa aktarıldı".into();
@@ -3436,10 +4425,13 @@ impl GridApp {
 			kareler,
 			zamanlar,
 			ana_kareler,
+			external_times: None,
+			external_keys: None,
 			frame: 0,
 			info: format!("fps:{fps:.3} {bilgi}"),
 			dok: None,
 			olcek_yuzdesi: None,
+			preview_ratio: None,
 			yol: ender.to_string(),
 			akslar: Vec::new(),
 			oynat: false,
@@ -3472,15 +4464,15 @@ impl GridApp {
 			unsafe { velnosub_abi_audio_open(yol.as_ptr(), 48000, 2) }
 		} else {
 			unsafe {
-				velnosub_abi_audio_file_open_cancel(
+				velnosub_ui_open_audio(
 					yol.as_ptr(), audio_cancelled, (cancel as *const std::sync::atomic::AtomicBool).cast(),
 				)
 			}
 		};
-		if h < 0 { Err(last_error()) } else { Ok(OpenedAudio(Some(h))) }
+		document_io_result(h, "Ses dosyası açılamadı").map(|h| OpenedAudio(Some(h)))
 	}
 
-	fn load_audio(&mut self, mut opened: OpenedAudio) -> Result<(), String> {
+	fn load_audio(&mut self, mut opened: OpenedAudio, path: String) -> Result<(), String> {
 		let h = opened.0.take().expect("audio handle");
 		let mut obuf = vec![0u8; 160];
 		let n = unsafe {
@@ -3508,6 +4500,7 @@ impl GridApp {
 		}
 		self.audio = Some(AudioSection {
 			handle: h,
+			path,
 			rate,
 			ch,
 			toplam,
@@ -3637,6 +4630,47 @@ impl GridApp {
 			Some((w, yuk))
 		} else {
 			None
+		}
+	}
+
+	fn open_resample_dialog(&mut self) {
+		let Some(source) = self.script_size() else { return };
+		let (width, height) = self.video.as_ref().map(|video| (video.w as i32, video.hgt as i32))
+			.unwrap_or(source);
+		self.resample_dialog = Some(ResampleDialog {
+			revision: self.current_revision, source, width, height, aspect_mode: 0,
+		});
+	}
+
+	fn resample_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.resample_dialog.take() else { return };
+		if state.revision != self.current_revision { return; }
+		let mut open = true;
+		let mut apply = false;
+		egui::Window::new("ASS çözünürlüğünü uyarla").open(&mut open).show(ctx, |ui| {
+			ui.label(format!("Kaynak {} × {}", state.source.0, state.source.1));
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Hedef genişlik");
+				ui.add(egui::DragValue::new(&mut state.width).range(1..=16384));
+				ui.label("Hedef yükseklik");
+				ui.add(egui::DragValue::new(&mut state.height).range(1..=16384));
+			});
+			ui.radio_value(&mut state.aspect_mode, 0, "Hedef en-boy oranına esnet");
+			ui.radio_value(&mut state.aspect_mode, 1, "Kenarlık ekle");
+			ui.radio_value(&mut state.aspect_mode, 2, "Kenarlığı çıkar");
+			apply = ui.add_enabled(state.source != (state.width, state.height), egui::Button::new("Uygula")).clicked();
+		});
+		if apply && self.apply_document_edit("ASS çözünürlüğü uyarlandı", |draft| {
+			if unsafe { velnosub_abi_resample(draft, state.width, state.height, state.aspect_mode) } == 0 {
+				Ok(())
+			} else {
+				Err(last_error())
+			}
+		}) {
+			return;
+		}
+		if open {
+			self.resample_dialog = Some(state);
 		}
 	}
 
@@ -3820,25 +4854,10 @@ impl GridApp {
 			self.note = "ters: vektör noktaları okunamadı".into();
 			return;
 		}
-		let yeni = if arac == Arac::Vektor {
-			let p = t.vektor.clone().unwrap_or_else(|| {
-				vec![
-					(0.0, 0.0),
-					(t.script_w as f64, 0.0),
-					(t.script_w as f64, t.script_h as f64),
-					(0.0, t.script_h as f64),
-				]
-			});
-			clip_vektor_yaz(&metin, &p, yeni_ic)
-		} else {
-			let r = t.clip.unwrap_or((
-				0.0,
-				0.0,
-				t.script_w as f64,
-				t.script_h as f64,
-			));
-			clip_dik_yaz(&metin, r, yeni_ic)
-		};
+		let previous = if yeni_ic { "clip" } else { "iclip" };
+		let Some(raw) = ass_tags::etiket_al(&metin, previous) else { return };
+		let yeni = ass_tags::etiket_yaz(&ass_tags::etiket_sil(&metin, previous),
+			if yeni_ic { "iclip" } else { "clip" }, &raw);
 		if self.typeset_uygula(idx, yeni) {
 			if let Some(t) = self.typeset.as_mut() {
 				t.iclip = yeni_ic;
@@ -4424,7 +5443,7 @@ impl GridApp {
 				}
 			}
 			// Vektör: kenara tıkla → nokta ekle; uzun bas/sağ tık → nokta sil.
-			if t.arac == Arac::Vektor {
+			if t.arac == Arac::Vektor && !ass_tags::complex_clip(&metin, if t.iclip { "iclip" } else { "clip" }) {
 				if let Some(p) = p {
 					if let Some(ekran) = t.vektor.as_ref().map(|pts| {
 						pts.iter()
@@ -4654,7 +5673,44 @@ impl GridApp {
 								egui::pos2(sx, sy)
 							})
 							.collect();
-						if ekran.len() >= 2 {
+						let tag = if t.iclip { "iclip" } else { "clip" };
+						if let Some(segments) = ass_tags::clip_segments(&metin, tag) {
+							let stroke = egui::Stroke::new(1.8, sari);
+							let controls = egui::Stroke::new(0.8, sari.gamma_multiply(0.6));
+							let mut offset = 0;
+							let mut previous = None;
+							let mut first = None;
+							for (command, count) in segments {
+								let Some(points) = ekran.get(offset..offset + count) else { break };
+								offset += count;
+								match command {
+									'm' | 'n' => {
+										previous = points.first().copied();
+										first = previous;
+									}
+									'b' => for curve in points.chunks_exact(3) {
+										if let Some(start) = previous {
+											ciz.add(egui::epaint::CubicBezierShape::from_points_stroke(
+												[start, curve[0], curve[1], curve[2]], false,
+												egui::Color32::TRANSPARENT, stroke,
+											));
+											ciz.line_segment([start, curve[0]], controls);
+											ciz.line_segment([curve[1], curve[2]], controls);
+										}
+										previous = Some(curve[2]);
+									},
+									'c' => if let (Some(start), Some(end)) = (previous, first) {
+										ciz.line_segment([start, end], controls);
+									},
+									_ => for &point in points {
+										if let Some(start) = previous {
+											ciz.line_segment([start, point], if command == 'l' { stroke } else { controls });
+										}
+										previous = Some(point);
+									},
+								}
+							}
+						} else if ekran.len() >= 2 {
 							for i in 0..ekran.len() {
 								ciz.line_segment(
 									[
@@ -4768,7 +5824,76 @@ impl GridApp {
 		}
 	}
 
+	fn load_video_metadata(&mut self, path: &str, times: bool) {
+		let Some(video) = self.video.as_mut() else { return };
+		let result = std::fs::read_to_string(path).map_err(|e| e.to_string()).and_then(|text| {
+			if times {
+				video.external_times = Some(crate::video_metadata::timecodes(&text, video.kareler as usize)?);
+			} else {
+				video.external_keys = Some(crate::video_metadata::keyframes(&text, video.kareler)?);
+			}
+			Ok(())
+		});
+		self.note = match result {
+			Ok(()) => {
+				if times { self.stop_timeline_playback(); }
+				"Video zaman dosyası yüklendi".into()
+			}
+			Err(e) => e,
+		};
+	}
+
+	fn stop_timeline_playback(&mut self) {
+		if let Some(video) = self.video.as_mut() {
+			video.oynat = false;
+			video.son_tik = None;
+		}
+		if let Some(audio) = self.audio.as_ref() {
+			unsafe { velnosub_abi_audio_stop(audio.handle) };
+		}
+	}
+
+	fn video_metadata_menu(&mut self, ui: &mut egui::Ui) {
+		let Some(video) = self.video.as_ref() else { return };
+		let (has_times, has_keys) = (video.external_times.is_some(), video.external_keys.is_some());
+		ui.menu_button("Zaman dosyaları", |menu| {
+			if menu.button("Timecode aç…").clicked() {
+				self.tarayici_ac(SecimTur::Timecodes);
+				menu.close();
+			}
+			if menu.button("Keyframe aç…").clicked() {
+				self.tarayici_ac(SecimTur::Keyframes);
+				menu.close();
+			}
+			#[cfg(target_os = "android")]
+			for (label, timecodes) in [("Timecode kaydet…", true), ("Keyframe kaydet…", false)] {
+				if menu.button(label).clicked() {
+					self.export_video_metadata(timecodes);
+					menu.close();
+				}
+			}
+			if menu.add_enabled(has_times, egui::Button::new("Kaynak kare zamanlarına dön")).clicked() {
+				self.video.as_mut().unwrap().external_times = None;
+				self.stop_timeline_playback();
+				menu.close();
+			}
+			if menu.add_enabled(has_keys, egui::Button::new("Kaynak ana karelerine dön")).clicked() {
+				self.video.as_mut().unwrap().external_keys = None;
+				menu.close();
+			}
+		});
+	}
+
+	#[cfg(target_os = "android")]
+	fn export_video_metadata(&mut self, timecodes: bool) {
+		let Some(video) = self.video.as_ref() else { return };
+		let (name, values) = if timecodes { ("timecodes", video.timeline()) } else { ("keyframes", video.keyframes()) };
+		let contents = crate::video_metadata::export(values, timecodes);
+		self.saf_stage(name, "txt", true, |path, _| std::fs::write(path, contents).map_err(|error| error.to_string()));
+	}
+
 	fn video_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+		self.video_metadata_menu(ui);
 		// P4.3: video şeridi — sanallaştırılmış grid'in üstünde; hata üstüne note
 		let mut v_hata: Option<String> = None;
 		// Task 10: typeset girişi/araç çubuğu — video ve seçili satır varsa
@@ -4855,11 +5980,11 @@ impl GridApp {
 					}
 				}
 				for (label, forward) in [("Önceki ana kare", false), ("Sonraki ana kare", true)] {
-					let index = v.ana_kareler.partition_point(|&frame| {
+					let index = v.keyframes().partition_point(|&frame| {
 						frame < v.frame || (forward && frame == v.frame)
 					});
 					let target = if forward { Some(index) } else { index.checked_sub(1) };
-					if let Some(&frame) = target.and_then(|index| v.ana_kareler.get(index)) {
+					if let Some(&frame) = target.and_then(|index| v.keyframes().get(index)) {
 						if su.small_button(label).clicked() {
 							let previous = v.frame;
 							v.frame = frame;
@@ -4883,6 +6008,18 @@ impl GridApp {
 						choices.selectable_value(&mut v.olcek_yuzdesi, None, "Sığdır");
 						for percent in [25, 50, 75, 100, 125, 150, 200] {
 							choices.selectable_value(&mut v.olcek_yuzdesi, Some(percent), format!("%{percent}"));
+						}
+					});
+				controls.label("En-boy oranı");
+				egui::ComboBox::from_id_salt("video-aspect")
+					.selected_text(v.preview_ratio.map_or_else(|| "Kaynak".into(), |ratio| format!("{ratio:.2}:1")))
+					.show_ui(controls, |choices| {
+						choices.selectable_value(&mut v.preview_ratio, None, "Kaynak");
+						for (label, ratio) in [("4:3", 4.0 / 3.0), ("16:9", 16.0 / 9.0), ("2.39:1", 2.39)] {
+							choices.selectable_value(&mut v.preview_ratio, Some(ratio), label);
+						}
+						if let Some(ratio) = v.preview_ratio.as_mut() {
+							choices.add(egui::DragValue::new(ratio).range(0.25..=4.0).speed(0.01).fixed_decimals(3));
 						}
 					});
 			});
@@ -4929,10 +6066,10 @@ impl GridApp {
 			}
 		}
 
-		if let Some((video_handle, texture, width, height, ms, zoom)) = self.video.as_ref()
+		if let Some((video_handle, texture, width, height, ms, zoom, ratio)) = self.video.as_ref()
 			.and_then(|video| Some((
 				video.handle, video.dok.as_ref()?.id(), video.w, video.hgt,
-				video.kare_zamani(video.frame), video.olcek_yuzdesi,
+				video.kare_zamani(video.frame), video.olcek_yuzdesi, video.preview_ratio,
 			)))
 		{
 			let panel = [
@@ -4940,7 +6077,7 @@ impl GridApp {
 				(ui.clip_rect().bottom() - ui.cursor().min.y.max(ui.clip_rect().top()) - 28.0).max(72.0),
 			];
 			let size = layout::video_frame_size(
-				[width as f32, height as f32], panel, zoom, ui.ctx().pixels_per_point(),
+				[ratio.map_or(width as f32, |ratio| height as f32 * ratio), height as f32], panel, zoom, ui.ctx().pixels_per_point(),
 			);
 			if let Some(handle) = self.handle {
 				self.oniz_cek(ui.ctx(), handle, width, height, ms);
@@ -6072,6 +7209,45 @@ impl GridApp {
 		}
 	}
 
+	#[cfg(target_os = "android")]
+	fn stage_macro_export(&mut self, name: &str, suggested: &str) -> Result<String, String> {
+		if self.macro_export.is_some() {
+			return Err("Android makroları bir çalıştırmada tek çıktı dosyası kaydedebilir".into());
+		}
+		static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+		let cache = std::env::var_os("VELNOSUB_CACHE").map(std::path::PathBuf::from)
+			.unwrap_or_else(std::env::temp_dir);
+		let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+		let folder = cache.join(format!("velnosub-macro-{}-{id}", std::process::id()));
+		std::fs::create_dir(&folder).map_err(|e| e.to_string())?;
+		let filename = suggested.rsplit(['/', '\\']).next()
+			.filter(|name| !name.is_empty() && *name != "." && *name != "..")
+			.unwrap_or("makro.txt");
+		let path = folder.join(filename);
+		let result = path.to_string_lossy().into_owned();
+		self.macro_export = Some(MacroExport { path, document: None, name: name.to_owned() });
+		Ok(result)
+	}
+
+	#[cfg(target_os = "android")]
+	fn finish_macro_open(&mut self, path: &str) {
+		if let Some(mut form) = self.macro_form.take() {
+			if let Some(field) = form.dialog.alanlar.iter_mut().find(|f| f.ad == "__velnosub_open_file") {
+				field.deger = path.to_owned();
+				self.submit_macro_form(form, 0);
+			} else {
+				self.macro_form = Some(form);
+			}
+		}
+	}
+
+	fn abort_macro(&mut self, form: MacroForm) {
+		unsafe { velnosub_abi_macro_abort(form.token) };
+		#[cfg(target_os = "android")]
+		{ self.macro_export = None; }
+		self.note = "Makro iptal edildi".into();
+	}
+
 	fn macro_dialog(&mut self, ctx: &egui::Context) {
 		let Some(mut form) = self.macro_form.take() else { return };
 		let mut selected = None;
@@ -6090,27 +7266,48 @@ impl GridApp {
 			ui.label(&self.note);
 		});
 		if abort {
-			unsafe { velnosub_abi_macro_abort(form.token) };
-			self.note = "Makro iptal edildi".into();
+			self.abort_macro(form);
 			return;
 		}
-		if let Some(button) = selected {
-			for (index, field) in form.dialog.alanlar.iter().enumerate() {
-				if field.sinif == "label" { continue; }
-				let status = CString::new(field.deger.as_str())
-					.map(|value| unsafe { velnosub_abi_dialog_set(form.dialog.handle, index as c_int, value.as_ptr()) });
-				if !matches!(status, Ok(0)) {
-					self.note = format!("Geçersiz form alanı: {}", field.ad);
-					self.macro_form = Some(form);
-					return;
+		let Some(button) = selected else {
+			self.macro_form = Some(form);
+			return;
+		};
+		#[cfg(target_os = "android")]
+		if button == 0 {
+			if form.dialog.alanlar.iter().any(|field| field.ad == "__velnosub_open_file") {
+				self.macro_form = Some(form);
+				self.android_belge_sec(AndroidBelge::MacroOpen, 10, "", "");
+				return;
+			}
+			if let Some(field) = form.dialog.alanlar.iter_mut().find(|f| f.ad == "__velnosub_save_file") {
+				match self.stage_macro_export(&form.name, &field.deger) {
+					Ok(path) => field.deger = path,
+					Err(error) => {
+						self.note = error;
+						self.macro_form = Some(form);
+						return;
+					}
 				}
 			}
-			let mut result = -1;
-			let status = unsafe { velnosub_abi_macro_continue(form.token, button as c_int, &mut result) };
-			self.macro_step(&form.name, form.token, status, result);
-		} else {
-			self.macro_form = Some(form);
 		}
+		self.submit_macro_form(form, button);
+	}
+
+	fn submit_macro_form(&mut self, form: MacroForm, button: usize) {
+		for (index, field) in form.dialog.alanlar.iter().enumerate() {
+			if field.sinif == "label" { continue; }
+			let status = CString::new(field.deger.as_str())
+				.map(|value| unsafe { velnosub_abi_dialog_set(form.dialog.handle, index as c_int, value.as_ptr()) });
+			if !matches!(status, Ok(0)) {
+				self.note = format!("Geçersiz form alanı: {}", field.ad);
+				self.macro_form = Some(form);
+				return;
+			}
+		}
+		let mut result = -1;
+		let status = unsafe { velnosub_abi_macro_continue(form.token, button as c_int, &mut result) };
+		self.macro_step(&form.name, form.token, status, result);
 	}
 
 	fn form_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
@@ -6251,6 +7448,25 @@ enum Yazi {
 
 impl GridApp {
 	fn grid_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {
+		ui.horizontal_wrapped(|ui| {
+			let height = if mobil { 44.0 } else { 24.0 };
+			if ui.add(egui::Button::selectable(self.multi_select, "Çoklu seç")
+				.min_size(egui::vec2(0.0, height))).clicked() {
+				if self.multi_select { self.clear_grid_selection(); }
+				else { self.multi_select = true; self.marked_rows.extend(self.secili); }
+			}
+			if self.multi_select {
+				if ui.button("Tümünü seç").clicked() {
+					self.marked_rows = (0..self.rows.len()).collect();
+				}
+				ui.label(format!("{} seçili", self.marked_rows.len()));
+				ui.add_enabled_ui(!self.marked_rows.is_empty(), |ui| {
+					if ui.button("Çoğalt").clicked() { self.satir_ekle_tetik(true); }
+					if ui.button("Sil").clicked() { self.satir_sil_tetik(); }
+					if ui.button("Yorum").clicked() { self.toggle_selected_comments(); }
+				});
+			}
+		});
 		if !mobil {
 			self.classic_grid(ui);
 			return;
@@ -6260,6 +7476,14 @@ impl GridApp {
 		ScrollArea::vertical().auto_shrink(false).show_rows(
 			ui, row_height, self.rows.len(), |ui, visible| {
 				for i in visible {
+					if self.multi_select {
+						let row = &self.rows[i];
+						if ui.add(egui::Button::selectable(self.marked_rows.contains(&i),
+							format!("{}  {}", i + 1, row.text)).min_size(egui::vec2(0.0, 44.0))).clicked() {
+							self.select_grid_row(i);
+						}
+						continue;
+					}
 					let row = &mut self.rows[i];
 					ui.label(format!("{} → {}", row.bas, row.son));
 					let response = ui.add(TextEdit::singleline(&mut row.text).desired_width(f32::INFINITY));
@@ -6315,13 +7539,17 @@ impl GridApp {
 			ScrollArea::vertical().id_salt("classic-grid-rows").auto_shrink(false).show_rows(
 				ui, row_height, self.rows.len(), |ui, visible| {
 					for i in visible {
-						let row = &self.rows[i];
 						let (rect, response) = ui.allocate_exact_size(
 							egui::vec2(width, row_height), egui::Sense::click());
 						if response.clicked() {
-							self.secili = Some(i);
+							self.select_grid_row(i);
 						}
-						let selected = self.secili == Some(i);
+						let row = &self.rows[i];
+						let selected = if self.multi_select {
+							self.marked_rows.contains(&i)
+						} else {
+							self.secili == Some(i)
+						};
 						let visuals = ui.visuals();
 						let fill = if selected {
 							visuals.selection.bg_fill
@@ -6477,7 +7705,7 @@ impl GridApp {
 			)
 			.min_size(egui::vec2(gen, 96.0)),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Mobil);
+			self.duzen_sec(Duzen::Mobil);
 		}
 		ui.label(
 			RichText::new("Alt sekme çubuğu ve geniş dokunma alanları; küçük ekranda tek elle kullanım için.").weak(),
@@ -6489,7 +7717,7 @@ impl GridApp {
 			)
 			.min_size(egui::vec2(gen, 96.0)),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Masaustu);
+			self.duzen_sec(Duzen::Masaustu);
 		}
 		ui.label(
 			RichText::new("Şeritler üst üste; satır başına iki sütunlu mevcut düzen.").weak(),
@@ -6506,34 +7734,60 @@ impl GridApp {
 		);
 	}
 
-	fn duzen_sec(&mut self, tema: Tema, duzen: Duzen) {
-		let kayit = match duzen {
+	fn duzen_sec(&mut self, duzen: Duzen) {
+		if duzen == Duzen::Secim { return; }
+		self.duzen = duzen;
+		self.save_appearance();
+		self.aktif = Sekme::Altyazi;
+	}
+
+	fn save_appearance(&mut self) {
+		let kayit = match self.duzen {
 			Duzen::Otomatik => "otomatik",
 			Duzen::Mobil => "mobil",
 			Duzen::Masaustu => "masaustu",
-			Duzen::Secim => return,
+			Duzen::Secim => "mobil",
 		};
-		let tema_kel = match tema {
-			Tema::Koyu => "koyu",
-			Tema::Acik => "acik",
+		let tema_kel = match self.preferred_theme {
+			Some(Tema::Koyu) => "koyu",
+			Some(Tema::Acik) => "acik",
+			None => "sistem",
 		};
-		match ayar_yaz(kayit, tema_kel) {
+		match write_appearance(kayit, tema_kel, self.system_colors, self.high_contrast) {
 			Ok(()) => self.note = String::new(),
 			Err(e) => {
 				self.note =
 					format!("ayar yazılamadı ({}): {e}", ayar_yolu());
 			}
 		}
-		self.duzen = duzen;
-		self.aktif = Sekme::Altyazi;
+	}
+
+	fn refresh_appearance(&mut self, ctx: &egui::Context) {
+		let system = system_appearance();
+		let system_light = system[0] == 1 || (system[0] == 0 && ctx.system_theme() == Some(egui::Theme::Light));
+		let theme = self.preferred_theme.unwrap_or(if system_light { Tema::Acik } else { Tema::Koyu });
+		let dark = theme == Tema::Koyu;
+		let (mut accent, mut surface) = if dark { (0xcab4ff, 0x201c29) } else { (0x6744a5, 0xfaf6ff) };
+		if self.system_colors && system[1] != 0 {
+			accent = system[if dark { 2 } else { 1 }];
+			surface = system[if dark { 4 } else { 3 }];
+		}
+		let key = (theme, accent, surface, self.high_contrast);
+		if self.appearance_key == Some(key) { return; }
+		self.appearance_key = Some(key);
+		ctx.all_styles_mut(|style| apply_material_colors(style, key));
 	}
 
 	/// Ayarlar bölümü: düzen seçimi canlı etkilidir ve hep dosyaya yazılır;
 	/// ayrıca ilk seçim ekranına dönüş gerçek bir eylemdir.
 	fn ayarlar_bolum(&mut self, ui: &mut egui::Ui) {
-		ui.add_space(8.0);
-		ui.heading("Ayarlar");
-		self.ayarlar_icerik(ui);
+		egui::ScrollArea::vertical()
+			.id_salt("mobil-ayarlar")
+			.show(ui, |ui| {
+				ui.add_space(8.0);
+				ui.heading("Ayarlar");
+				self.ayarlar_icerik(ui);
+			});
 	}
 
 	/// Ayarlar içeriği: mobil Ayarlar sekmesinde ve masaüstündeki Ayarlar
@@ -6548,7 +7802,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Otomatik),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Otomatik);
+			self.duzen_sec(Duzen::Otomatik);
 			return;
 		}
 		if ui.add(
@@ -6556,7 +7810,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Mobil),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Mobil);
+			self.duzen_sec(Duzen::Mobil);
 			return;
 		}
 		if ui.add(
@@ -6564,7 +7818,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Masaustu),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Masaustu);
+			self.duzen_sec(Duzen::Masaustu);
 			return;
 		}
 		ui.label(
@@ -6582,29 +7836,26 @@ impl GridApp {
 		ui.add_space(12.0);
 		ui.label(RichText::new("Tema").strong());
 		ui.add_space(4.0);
-		let koyu_simdi = tema_simdi(ui) == Tema::Koyu;
-		if ui.add(
-			egui::Button::new(RichText::new("Koyu tema").size(18.0))
-				.min_size(egui::vec2(gen, 44.0))
-				.selected(koyu_simdi),
-		).clicked() {
-			self.tema_sec(ui, Tema::Koyu);
+		let mut changed = false;
+		ui.horizontal_wrapped(|ui| {
+			for (mode, label) in [(None, "Sistemi izle"), (Some(Tema::Acik), "Açık"), (Some(Tema::Koyu), "Koyu")] {
+				changed |= ui.selectable_value(&mut self.preferred_theme, mode, label).changed();
+			}
+		});
+		if cfg!(target_os = "android") {
+			changed |= ui.add_enabled(system_appearance()[1] != 0,
+				egui::Checkbox::new(&mut self.system_colors, "Duvar kâğıdı renklerini kullan")).changed();
 		}
-		if ui.add(
-			egui::Button::new(RichText::new("Açık tema").size(18.0))
-				.min_size(egui::vec2(gen, 44.0))
-				.selected(!koyu_simdi),
-		).clicked() {
-			self.tema_sec(ui, Tema::Acik);
+		changed |= ui.checkbox(&mut self.high_contrast, "Kontrastı artır").changed();
+		if changed {
+			self.save_appearance();
+			self.refresh_appearance(ui.ctx());
+			ui.ctx().request_repaint();
 		}
-		ui.label(
-			RichText::new(if koyu_simdi {
-				"seçili: koyu tema"
-			} else {
-				"seçili: açık tema"
-			})
-			.weak(),
-		);
+		if ui.add(egui::Button::new("Klavye kısayolları…")
+			.min_size(egui::vec2(gen, 44.0))).clicked() {
+			self.hotkeys_window = true;
+		}
 		ui.add_space(12.0);
 		if ui.add(
 			egui::Button::new("İlk seçim ekranını tekrar göster")
@@ -6613,7 +7864,6 @@ impl GridApp {
 			self.duzen = Duzen::Secim;
 		}
 		ui.add_space(12.0);
-		ui.label(RichText::new(format!("ayar dosyası: {}", ayar_yolu())).weak());
 		if self.note.starts_with("ayar yazılamadı") {
 			ui.label(
 				RichText::new(&self.note)
@@ -6622,31 +7872,56 @@ impl GridApp {
 		}
 	}
 
-	fn tema_sec(&mut self, ui: &egui::Ui, tema: Tema) {
-		let kayit = match tema {
-			Tema::Koyu => "koyu",
-			Tema::Acik => "acik",
-		};
-		ui.ctx().all_styles_mut(|st| {
-			st.visuals = match tema {
-				Tema::Koyu => egui::Visuals::dark(),
-				Tema::Acik => egui::Visuals::light(),
-			};
-			stil_tamir(st, tema);
-		});
-		let duzen_kel = match self.duzen {
-			Duzen::Otomatik => "otomatik",
-			Duzen::Mobil => "mobil",
-			Duzen::Masaustu => "masaustu",
-			Duzen::Secim => "mobil",
-		};
-		match ayar_yaz(duzen_kel, kayit) {
-			Ok(()) => self.note = String::new(),
-			Err(e) => {
-				self.note =
-					format!("ayar yazılamadı ({}): {e}", ayar_yolu());
+	fn hotkey_dialog(&mut self, ctx: &egui::Context) {
+		if !self.hotkeys_window { return; }
+		let mut open = true;
+		if let Some(action) = self.hotkey_capture {
+			let pressed = ctx.input_mut(|input| {
+				let index = input.events.iter().position(|event| matches!(event,
+					egui::Event::Key { pressed: true, repeat: false, .. }))?;
+				Some(input.events.remove(index))
+			});
+			if let Some(egui::Event::Key { key, modifiers, .. }) = pressed {
+				use egui::Key::*;
+				match key {
+					Escape => self.hotkey_capture = None,
+					ShiftLeft | ShiftRight | ControlLeft | ControlRight | AltLeft | AltRight |
+						SuperLeft | SuperRight => {}
+					_ => {
+						let modifiers = crate::hotkeys::normal_modifiers(modifiers);
+						let shortcut = egui::KeyboardShortcut::new(modifiers, key);
+						match self.hotkeys.set(action, shortcut) {
+							Ok(()) => {
+								self.hotkey_capture = None;
+								self.note = self.hotkeys.save(&hotkeys_path()).err().map_or_else(
+									|| "Kısayol kaydedildi".into(), |error| format!("Kısayol kaydedilemedi: {error}"));
+							}
+							Err(conflict) => self.note = format!("Bu kısayol {conflict} komutuna atanmış"),
+						}
+					}
+				}
 			}
 		}
+		egui::Window::new("Klavye kısayolları").open(&mut open).vscroll(true).show(ctx, |ui| {
+			for &(action, _, label, _) in crate::hotkeys::ACTIONS {
+				let keys = self.hotkeys.shortcuts(action).iter()
+					.map(|key| ctx.format_shortcut(key)).collect::<Vec<_>>().join(" / ");
+				ui.horizontal_wrapped(|ui| {
+					ui.label(label);
+					let button = if self.hotkey_capture == Some(action) { "Tuşlara bas…" } else { &keys };
+					if ui.button(button).clicked() { self.hotkey_capture = Some(action); }
+				});
+			}
+			if ui.button("Varsayılana dön").clicked() {
+				self.hotkey_capture = None;
+				self.hotkeys.reset();
+				self.note = self.hotkeys.save(&hotkeys_path()).err().map_or_else(
+					|| "Varsayılan kısayollar geri yüklendi".into(), |error| format!("Kısayol kaydedilemedi: {error}"));
+			}
+			ui.label(&self.note);
+		});
+		self.hotkeys_window = open;
+		if !open { self.hotkey_capture = None; }
 	}
 
 	/// Mobil çerçeve: alt sekme çubuğu + tek bölme içerik. Sekmeler yalnız
@@ -6654,40 +7929,39 @@ impl GridApp {
 	fn mobil_cerceve(&mut self, ui: &mut egui::Ui) {
 		let mut etiketler: Vec<(Sekme, String)> = vec![(
 			Sekme::Altyazi,
-			format!("{} Altyazı", ikon::SUBTITLES),
+			format!("{}\nAltyazı", ikon::SUBTITLES),
 		)];
 		if self.video.is_some() {
-			etiketler.push((Sekme::Video, format!("{} Video", ikon::VIDEO)));
+			etiketler.push((Sekme::Video, format!("{}\nVideo", ikon::VIDEO)));
 		}
 		if self.audio.is_some() {
-			etiketler.push((Sekme::Ses, format!("{} Ses", ikon::AUDIO)));
+			etiketler.push((Sekme::Ses, format!("{}\nSes", ikon::AUDIO)));
 		}
 		if !self.stiller.is_empty() {
-			etiketler.push((Sekme::Stil, format!("{} Stil", ikon::PALETTE)));
+			etiketler.push((Sekme::Stil, format!("{}\nStil", ikon::PALETTE)));
 		}
 		if self.dialog.is_some() {
-			etiketler.push((Sekme::Form, format!("{} Form", ikon::TUNE)));
+			etiketler.push((Sekme::Form, format!("{}\nForm", ikon::TUNE)));
 		}
-		etiketler.push((Sekme::Ayarlar, format!("{} Ayarlar", ikon::SETTINGS)));
+		etiketler.push((Sekme::Ayarlar, format!("{}\nAyarlar", ikon::SETTINGS)));
 		if !etiketler.iter().any(|(s, _)| *s == self.aktif) {
 			self.aktif = Sekme::Altyazi;
 		}
 		Panel::bottom("vtabs").show(ui, |su| {
 			su.add_space(6.0);
-			// sekme genişliği kalan alana oranlanır: en dar pencerede de
-			// taşma olmaz (satır yatay kaydırma yok);
-			// denetim 1: dar genişlikte etiket kırpılmasın — düğme iç
-			// padding'i daralır, metin boyu sekme genişliğine uyarlanır
-			// (9–15.5pt bandı)
 			let adet = etiketler.len().max(1) as f32;
-			let gen = ((su.available_width() - 8.0) / adet).max(44.0);
-			su.horizontal(|k| {
-				k.spacing_mut().button_padding = egui::vec2(4.0, 8.0);
+			let bosluk = 4.0;
+			let gen = ((su.available_width() - bosluk * (adet - 1.0)) / adet)
+				.floor()
+				.max(48.0);
+			su.spacing_mut().item_spacing.x = bosluk;
+			su.horizontal_wrapped(|k| {
+				k.spacing_mut().button_padding = egui::vec2(2.0, 4.0);
 				for (s, ad) in &etiketler {
-					let metin_boyu = (gen * 0.22).clamp(9.0, 15.5);
+					let metin_boyu = (gen * 0.24).clamp(11.5, 15.0);
 					if k.add(
 						egui::Button::new(RichText::new(ad).size(metin_boyu))
-							.min_size(egui::vec2(gen, 44.0))
+							.min_size(egui::vec2(gen, 48.0))
 							.selected(self.aktif == *s),
 					).clicked() {
 						self.aktif = *s;
@@ -6738,10 +8012,10 @@ impl GridApp {
 		match std::thread::Builder::new().name("velnosub-video".into()).spawn(move || {
 			let result = CString::new(input.as_str()).map_err(|error| error.to_string()).and_then(|path| {
 				let h = unsafe {
-					velnosub_abi_video_open_cancel(path.as_ptr(), audio_cancelled,
+					velnosub_ui_open_video(path.as_ptr(), audio_cancelled,
 						std::sync::Arc::as_ptr(&worker_cancel).cast())
 				};
-				if h < 0 { Err(last_error()) } else { Ok((OpenedVideo(Some(h)), input)) }
+				document_io_result(h, "Video dosyası açılamadı").map(|h| (OpenedVideo(Some(h)), input))
 			});
 			let _ = send.send(result);
 		}) {
@@ -6786,7 +8060,7 @@ impl GridApp {
 		let worker_cancel = cancel.clone();
 		let yol = yol.to_owned();
 		match std::thread::Builder::new().name("velnosub-audio".into()).spawn(move || {
-			let _ = send.send(Self::audio_open(&yol, &worker_cancel));
+			let _ = send.send(Self::audio_open(&yol, &worker_cancel).map(|opened| (opened, yol)));
 		}) {
 			Ok(_) => {
 				self.pending_audio = Some(PendingAudio { cancel, result });
@@ -6801,7 +8075,7 @@ impl GridApp {
 		match pending.result.try_recv() {
 			Ok(result) => {
 				self.pending_audio = None;
-				if let Err(e) = result.and_then(|opened| self.load_audio(opened)) {
+				if let Err(e) = result.and_then(|(opened, path)| self.load_audio(opened, path)) {
 					self.note = format!("ses açılamadı: {e}");
 				}
 			}
@@ -6890,9 +8164,16 @@ impl GridApp {
 	/// P4.8.2: aegisub menü çubuğu — mevcut işlevlere bağlı öğeler gerçek,
 	/// ABI hat-alanları (v13) bekleyenler pasif gösterilir
 	fn menu_cubugu(&mut self, ui: &mut egui::Ui) {
-		let tema = tema_simdi(ui);
 		egui::MenuBar::new().ui(ui, |mb| {
 			mb.menu_button("File", |m| {
+				m.menu_button(format!("Altyazı açma kodlaması: {}", self.subtitle_encoding), |menu| {
+					for encoding in ["UTF-8", "UTF-16LE", "UTF-16BE", "Windows-1252", "Windows-1254",
+						"Windows-1251", "ISO-8859-9", "Shift_JIS", "GB18030", "Big5", "EUC-KR", "KOI8-R"] {
+						if menu.selectable_value(&mut self.subtitle_encoding, encoding, encoding).clicked() {
+							menu.close();
+						}
+					}
+				});
 				if m.button("Yeni altyazı").clicked() {
 					self.request_new_document();
 					m.close();
@@ -7016,6 +8297,18 @@ impl GridApp {
 				}
 			});
 			mb.menu_button("Timing", |m| {
+				if m.button("Karaoke zamanlaması…").clicked() {
+					self.open_karaoke_dialog();
+					m.close();
+				}
+				if m.button("Kanji zaman aktarımı…").clicked() {
+					self.open_kanji_dialog();
+					m.close();
+				}
+				if m.button("Zamanlamayı düzelt…").clicked() {
+					self.open_timing_processor();
+					m.close();
+				}
 				if m
 					.button(format!("{} Zaman kaydır…", ikon::LAYERS))
 					.clicked()
@@ -7105,10 +8398,10 @@ impl GridApp {
 			});
 			mb.menu_button("View", |m| {
 				if m.button(format!("{} Mobil görünüm", ikon::TEXT)).clicked() {
-					self.duzen_sec(tema, Duzen::Mobil);
+					self.duzen_sec(Duzen::Mobil);
 				}
 				if m.button(format!("{} Masaüstü görünüm", ikon::FULL)).clicked() {
-					self.duzen_sec(tema, Duzen::Masaustu);
+					self.duzen_sec(Duzen::Masaustu);
 				}
 				m.horizontal(|m| {
 					if m.button("−").clicked() { self.zoom = (self.zoom - 0.1).max(0.6); }
@@ -7408,7 +8701,7 @@ impl GridApp {
 		let max_workspace = layout::workbench_max_height(height);
 		let default_workspace = (height * 0.55).min(max_workspace);
 		let ratio = self.video.as_ref().filter(|v| v.w > 0 && v.hgt > 0)
-			.map(|v| v.w as f32 / v.hgt as f32);
+			.map(|v| v.preview_ratio.unwrap_or(v.w as f32 / v.hgt as f32));
 		Panel::top("classic-workbench")
 			.resizable(true)
 			.default_size(default_workspace)
@@ -7518,6 +8811,7 @@ impl Drop for GridApp {
 
 impl eframe::App for GridApp {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+		self.refresh_appearance(ui.ctx());
 		#[cfg(target_os = "android")]
 		if self.handle.is_some() && !self.android_ready {
 			self.android_ready = true;
@@ -7545,8 +8839,7 @@ impl eframe::App for GridApp {
 			}
 			if close_requested || legacy_back {
 				if let Some(form) = self.macro_form.take() {
-					unsafe { velnosub_abi_macro_abort(form.token) };
-					self.note = "Makro iptal edildi".into();
+					self.abort_macro(form);
 					return;
 				}
 			}
@@ -7560,6 +8853,8 @@ impl eframe::App for GridApp {
 		}
 		if self.macro_form.is_some() {
 			self.macro_dialog(ui.ctx());
+			self.translation_window(ui.ctx());
+			self.spelling_window(ui.ctx());
 			return;
 		}
 		self.belge_pencereleri(ui.ctx());
@@ -7568,10 +8863,13 @@ impl eframe::App for GridApp {
 			ui.ctx().request_repaint();
 			return;
 		}
-		if ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
+		use crate::hotkeys::Action;
+		if self.macro_form.is_none() && self.translation.is_none() && !self.hotkeys_window
+			&& self.hotkeys.consume(ui, Action::Palette) {
 			self.command_query = Some(String::new());
 		}
 		self.komut_paleti(ui.ctx());
+		self.hotkey_dialog(ui.ctx());
 		// Android uses the classic editor by default at every orientation.
 		// On desktop, the automatic setting adapts to the available space.
 		let etkin = match self.duzen {
@@ -7602,30 +8900,32 @@ impl eframe::App for GridApp {
 				ui.ctx().set_pixels_per_point(b);
 			}
 		}
-		if self.bekleyen_belge.is_none() && self.command_query.is_none() {
-			const COMMAND: egui::Modifiers = egui::Modifiers::COMMAND;
-			const SHIFT_COMMAND: egui::Modifiers = egui::Modifiers {
-				shift: true,
-				..COMMAND
-			};
-			let key = |modifiers, key| ui.input_mut(|input| input.consume_key(modifiers, key));
-			if key(SHIFT_COMMAND, egui::Key::S) {
+		if self.bekleyen_belge.is_none() && self.command_query.is_none()
+			&& self.translation.is_none() && self.macro_form.is_none() && !self.hotkeys_window {
+			if self.hotkeys.consume(ui, Action::SaveAs) {
 				self.kayit_yeri_sec();
-			} else if key(COMMAND, egui::Key::S) || key(egui::Modifiers::NONE, egui::Key::F2) {
+			} else if self.hotkeys.consume(ui, Action::Save) {
 				self.kaydet();
-			} else if key(COMMAND, egui::Key::O) {
+			} else if self.hotkeys.consume(ui, Action::Open) {
 				self.tarayici_ac(SecimTur::Altyazi);
-			} else if key(COMMAND, egui::Key::N) {
+			} else if self.hotkeys.consume(ui, Action::New) {
 				self.request_new_document();
-			} else if key(COMMAND, egui::Key::H) {
+			} else if self.hotkeys.consume(ui, Action::Find) {
 				self.ara_win = true;
-			} else if key(COMMAND, egui::Key::I) {
+			} else if self.hotkeys.consume(ui, Action::ShiftTimes) {
 				self.shift_win = true;
 			} else if ui.ctx().memory(|memory| memory.focused().is_none()) {
-				if key(SHIFT_COMMAND, egui::Key::Z) || key(COMMAND, egui::Key::Y) {
+				if self.hotkeys.consume(ui, Action::Redo) {
 					self.ileri_al();
-				} else if key(COMMAND, egui::Key::Z) {
+				} else if self.hotkeys.consume(ui, Action::Undo) {
 					self.geri_al();
+				} else if self.hotkeys.consume(ui, Action::SelectAll) {
+					self.multi_select = true;
+					self.marked_rows = (0..self.rows.len()).collect();
+				} else if self.hotkeys.consume(ui, Action::Duplicate) {
+					self.satir_ekle_tetik(true);
+				} else if self.hotkeys.consume(ui, Action::Delete) {
+					self.satir_sil_tetik();
 				}
 			}
 		}
@@ -7662,6 +8962,21 @@ impl eframe::App for GridApp {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn material_accent_uses_a_readable_selection_foreground() {
+		for (mode, accent, surface) in [
+			(Tema::Koyu, 0xcab4ff, 0x201c29),
+			(Tema::Acik, 0x6744a5, 0xfaf6ff),
+			(Tema::Koyu, 0x407273, 0x151e1d),
+		] {
+			let mut style = egui::Style::default();
+			apply_material_colors(&mut style, (mode, accent, surface, true));
+			let selection = style.visuals.selection;
+			assert!(kontrast(selection.stroke.color, selection.bg_fill) >= 4.5);
+			assert!(kontrast(style.visuals.weak_text_color.unwrap(), style.visuals.panel_fill) >= 7.0);
+		}
+	}
 
 	#[test]
 	fn belge_gecmisi_ve_basarisiz_acma() {
@@ -7734,16 +9049,76 @@ mod tests {
 		assert_eq!(app.rows[0].text, "satır 29");
 		assert_eq!(app.rows[0].kenarlar, margins);
 		let srt = cik.join("ornek.srt");
-		std::fs::write(&srt, "1\n00:00:00,500 --> 00:00:01,000\nİlk satır\n\n").unwrap();
+		std::fs::write(&srt, "1\n00:00:00,500 --> 00:00:01,000\n<i>İlk</i> satır\n\n").unwrap();
 		app.load(srt.to_str().unwrap()).unwrap();
 		assert_eq!(app.belge_bicimi(), "srt");
-		assert_eq!(app.rows[0].text, "İlk satır");
+		let original = app.rows[0].text.clone();
+		app.open_translation();
+		let mut translation = app.translation.take().unwrap();
+		translation.drafts.insert((0, 0), "First".into());
+		assert!(app.apply_translation(&translation), "{}", app.note);
+		assert_eq!(app.rows[0].text, r"{\i1}First{\i} satır");
+		app.geri_al();
+		assert_eq!(app.rows[0].text, original);
 		assert!(app.an_tut(None));
 		edit_line(app.handle.unwrap(), 0, "SRT düzenlendi").unwrap();
 		let srt_cik = cik.join("duzenlenen.srt");
 		assert!(app.save_to(srt_cik.to_str().unwrap()), "{}", app.note);
 		app.load(srt_cik.to_str().unwrap()).unwrap();
 		assert_eq!(app.rows[0].text, "SRT düzenlendi");
+		app.load(source).unwrap();
+		let original: Vec<_> = app.rows.iter().map(|row| row.text.clone()).collect();
+		app.multi_select = true;
+		app.marked_rows.extend([0, 2]);
+		app.satir_ekle_tetik(true);
+		assert_eq!(app.rows.len(), original.len() + 2);
+		assert_eq!(app.rows[1].text, original[0]);
+		assert_eq!(app.rows[4].text, original[2]);
+		app.geri_al();
+		assert_eq!(app.rows.len(), original.len());
+		assert!(!app.belge_degisti());
+		assert!(!app.apply_row_batch(vec![0, 2], "test", |handle, row| {
+			if row == 0 { return Err("hata".into()); }
+			satir_sil(handle, row)
+		}));
+		assert_eq!(app.rows.len(), original.len());
+		assert!(!app.belge_degisti());
+		app.multi_select = true;
+		app.marked_rows.extend([0, 2]);
+		app.secili = Some(0);
+		let script = CString::new(r#"
+aegisub.register_macro("Read", "", function(subs, selected, active)
+	assert(#selected == 2 and active == selected[1])
+	assert(aegisub.decode_path("?script"):find("seed", 1, true))
+	local path = assert(aegisub.dialog.open("Fixture"))
+	local file = assert(io.open(path, "r"))
+	file:close()
+	for _, index in ipairs(selected) do
+		local line = subs[index]
+		line.text = "Read ok"
+		subs[index] = line
+	end
+end)
+"#).unwrap();
+		app.makro_calistir(&script, "Read", Some(source));
+		let mut form = app.macro_form.take().unwrap_or_else(|| panic!("file request: {}", app.note));
+		form.dialog.alanlar.iter_mut().find(|field| field.ad == "__velnosub_open_file")
+			.unwrap().deger = source.into();
+		app.submit_macro_form(form, 0);
+		assert_eq!(app.rows[0].text, "Read ok", "{}", app.note);
+		assert_eq!(app.rows[2].text, "Read ok");
+		assert_eq!(app.rows[1].text, original[1]);
+		app.geri_al();
+		assert_eq!(app.rows[0].text, original[0]);
+		assert_eq!(app.rows[2].text, original[2]);
+		#[cfg(target_os = "android")]
+		{
+			let output = app.stage_macro_export("test", "untitled.txt").unwrap();
+			std::fs::write(&output, "temp").unwrap();
+			assert!(app.stage_macro_export("test", "other.txt").is_err());
+			app.macro_export = None;
+			assert!(!std::path::Path::new(&output).exists());
+		}
 		std::fs::remove_dir_all(cik).unwrap();
 	}
 

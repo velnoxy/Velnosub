@@ -10,6 +10,7 @@
 		},
 		"Call Tips" : false,
 		"First Start" : true,
+		"Fluent Workspace" : true,
 		"Hotkey Migrations" : [{"string": "placeholder since empty arrays aren't supported"}],
 		"Language" : "",
 		"Maximized" : false,

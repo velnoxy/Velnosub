@@ -445,7 +445,12 @@ endif
 
 # velnosub Faz 2: mobil kol GL kullanmaz (GUI yok) — masaüstünde değişmez.
 if not get_option('velnosub_mobile')
-    dep_gl = dependency('gl', required: false)
+    if host_machine.system() == 'darwin'
+        dep_gl = dependency('appleframeworks', modules: ['OpenGL'])
+        conf.set('HAVE_OPENGL_GL_H', 1)
+    else
+        dep_gl = dependency('gl', required: false)
+    endif
     if not dep_gl.found()
         if host_machine.system() == 'windows'
             dep_gl = cc.find_library('opengl32', required: false)

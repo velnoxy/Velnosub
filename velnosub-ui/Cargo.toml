@@ -12,6 +12,8 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 eframe = { version = "0.37", default-features = false, features = ["glow", "default_fonts", "android-native-activity"] }
+spellbook = "=0.4.2"
+unicode-segmentation = "1"
 
 # host derlemesi (android dışı) winit'in masaüstü omurgasını ister:
 # default-features kapalıiki x11 hiç etkinleşmediği için aarch64-linux-gnu

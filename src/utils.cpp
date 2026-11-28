@@ -223,8 +223,10 @@ int RetinaHelper::GetScaleFactor() const {
 	return 1;
 #endif
 }
+#endif
 
 // OS X implementation in scintilla_ime.mm
+#if !defined(__WXOSX_COCOA__) || wxCHECK_VERSION(3, 3, 0)
 namespace osx { namespace ime {
 	void inject(wxStyledTextCtrl *) { }
 	void invalidate(wxStyledTextCtrl *) { }

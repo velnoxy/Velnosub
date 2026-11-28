@@ -705,7 +705,7 @@ bool VisualToolPerspective::InnerToText() {
 	// Give up if any of these numbers were invalid
 	std::vector<float> allvalues({fax, fsc.X(), fsc.Y(), angle_z, angle_x, angle_y, bord.X(), bord.Y(), shad.X(), shad.Y(), org.X(), org.Y(), pos.X(), pos.Y()});
 	for (float f : allvalues) {
-		if (!isfinite(f)) return false;
+		if (!std::isfinite(f)) return false;
 	}
 
 	for (auto line : c->selectionController->GetSelectedSet()) {
@@ -743,7 +743,7 @@ void VisualToolPerspective::SaveOuterToLines() {
 		std::string plane_descriptor;
 		for (int i = 0; i < 4; i++) {
 			Vector2D saved_corner = ToScriptCoords(outer_corners[i]->pos);
-			if (!isfinite(saved_corner.X()) || !isfinite(saved_corner.Y()))
+			if (!std::isfinite(saved_corner.X()) || !std::isfinite(saved_corner.Y()))
 				return;
 			plane_descriptor += agi::format("%.2f;%.2f", saved_corner.X(), saved_corner.Y());
 			if (i < 3) plane_descriptor += "|";
@@ -859,7 +859,7 @@ void VisualToolPerspective::TextToPersp() {
 
 			Vector2D d1 = XYToUV(saved_outer, ToScriptCoords(inner_corners[0]->pos));
 			Vector2D d2 = XYToUV(saved_outer, ToScriptCoords(inner_corners[2]->pos));
-			if (isfinite(d1.X()) && isfinite(d1.Y()) && isfinite(d2.X()) && isfinite(d2.Y())) {
+			if (std::isfinite(d1.X()) && std::isfinite(d1.Y()) && std::isfinite(d2.X()) && std::isfinite(d2.Y())) {
 				c1 = d1;
 				c2 = d2;
 			}

@@ -228,12 +228,30 @@ void SubsTextEditCtrl::OnKeyDown(wxKeyEvent &event) {
 void SubsTextEditCtrl::SetSyntaxStyle(int id, wxFont &font, std::string const& name, wxColor const& default_background) {
 	StyleSetFont(id, font);
 	StyleSetBold(id, OPT_GET("Colour/Subtitle/Syntax/Bold/" + name)->GetBool());
+	if (fluentWorkspace) {
+		namespace ss = agi::ass::SyntaxStyle;
+		wxColour foreground(205, 186, 250);
+		if (id == ss::NORMAL)
+			foreground = wxColour(244, 242, 250);
+		else if (id == ss::COMMENT)
+			foreground = wxColour(174, 171, 189);
+		else if (id == ss::ERROR)
+			foreground = wxColour(255, 165, 177);
+		StyleSetForeground(id, foreground);
+		StyleSetBackground(id, default_background);
+		return;
+	}
 	StyleSetForeground(id, to_wx(OPT_GET("Colour/Subtitle/Syntax/" + name)->GetColor()));
 	const agi::OptionValue *background = OPT_GET("Colour/Subtitle/Syntax/Background/" + name);
 	if (background->GetType() == agi::OptionType::Color)
 		StyleSetBackground(id, to_wx(background->GetColor()));
 	else
 		StyleSetBackground(id, default_background);
+}
+
+void SubsTextEditCtrl::SetFluentWorkspace(bool enabled) {
+	fluentWorkspace = enabled;
+	SetStyles();
 }
 
 void SubsTextEditCtrl::SetStyles() {
@@ -243,7 +261,8 @@ void SubsTextEditCtrl::SetStyles() {
 	if (!fontname.empty()) font.SetFaceName(fontname);
 	font.SetPointSize(OPT_GET("Subtitle/Edit Box/Font Size")->GetInt());
 
-	auto default_background = to_wx(OPT_GET("Colour/Subtitle/Background")->GetColor());
+	auto default_background = fluentWorkspace ? wxColour(24, 25, 34)
+	                                           : to_wx(OPT_GET("Colour/Subtitle/Background")->GetColor());
 
 	namespace ss = agi::ass::SyntaxStyle;
 	SetSyntaxStyle(ss::NORMAL, font, "Normal", default_background);

@@ -203,7 +203,8 @@ std::unique_ptr<VideoProvider> VideoProviderFactory::GetProvider(agi::fs::path c
 
 	// We failed to load the video using the preferred video provider (and the ones before it).
 	// The user might want to know about this, so show a dialog and let them choose what other provider to try.
-	std::vector<const factory *> remaining_providers(tried_providers + 1, sorted.end());
+	auto next_provider = tried_providers == sorted.end() ? sorted.end() : tried_providers + 1;
+	std::vector<const factory *> remaining_providers(next_provider, sorted.end());
 
 	if (!remaining_providers.size()) {
 		// No provider could open the file

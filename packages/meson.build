@@ -16,7 +16,9 @@ elif host_machine.system() == 'darwin'
     run_target('osx-build-dmg',
                command: [build_dmg_sh, meson.project_source_root(), meson.project_build_root(), meson.project_version()])
 else
+    desktop_id = get_option('build_appimage') ? 'com.velnoxy.velnosub.desktop' : 'aegisub.desktop'
     conf_pkg.set('AEGISUB_COMMAND', 'aegisub')
+    conf_pkg.set('AEGISUB_DESKTOP_ID', desktop_id)
 
     desktop_template = configure_file(input: 'desktop/aegisub.desktop.in.in',
                                       output: 'aegisub.desktop.in',
@@ -24,7 +26,7 @@ else
 
     i18n = import('i18n')
     i18n.merge_file(input: desktop_template,
-                    output: 'aegisub.desktop',
+                    output: desktop_id,
                     type: 'desktop',
                     po_dir: '../po',
                     install: true,
@@ -34,7 +36,7 @@ else
                                       output: 'aegisub.desktop.appdata.xml.in',
                                       configuration: conf_pkg)
 	i18n.merge_file(input: appdata_template,
-                    output: 'aegisub.appdata.xml',
+                    output: 'com.velnoxy.velnosub.appdata.xml',
                     type: 'xml',
                     po_dir: '../po',
                     install: true,
@@ -52,6 +54,6 @@ else
     if get_option('build_appimage')
       install_symlink('AppRun', install_dir: '/', pointing_to: bindir.strip('/') / 'aegisub')
       install_symlink('.DirIcon', install_dir: '/', pointing_to: datadir.strip('/') / 'icons' / 'hicolor' / 'scalable' / 'apps' / 'aegisub.svg')
-      install_symlink('aegisub.desktop', install_dir: '/', pointing_to: datadir.strip('/') / 'applications' / 'aegisub.desktop')
+      install_symlink(desktop_id, install_dir: '/', pointing_to: datadir.strip('/') / 'applications' / desktop_id)
     endif
 endif

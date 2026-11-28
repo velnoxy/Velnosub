@@ -54,6 +54,7 @@ class wxSpinCtrl;
 class wxStyledTextCtrl;
 class wxStyledTextEvent;
 class wxTextCtrl;
+class wxStaticText;
 struct AssDialogueBase;
 
 template<class Base> class Placeholder;
@@ -201,8 +202,14 @@ class SubsEditBox final : public wxPanel {
 
 	SubsTextEditCtrl *edit_ctrl;
 	wxTextCtrl *secondary_editor;
+	wxStaticText *workspaceSourceLabel = nullptr;
+	wxStaticText *workspaceTranslationLabel = nullptr;
+	bool fluentWorkspace = false;
 
 public:
+	void OpenStyleEditor();
+	void SetFluentWorkspace(bool enabled);
+	void RefreshWorkspaceSource();
 	/// @brief Constructor
 	/// @param parent Parent window
 	SubsEditBox(wxWindow *parent, agi::Context *context);

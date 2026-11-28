@@ -68,6 +68,7 @@ aegisub.register_macro("Timing", "", check_timing)
             assert read_frame(frame) == sequential[frame], frame
         callback = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p)(lambda _: 1)
         assert abi.velnosub_abi_video_open_cancel(bytes(video), callback, None) < 0
+        assert abi.velnosub_abi_video_open(bytes(workdir / "missing.mp4")) < 0
         assert read_frame(0) == sequential[0]
     finally:
         abi.velnosub_abi_video_close(h)
@@ -267,6 +268,98 @@ aegisub.register_macro("Modules", "", function() end)
         abi.velnosub_abi_close(document)
 
 
+def test_resolution_resample(abi, workdir):
+    source = workdir / "resample.ass"
+    fixture = (SEED / "karaskel-dene.ass").read_text()
+    fixture = fixture.replace("[Script Info]", "[Script Info]\nPlayResX: 640\nPlayResY: 360")
+    fixture = fixture.replace(r"{\k30}ka", r"{\pos(100,50)\k30}ka", 1)
+    source.write_text(fixture)
+    original = abi.velnosub_abi_open(bytes(source))
+    assert original >= 0, abi.velnosub_abi_last_error()
+    try:
+        draft = abi.velnosub_abi_snapshot(original)
+        assert draft >= 0, abi.velnosub_abi_last_error()
+        try:
+            assert abi.velnosub_abi_resample(draft, 0, 720, 0) < 0
+            assert abi.velnosub_abi_resample(draft, 1280, 720, 0) == 0, abi.velnosub_abi_last_error()
+            output = workdir / "resampled.ass"
+            assert abi.velnosub_abi_save(draft, bytes(output)) == 0
+            rendered = output.read_text(encoding="utf-8-sig")
+            assert "PlayResX: 1280" in rendered and "PlayResY: 720" in rendered
+            assert r"\pos(200,100)\k30" in rendered
+            assert "Style: Default,Arial,40," in rendered
+        finally:
+            abi.velnosub_abi_close(draft)
+        original_output = workdir / "unchanged.ass"
+        assert abi.velnosub_abi_save(original, bytes(original_output)) == 0
+        assert r"\pos(100,50)\k30" in original_output.read_text(encoding="utf-8-sig")
+    finally:
+        abi.velnosub_abi_close(original)
+
+
+def test_karaoke_timing(abi, workdir):
+    document = abi.velnosub_abi_open(bytes(SEED / "karaskel-dene.ass"))
+    assert document >= 0, abi.velnosub_abi_last_error()
+    try:
+        size = abi.velnosub_abi_karaoke_read(document, 0, None, 0)
+        assert size > 0, abi.velnosub_abi_last_error()
+        data = ctypes.create_string_buffer(size + 1)
+        assert abi.velnosub_abi_karaoke_read(document, 0, data, len(data)) == size
+        assert data.value.splitlines()[0] == b"1000\t300\tka"
+        source_length, target_length = ctypes.c_int(), ctypes.c_int()
+        assert abi.velnosub_abi_kanji_match(document, 0, 0, "からおけ".encode(),
+            ctypes.byref(source_length), ctypes.byref(target_length)) == 0, abi.velnosub_abi_last_error()
+        assert (source_length.value, target_length.value) == (1, 1)
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 3, 1, 900) < 0
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 3, 1, 1400) == 0
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 1, 0, 1) == 0
+        output = workdir / "karaoke-split.ass"
+        assert abi.velnosub_abi_save(document, bytes(output)) == 0
+        assert rb"{\k20}k{\k20}a{\kf10}ra" in output.read_bytes()
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 2, 1, 0) == 0
+        assert abi.velnosub_abi_save(document, bytes(output)) == 0
+        assert rb"{\k40}ka{\kf10}ra" in output.read_bytes()
+    finally:
+        abi.velnosub_abi_close(document)
+
+
+def test_style_catalog(abi, workdir):
+    source = abi.velnosub_abi_open(bytes(SEED / "karaskel-dene.ass"))
+    assert source >= 0, abi.velnosub_abi_last_error()
+    target = abi.velnosub_abi_new_document()
+    assert target >= 0, abi.velnosub_abi_last_error()
+    try:
+        catalog = workdir / "catalog" / "series.sty"
+        assert abi.velnosub_abi_catalog_store(source, 1, bytes(catalog)) == 0, abi.velnosub_abi_last_error()
+        assert abi.velnosub_abi_catalog_store(source, 1, bytes(catalog)) == 0
+        assert catalog.read_bytes().count(b"Style: Kara,") == 1
+        assert abi.velnosub_abi_catalog_import(target, bytes(catalog)) == 0, abi.velnosub_abi_last_error()
+        assert abi.velnosub_abi_style_count(target) == 2
+        output = workdir / "catalog-import.ass"
+        assert abi.velnosub_abi_save(target, bytes(output)) == 0
+        assert b"Style: Kara,Arial,24," in output.read_bytes()
+    finally:
+        abi.velnosub_abi_close(target)
+        abi.velnosub_abi_close(source)
+
+
+def test_legacy_encoding(abi, workdir):
+    source = workdir / "turkish.srt"
+    original = "Şiir, Iğdır'da yazıldı."
+    source.write_bytes(f"1\n00:00:01,000 --> 00:00:02,000\n{original}\n\n".encode("cp1254"))
+    document = abi.velnosub_abi_open_encoding(bytes(source), b"Windows-1254")
+    assert document >= 0, abi.velnosub_abi_last_error()
+    try:
+        text = ctypes.create_string_buffer(256)
+        assert abi.velnosub_abi_line_text(document, 0, text, len(text)) > 0
+        assert text.value.decode() == original
+        output = workdir / "converted.srt"
+        assert abi.velnosub_abi_save(document, bytes(output)) == 0
+        assert original in output.read_text(encoding="utf-8-sig")
+    finally:
+        abi.velnosub_abi_close(document)
+
+
 def main():
     os.environ["VELNOSUB_AEGIINC"] = str(INCLUDES)
     os.environ["VELNOSUB_DATA_DIR"] = str(INCLUDES)
@@ -280,6 +373,10 @@ def main():
         test_audio_and_embedded_ass(abi, workdir)
         test_automation_and_fonts(abi, workdir)
         test_interactive_macro(abi, workdir)
+        test_resolution_resample(abi, workdir)
+        test_karaoke_timing(abi, workdir)
+        test_style_catalog(abi, workdir)
+        test_legacy_encoding(abi, workdir)
     print("Mobile ABI regressions passed")
 
 

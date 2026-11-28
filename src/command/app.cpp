@@ -233,6 +233,16 @@ struct app_toggle_global_hotkeys final : public Command {
 	}
 };
 
+struct app_fluent_workspace final : public Command {
+	CMD_NAME("app/toggle/fluent_workspace")
+	CMD_TYPE(COMMAND_TOGGLE)
+	STR_MENU("Fluent workspace")
+	STR_DISP("Fluent workspace")
+	STR_HELP("Switch between the Fluent workspace and the classic layout")
+	bool IsActive(agi::Context const* c) override { return c->frame->IsFluentWorkspace(); }
+	void operator()(agi::Context *c) override { c->frame->SetFluentWorkspace(!c->frame->IsFluentWorkspace()); }
+};
+
 struct app_toggle_toolbar final : public Command {
 	CMD_NAME("app/toggle/toolbar")
 	STR_HELP("Toggle the main toolbar")
@@ -316,6 +326,7 @@ namespace cmd {
 		reg(agi::make_unique<app_options>());
 		reg(agi::make_unique<app_toggle_global_hotkeys>());
 		reg(agi::make_unique<app_toggle_toolbar>());
+		reg(agi::make_unique<app_fluent_workspace>());
 #ifdef __WXMAC__
 		reg(agi::make_unique<app_minimize>());
 		reg(agi::make_unique<app_maximize>());

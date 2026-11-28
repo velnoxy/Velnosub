@@ -14,6 +14,7 @@
 //
 // Aegisub Project http://www.aegisub.org/
 
+#include <locale>
 #include <string>
 #include <vector>
 
@@ -26,5 +27,6 @@ namespace agi {
 	};
 
 	/// Try to automatically select the portion of dst which corresponds to the first string in src
-	karaoke_match_result auto_match_karaoke(std::vector<std::string> const& src, std::string const& dst);
+	karaoke_match_result auto_match_karaoke(std::vector<std::string> const& src, std::string const& dst,
+	                                      std::locale const& locale = std::locale());
 }

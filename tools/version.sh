@@ -25,11 +25,11 @@ osx_bundle_sed_path="${builddir}/osx-bundle.sed"
 last_svn_revision=6962
 last_svn_hash="16cd907fe7482cb54a7374cd28b8501f138116be"
 
-svn_count=$(git rev-list --count "$last_svn_hash..HEAD" 2>/dev/null) || svn_count=0
+svn_count=$(git -C "${srcdir}" rev-list --count "$last_svn_hash..HEAD" 2>/dev/null) || svn_count=0
 [ -n "$svn_count" ] || svn_count=0
 git_revision=$(expr $last_svn_revision + $svn_count)
 if test x$git_revision = x; then git_revision=$last_svn_revision; fi
-git_version_str=$(git describe --exact-match 2> /dev/null)
+git_version_str=$(git -C "${srcdir}" describe --exact-match 2> /dev/null)
 installer_version='0.0.0'
 resource_version='0, 0, 0'
 if test x$git_version_str != x; then
@@ -40,9 +40,9 @@ if test x$git_version_str != x; then
     resource_version=$(echo $git_version_str | sed 's/\./, /g')
   fi
 else
-  git_branch="$(git symbolic-ref HEAD 2> /dev/null)" || git_branch="(unnamed branch)"
+  git_branch="$(git -C "${srcdir}" symbolic-ref HEAD 2> /dev/null)" || git_branch="(unnamed branch)"
   git_branch="${git_branch##refs/heads/}"
-  git_hash=$(git rev-parse --short HEAD)
+  git_hash=$(git -C "${srcdir}" rev-parse --short HEAD)
 
   git_version_str="${git_revision}-${git_branch}-${git_hash}"
   tagged_release=0
@@ -58,7 +58,7 @@ new_version_h="\
 #define RESOURCE_BASE_VERSION ${resource_version}"
 
 osx_bundle_sed="\
-s/@PLIST_VERSION@/${git_version_str}/g
+s|@PLIST_VERSION@|${git_version_str}|g
 s/@PLIST_BUILD_DATE@/${build_date}/g
 / *@LOCALIZATIONS@/ {
   r languages
@@ -67,7 +67,7 @@ s/@PLIST_BUILD_DATE@/${build_date}/g
 
 # Write it only if it's changed to avoid spurious rebuilds
 # This bizzare comparison method is due to that newlines in shell variables are very exciting
-case "$(cat ${version_h_path} 2> /dev/null)"
+case "$(cat "${version_h_path}" 2> /dev/null)"
 in
   "${new_version_h}");;
   *)

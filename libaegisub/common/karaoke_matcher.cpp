@@ -48,16 +48,17 @@ bool is_whitespace(std::string const& str) {
 }
 
 // strcmp but ignoring case and accents
-int compare(std::string const& a, std::string const& b) {
+int compare(std::string const& a, std::string const& b, std::locale const& locale) {
 	using namespace boost::locale;
-	return std::use_facet<collator<char>>(std::locale()).compare(collator_base::primary, a, b);
+	return std::use_facet<collator<char>>(locale).compare(collator_base::primary, a, b);
 }
 
 }
 
 namespace agi {
 
-karaoke_match_result auto_match_karaoke(std::vector<std::string> const& source_strings, std::string const& dest_string) {
+karaoke_match_result auto_match_karaoke(std::vector<std::string> const& source_strings, std::string const& dest_string,
+                                      std::locale const& locale) {
 	karaoke_match_result result = { 0, 0 };
 	if (source_strings.empty()) return result;
 
@@ -65,8 +66,8 @@ karaoke_match_result auto_match_karaoke(std::vector<std::string> const& source_s
 	using boost::starts_with;
 
 	result.source_length = 1;
-	ssegment_index destination_characters(character, begin(dest_string), end(dest_string));
-	auto src = boost::to_lower_copy(source_strings[0]);
+	ssegment_index destination_characters(character, begin(dest_string), end(dest_string), locale);
+	auto src = boost::to_lower_copy(source_strings[0], locale);
 	auto dst = destination_characters.begin();
 	auto dst_end = destination_characters.end();
 
@@ -102,8 +103,8 @@ karaoke_match_result auto_match_karaoke(std::vector<std::string> const& source_s
 	// character. If it does, match them and repeat.
 	while (!src.empty()) {
 		// First check for a basic match of the first character of the source and dest
-		auto first_src_char = ssegment_index(character, begin(src), end(src)).begin()->str();
-		if (compare(first_src_char, dst->str()) == 0) {
+		auto first_src_char = ssegment_index(character, begin(src), end(src), locale).begin()->str();
+		if (compare(first_src_char, dst->str(), locale) == 0) {
 			++dst;
 			++result.destination_length;
 			src.erase(0, first_src_char.size());
@@ -179,7 +180,7 @@ karaoke_match_result auto_match_karaoke(std::vector<std::string> const& source_s
 			if (++src_lookahead_pos == 1) continue;
 			if (src_lookahead_pos > src_lookahead_max) break;
 
-			std::string lsyl = boost::to_lower_copy(syl);
+			std::string lsyl = boost::to_lower_copy(syl, locale);
 			if (!(starts_with(syl, dst->str()) || util::any_of(translit, [&](const char *str) { return starts_with(lsyl, str); })))
 				continue;
 

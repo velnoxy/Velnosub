@@ -19,6 +19,8 @@
 #include <libaegisub/option.h>
 #include <libaegisub/vfr.h>
 
+#include <boost/filesystem/operations.hpp>
+
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -35,32 +37,41 @@ namespace config {
 namespace {
 std::string const& default_config() {
 	static std::string const data = [] {
-		std::ifstream in("../src/libresrc/default_config.json");
+		const char *config = std::getenv("VELNOSUB_TEST_CONFIG");
+		std::ifstream in(config ? config : "../src/libresrc/default_config.json");
 		return std::string(std::istreambuf_iterator<char>{in},
 		                   std::istreambuf_iterator<char>{});
 	}();
 	return data;
 }
 
-agi::fs::path temp_path(std::string const& name) {
-	const char *env = std::getenv("TMPDIR");
-	return agi::fs::path(env ? env : "/tmp") / name;
-}
 }
 
 class CoreSmoke : public ::testing::Test {
 protected:
+	agi::fs::path directory;
+
 	void SetUp() override {
+		ASSERT_FALSE(default_config().empty()) << "Could not open default_config.json";
+		directory = boost::filesystem::temp_directory_path() /
+			boost::filesystem::unique_path("velnosub-smoke-%%%%-%%%%");
+		boost::filesystem::create_directory(directory);
 		if (!config::opt)
 			config::opt = new agi::Options(
 				"", {default_config().data(), default_config().size()},
 				agi::Options::FLUSH_SKIP);
 	}
+
+	void TearDown() override {
+		boost::system::error_code error;
+		if (!directory.empty())
+			boost::filesystem::remove_all(directory, error);
+	}
 };
 
 TEST_F(CoreSmoke, LoadEditSaveRoundTrip) {
-	auto const in_path = temp_path("velnosub-smoke-in.ass");
-	auto const out_path = temp_path("velnosub-smoke-out.ass");
+	auto const in_path = directory / "input.ass";
+	auto const out_path = directory / "output.ass";
 
 	{
 		std::ofstream in(in_path.c_str());
