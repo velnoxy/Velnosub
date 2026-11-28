@@ -150,6 +150,7 @@ extern "C" {
 	fn velnosub_abi_script_size(
 		h: c_int, out_w: *mut c_int, out_h: *mut c_int,
 	) -> c_int;
+	fn velnosub_abi_resample(h: c_int, width: c_int, height: c_int, aspect_mode: c_int) -> c_int;
 	fn velnosub_abi_render_line(
 		h: c_int, idx: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
@@ -1549,6 +1550,14 @@ struct TimingProcessor {
 	options: crate::timing_processor::Options,
 }
 
+struct ResampleDialog {
+	revision: u64,
+	source: (i32, i32),
+	width: i32,
+	height: i32,
+	aspect_mode: i32,
+}
+
 pub struct GridApp {
 	multi_select: bool,
 	marked_rows: std::collections::BTreeSet<usize>,
@@ -1620,6 +1629,7 @@ pub struct GridApp {
 	shift_ms: i32,
 	shift_tum: bool,
 	timing_processor: Option<TimingProcessor>,
+	resample_dialog: Option<ResampleDialog>,
 	// P8.1: tam stil yöneticisi penceresi + seçili stil
 	stil_win: bool,
 	stil_sec: usize,
@@ -1815,6 +1825,7 @@ impl GridApp {
 			shift_ms: 1000,
 			shift_tum: true,
 			timing_processor: None,
+			resample_dialog: None,
 			stil_win: false,
 			stil_sec: 0,
 			ozellik_win: false,
@@ -2139,7 +2150,7 @@ impl GridApp {
 		let selected = egui::Window::new("Komut paleti").open(&mut open).show(ctx, |ui| {
 			ui.text_edit_singleline(&mut query);
 			let terms = query.to_lowercase();
-			let commands: [(&str, fn(&mut Self)); 15] = [
+			let commands: [(&str, fn(&mut Self)); 16] = [
 				("Yeni altyazı", Self::request_new_document),
 				("Altyazı aç", |app| app.tarayici_ac(SecimTur::Altyazi)),
 				("Video aç", |app| app.tarayici_ac(SecimTur::Video)),
@@ -2152,6 +2163,7 @@ impl GridApp {
 				("Yazım denetimi", |app| app.spelling_open = true),
 				("Zaman kaydır", |app| app.shift_win = true),
 				("Zamanlamayı düzelt", Self::open_timing_processor),
+				("ASS çözünürlüğünü uyarla", Self::open_resample_dialog),
 				("Stil yöneticisi", |app| app.stil_win = true),
 				("Otomasyon", |app| app.lua_window = true),
 				("Yazı tipi ekle", |app| app.tarayici_ac(SecimTur::Font)),
@@ -2454,18 +2466,27 @@ impl GridApp {
 	fn apply_row_batch(&mut self, rows: Vec<usize>, label: &str,
 		edit: impl Fn(c_int, usize) -> Result<(), String>,
 	) -> bool {
-		let Some(h) = self.handle.filter(|_| !rows.is_empty()) else { return false };
+		if rows.is_empty() { return false; }
+		let message = format!("{label} · {} satır", rows.len());
+		self.apply_document_edit(&message, |draft| {
+			for &row in rows.iter().rev() {
+				edit(draft, row)?;
+			}
+			Ok(())
+		})
+	}
+
+	fn apply_document_edit(&mut self, label: &str, edit: impl FnOnce(c_int) -> Result<(), String>) -> bool {
+		let Some(h) = self.handle else { return false };
 		let draft = unsafe { velnosub_abi_snapshot(h) };
 		if draft < 0 {
 			self.note = last_error();
 			return false;
 		}
-		for &row in rows.iter().rev() {
-			if let Err(e) = edit(draft, row) {
-				unsafe { velnosub_abi_close(draft) };
-				self.note = format!("{label}: {e}");
-				return false;
-			}
+		if let Err(e) = edit(draft) {
+			unsafe { velnosub_abi_close(draft) };
+			self.note = format!("{label}: {e}");
+			return false;
 		}
 		self.gecmise_ekle(h);
 		self.handle = Some(draft);
@@ -2474,7 +2495,7 @@ impl GridApp {
 		self.typeset = None;
 		self.oniz = Oniz::default();
 		self.yerles();
-		self.note = format!("{label} · {} satır", rows.len());
+		self.note = label.into();
 		true
 	}
 
@@ -2910,6 +2931,7 @@ impl GridApp {
 	fn diyaloglar(&mut self, ui: &mut egui::Ui) {
 		self.tarayici_pencere(ui);
 		self.timing_processor_window(ui.ctx());
+		self.resample_window(ui.ctx());
 		if self.ara_win {
 			let mut ap = self.ara_win;
 			egui::Window::new("Ara-Bul")
@@ -3662,6 +3684,12 @@ impl GridApp {
 
 	#[cfg(target_os = "android")]
 	fn saf_yaz(&mut self, h: c_int, name: &str, format: &str, export_only: bool) {
+		self.saf_stage(name, format, export_only, |_, cpath| write_document(h, cpath));
+	}
+
+	#[cfg(target_os = "android")]
+	fn saf_stage(&mut self, name: &str, format: &str, export_only: bool,
+		write: impl FnOnce(&std::path::Path, &CStr) -> Result<(), String>) {
 		if self.android_belge.is_some() { return; }
 
 		let dir = std::env::var_os("VELNOSUB_CACHE").map(std::path::PathBuf::from)
@@ -3676,7 +3704,7 @@ impl GridApp {
 			self.note = format!("Kayıt hazırlığı başarısız: {error}");
 			return;
 		}
-		if let Err(error) = write_document(h, &cpath) {
+		if let Err(error) = write(&path, &cpath) {
 			self.note = format!("kayıt hatası: {error}");
 			Self::remove_saf_stage(&path);
 			return;
@@ -4153,6 +4181,47 @@ impl GridApp {
 			Some((w, yuk))
 		} else {
 			None
+		}
+	}
+
+	fn open_resample_dialog(&mut self) {
+		let Some(source) = self.script_size() else { return };
+		let (width, height) = self.video.as_ref().map(|video| (video.w as i32, video.hgt as i32))
+			.unwrap_or(source);
+		self.resample_dialog = Some(ResampleDialog {
+			revision: self.current_revision, source, width, height, aspect_mode: 0,
+		});
+	}
+
+	fn resample_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.resample_dialog.take() else { return };
+		if state.revision != self.current_revision { return; }
+		let mut open = true;
+		let mut apply = false;
+		egui::Window::new("ASS çözünürlüğünü uyarla").open(&mut open).show(ctx, |ui| {
+			ui.label(format!("Kaynak {} × {}", state.source.0, state.source.1));
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Hedef genişlik");
+				ui.add(egui::DragValue::new(&mut state.width).range(1..=16384));
+				ui.label("Hedef yükseklik");
+				ui.add(egui::DragValue::new(&mut state.height).range(1..=16384));
+			});
+			ui.radio_value(&mut state.aspect_mode, 0, "Hedef en-boy oranına esnet");
+			ui.radio_value(&mut state.aspect_mode, 1, "Kenarlık ekle");
+			ui.radio_value(&mut state.aspect_mode, 2, "Kenarlığı çıkar");
+			apply = ui.add_enabled(state.source != (state.width, state.height), egui::Button::new("Uygula")).clicked();
+		});
+		if apply && self.apply_document_edit("ASS çözünürlüğü uyarlandı", |draft| {
+			if unsafe { velnosub_abi_resample(draft, state.width, state.height, state.aspect_mode) } == 0 {
+				Ok(())
+			} else {
+				Err(last_error())
+			}
+		}) {
+			return;
+		}
+		if open {
+			self.resample_dialog = Some(state);
 		}
 	}
 
@@ -5325,6 +5394,13 @@ impl GridApp {
 				self.tarayici_ac(SecimTur::Keyframes);
 				menu.close();
 			}
+			#[cfg(target_os = "android")]
+			for (label, timecodes) in [("Timecode kaydet…", true), ("Keyframe kaydet…", false)] {
+				if menu.button(label).clicked() {
+					self.export_video_metadata(timecodes);
+					menu.close();
+				}
+			}
 			if menu.add_enabled(has_times, egui::Button::new("Kaynak kare zamanlarına dön")).clicked() {
 				self.video.as_mut().unwrap().external_times = None;
 				self.stop_timeline_playback();
@@ -5335,6 +5411,14 @@ impl GridApp {
 				menu.close();
 			}
 		});
+	}
+
+	#[cfg(target_os = "android")]
+	fn export_video_metadata(&mut self, timecodes: bool) {
+		let Some(video) = self.video.as_ref() else { return };
+		let (name, values) = if timecodes { ("timecodes", video.timeline()) } else { ("keyframes", video.keyframes()) };
+		let contents = crate::video_metadata::export(values, timecodes);
+		self.saf_stage(name, "txt", true, |path, _| std::fs::write(path, contents).map_err(|error| error.to_string()));
 	}
 
 	fn video_icerik(&mut self, ui: &mut egui::Ui, mobil: bool) {

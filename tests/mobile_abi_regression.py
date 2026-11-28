@@ -268,6 +268,35 @@ aegisub.register_macro("Modules", "", function() end)
         abi.velnosub_abi_close(document)
 
 
+def test_resolution_resample(abi, workdir):
+    source = workdir / "resample.ass"
+    fixture = (SEED / "karaskel-dene.ass").read_text()
+    fixture = fixture.replace("[Script Info]", "[Script Info]\nPlayResX: 640\nPlayResY: 360")
+    fixture = fixture.replace(r"{\k30}ka", r"{\pos(100,50)\k30}ka", 1)
+    source.write_text(fixture)
+    original = abi.velnosub_abi_open(bytes(source))
+    assert original >= 0, abi.velnosub_abi_last_error()
+    try:
+        draft = abi.velnosub_abi_snapshot(original)
+        assert draft >= 0, abi.velnosub_abi_last_error()
+        try:
+            assert abi.velnosub_abi_resample(draft, 0, 720, 0) < 0
+            assert abi.velnosub_abi_resample(draft, 1280, 720, 0) == 0, abi.velnosub_abi_last_error()
+            output = workdir / "resampled.ass"
+            assert abi.velnosub_abi_save(draft, bytes(output)) == 0
+            rendered = output.read_text(encoding="utf-8-sig")
+            assert "PlayResX: 1280" in rendered and "PlayResY: 720" in rendered
+            assert r"\pos(200,100)\k30" in rendered
+            assert "Style: Default,Arial,40," in rendered
+        finally:
+            abi.velnosub_abi_close(draft)
+        original_output = workdir / "unchanged.ass"
+        assert abi.velnosub_abi_save(original, bytes(original_output)) == 0
+        assert r"\pos(100,50)\k30" in original_output.read_text(encoding="utf-8-sig")
+    finally:
+        abi.velnosub_abi_close(original)
+
+
 def main():
     os.environ["VELNOSUB_AEGIINC"] = str(INCLUDES)
     os.environ["VELNOSUB_DATA_DIR"] = str(INCLUDES)
@@ -281,6 +310,7 @@ def main():
         test_audio_and_embedded_ass(abi, workdir)
         test_automation_and_fonts(abi, workdir)
         test_interactive_macro(abi, workdir)
+        test_resolution_resample(abi, workdir)
     print("Mobile ABI regressions passed")
 
 

@@ -4,6 +4,21 @@ fn rows(text: &str) -> (&str, impl Iterator<Item = &str>) {
     (header, lines.filter(|line| !line.is_empty() && !line.starts_with('#')))
 }
 
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn export(values: &[i32], timecodes: bool) -> String {
+    use std::fmt::Write;
+
+    let mut result = if timecodes {
+        String::from("# timecode format v2\n")
+    } else {
+        String::from("# keyframe format v1\nfps 0\n")
+    };
+    for value in values {
+        writeln!(&mut result, "{value}").expect("writing to String cannot fail");
+    }
+    result
+}
+
 fn timestamp(value: f64) -> Result<i32, String> {
     let rounded = value.round();
     if (0.0..=f64::from(i32::MAX)).contains(&rounded) {
@@ -105,5 +120,13 @@ mod tests {
     fn validates_keyframe_bounds() {
         assert_eq!(keyframes("# keyframe format v1\nfps 0\n4\n0\n4", 5).unwrap(), [0, 4]);
         assert!(keyframes("# keyframe format v1\n5", 5).is_err());
+    }
+
+    #[test]
+    fn exported_video_metadata_can_be_opened_again() {
+        let times = [0, 40, 120, 160];
+        assert_eq!(timecodes(&export(&times, true), times.len()).unwrap(), times);
+        let keys = [0, 2, 3];
+        assert_eq!(keyframes(&export(&keys, false), times.len() as i32).unwrap(), keys);
     }
 }

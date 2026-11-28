@@ -28,6 +28,7 @@
 #endif
 #include "include/aegisub/video_provider.h"
 #include "options.h"
+#include "resolution_resampler.h"
 #include "subtitle_format.h"
 #include "video_frame.h"
 #include "video_provider_manager.h"
@@ -1204,6 +1205,32 @@ int velnosub_abi_script_size(int h, int *out_w, int *out_h) {
 		c.file.GetResolution(w, hh);
 		*out_w = w;
 		*out_h = hh;
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_resample(int h, int width, int height, int aspect_mode) {
+	if (!g_ctx.count(h) || width < 1 || height < 1 || width > 16384 ||
+	    height > 16384 || aspect_mode < 0 || aspect_mode > 2) {
+		set_err("geçersiz çözünürlük veya en-boy oranı kipi");
+		return -1;
+	}
+	try {
+		auto &file = g_ctx.at(h)->file;
+		ResampleSettings settings{};
+		file.GetResolution(settings.source_x, settings.source_y);
+		if (settings.source_x < 1 || settings.source_y < 1) {
+			set_err("kaynak çözünürlüğü geçersiz");
+			return -1;
+		}
+		settings.dest_x = width;
+		settings.dest_y = height;
+		settings.ar_mode = static_cast<ResampleARMode>(aspect_mode);
+		settings.source_matrix = settings.dest_matrix = MatrixFromString(file.GetScriptInfo("YCbCr Matrix"));
+		ResampleResolution(&file, settings);
 		return 0;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
