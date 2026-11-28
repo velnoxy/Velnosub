@@ -17,6 +17,7 @@
 #include <libaegisub/fs_fwd.h>
 
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace agi {

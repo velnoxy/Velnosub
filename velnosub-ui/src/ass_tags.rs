@@ -26,6 +26,65 @@ fn ad_temizle(ad: &str) -> &str {
 	ad.trim().trim_start_matches('\\')
 }
 
+/// Human-readable portions of an ASS event. Keep overrides, comments,
+/// drawing commands and ASS line-break/space controls outside these ranges.
+pub(crate) fn translation_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
+	let mut ranges = Vec::new();
+	let mut cursor = 0;
+	let mut drawing = false;
+	while cursor < text.len() {
+		if text[cursor..].starts_with('{') {
+			if let Some(close) = text[cursor..].find('}') {
+				let end = cursor + close;
+				for tag in etiketler(&text[cursor + 1..end]) {
+					if tag.ad == "p" {
+						let value = &text[cursor + 1 + tag.deger_bas..cursor + 1 + tag.deger_son];
+						drawing = value.trim().parse::<i32>().unwrap_or(0) != 0;
+					}
+				}
+				cursor = end + 1;
+				continue;
+			}
+		}
+		let after_first_char = cursor + text[cursor..].chars().next().unwrap().len_utf8();
+		let end = text[after_first_char..].find('{').map_or(text.len(), |i| after_first_char + i);
+		if !drawing {
+			let mut start = cursor;
+			let mut chars = text[cursor..end].char_indices().peekable();
+			while let Some((offset, ch)) = chars.next() {
+				if ch == '\\' && chars.peek().is_some_and(|(_, ch)| matches!(ch, 'N' | 'n' | 'h')) {
+					let control = cursor + offset;
+					if !text[start..control].trim().is_empty() {
+						ranges.push(start..control);
+					}
+					chars.next();
+					start = control + 2;
+				}
+			}
+			if !text[start..end].trim().is_empty() {
+				ranges.push(start..end);
+			}
+		}
+		cursor = end;
+	}
+	ranges
+}
+
+#[cfg(test)]
+#[test]
+fn translation_keeps_ass_structure() {
+	let source = r"{\pos(100,200)\k30}İlk{\k25} ikinci\N{\p1}m 0 0 l 8 8{\p0}{not}最後\h!";
+	let ranges = translation_ranges(source);
+	let originals: Vec<_> = ranges.iter().map(|range| &source[range.clone()]).collect();
+	assert_eq!(originals, ["İlk", " ikinci", "最後", "!"]);
+	let mut translated = source.to_owned();
+	for (range, value) in ranges.into_iter().zip(["First", " second", "Last", "!"]).rev() {
+		translated.replace_range(range, value);
+	}
+	assert_eq!(translated, r"{\pos(100,200)\k30}First{\k25} second\N{\p1}m 0 0 l 8 8{\p0}{not}Last\h!");
+	assert_eq!(translation_ranges("Önce {eksik"), [0..6, 6..12]);
+}
+
 /// Bir override bloğundaki etiketleri bayt aralıklarıyla çıkar.
 fn etiketler(blok: &str) -> Vec<Etiket> {
 	let mut out = Vec::new();

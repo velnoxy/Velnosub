@@ -1539,8 +1539,8 @@ struct Misspelling {
 struct Translation {
 	revision: u64,
 	row: usize,
-	text: String,
-	drafts: std::collections::BTreeMap<usize, String>,
+	block: usize,
+	drafts: std::collections::BTreeMap<(usize, usize), String>,
 }
 
 pub struct GridApp {
@@ -2034,47 +2034,92 @@ impl GridApp {
 
 	fn open_translation(&mut self) {
 		let row = self.secili.unwrap_or(0);
-		if self.rows.get(row).is_some() {
+		let start = (row..self.rows.len()).chain(0..row).find(|&index| {
+			!self.translation_blocks(index).is_empty()
+		});
+		if let Some(row) = start {
 			self.translation = Some(Translation {
 				revision: self.current_revision,
 				row,
-				text: String::new(),
+				block: 0,
 				drafts: Default::default(),
 			});
 		}
 	}
 
+	fn translation_blocks(&self, row: usize) -> Vec<std::ops::Range<usize>> {
+		let Some(row) = self.rows.get(row).filter(|row| !row.yorum) else { return Vec::new() };
+		if self.belge_bicimi() == "srt" && !row.text.trim().is_empty() {
+			return std::iter::once(0..row.text.len()).collect();
+		}
+		crate::ass_tags::translation_ranges(&row.text)
+	}
+
 	fn translation_window(&mut self, ctx: &egui::Context) {
 		let Some(mut state) = self.translation.take() else { return };
 		if state.revision != self.current_revision { return; }
+		let blocks = self.translation_blocks(state.row);
+		let Some(block) = blocks.get(state.block) else { return };
+		let source = &self.rows[state.row].text[block.clone()];
+		let key = (state.row, state.block);
+		let mut draft = state.drafts.get(&key).cloned().unwrap_or_default();
 		let mut cancel = false;
 		let mut apply = false;
-		let mut next = state.row;
-		egui::Modal::new(egui::Id::unique("translation")).show(ctx, |ui| {
+		let mut step = 0;
+		egui::Modal::new(egui::Id::new("translation")).show(ctx, |ui| {
 			ui.heading("Çeviri asistanı");
-			ui.label(format!("Satır {} / {}", state.row + 1, self.rows.len()));
-			ui.label(&self.rows[state.row].text);
-			if ui.add(TextEdit::multiline(&mut state.text).hint_text("Çeviriyi yaz")).changed() {
-				state.drafts.insert(state.row, state.text.clone());
+			ui.label(format!("Satır {} / {} · Metin {} / {}", state.row + 1, self.rows.len(), state.block + 1, blocks.len()));
+			ui.label(source);
+			if ui.add(TextEdit::multiline(&mut draft).hint_text("Çeviriyi yaz")).changed() {
+				state.drafts.insert(key, draft.clone());
 			}
 			ui.horizontal_wrapped(|ui| {
-				if ui.add_enabled(state.row > 0, egui::Button::new("Önceki")).clicked() { next -= 1; }
-				if ui.add_enabled(state.row + 1 < self.rows.len(), egui::Button::new("Sonraki")).clicked() { next += 1; }
+				if ui.add_enabled(state.row > 0 || state.block > 0, egui::Button::new("Önceki")).clicked() { step = -1; }
+				if ui.add_enabled(state.row + 1 < self.rows.len() || state.block + 1 < blocks.len(), egui::Button::new("Sonraki")).clicked() { step = 1; }
+				if ui.button("Kaynağı kullan").clicked() {
+					state.drafts.remove(&key);
+				}
 				apply = ui.add_enabled(!state.drafts.is_empty(), egui::Button::new("Uygula")).clicked();
 				cancel = ui.button("Vazgeç").clicked();
 			});
 		});
 		if apply {
-			let rows = state.drafts.keys().copied().collect();
+			let mut translated = std::collections::BTreeMap::new();
+			let mut block_ranges = Vec::new();
+			let mut previous = None;
+			for (&(row, block), value) in state.drafts.iter().rev() {
+				if previous != Some(row) {
+					block_ranges = self.translation_blocks(row);
+					previous = Some(row);
+				}
+				let line = translated.entry(row).or_insert_with(|| self.rows[row].text.clone());
+				let text = value.replace("\r\n", "\\N").replace(['\r', '\n'], "\\N");
+				line.replace_range(block_ranges[block].clone(), &text);
+			}
+			let rows = translated.keys().copied().collect();
 			if !self.apply_row_batch(rows, "Çeviri uygulandı", |handle, row| {
-				edit_line(handle, row, &state.drafts[&row])
+				edit_line(handle, row, &translated[&row])
 			}) {
 				self.translation = Some(state);
 			}
 		} else if !cancel {
-			if next != state.row {
-				state.row = next;
-				state.text = state.drafts.get(&next).cloned().unwrap_or_default();
+			if step > 0 {
+				if state.block + 1 < blocks.len() {
+					state.block += 1;
+				} else if let Some(row) = (state.row + 1..self.rows.len()).find(|&row| !self.translation_blocks(row).is_empty()) {
+					state.row = row;
+					state.block = 0;
+				}
+			} else if step < 0 {
+				if state.block > 0 {
+					state.block -= 1;
+				} else if let Some((row, count)) = (0..state.row).rev().find_map(|row| {
+					let count = self.translation_blocks(row).len();
+					(count > 0).then_some((row, count))
+				}) {
+					state.row = row;
+					state.block = count - 1;
+				}
 			}
 			self.translation = Some(state);
 		}
