@@ -9,6 +9,7 @@ pub mod abi;
 pub mod ass_tags;
 pub mod audio_timing;
 pub mod layout;
+mod timing_processor;
 pub mod visual_geom;
 mod video_metadata;
 mod spelling;

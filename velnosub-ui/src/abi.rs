@@ -1515,7 +1515,6 @@ extern "C" fn audio_cancelled(state: *const std::ffi::c_void) -> c_int {
 }
 
 struct LuaScript {
-	path: String,
 	source: CString,
 	names: Vec<String>,
 	#[cfg(target_os = "android")]
@@ -1543,6 +1542,13 @@ struct Translation {
 	drafts: std::collections::BTreeMap<(usize, usize), String>,
 }
 
+struct TimingProcessor {
+	revision: u64,
+	styles: std::collections::BTreeMap<String, bool>,
+	selected_only: bool,
+	options: crate::timing_processor::Options,
+}
+
 pub struct GridApp {
 	multi_select: bool,
 	marked_rows: std::collections::BTreeSet<usize>,
@@ -1552,7 +1558,7 @@ pub struct GridApp {
 	dictionary_words: Option<String>,
 	dictionary: Option<spellbook::Dictionary>,
 	misspelling: Option<Misspelling>,
-	lua_script: Option<LuaScript>,
+	lua_scripts: std::collections::BTreeMap<String, LuaScript>,
 	macro_form: Option<MacroForm>,
 	#[cfg(target_os = "android")]
 	macro_export: Option<MacroExport>,
@@ -1613,6 +1619,7 @@ pub struct GridApp {
 	shift_win: bool,
 	shift_ms: i32,
 	shift_tum: bool,
+	timing_processor: Option<TimingProcessor>,
 	// P8.1: tam stil yöneticisi penceresi + seçili stil
 	stil_win: bool,
 	stil_sec: usize,
@@ -1764,7 +1771,7 @@ impl GridApp {
 			dictionary_words: None,
 			dictionary: None,
 			misspelling: None,
-			lua_script: None,
+			lua_scripts: Default::default(),
 			macro_form: None,
 			#[cfg(target_os = "android")]
 			macro_export: None,
@@ -1807,6 +1814,7 @@ impl GridApp {
 			shift_win: false,
 			shift_ms: 1000,
 			shift_tum: true,
+			timing_processor: None,
 			stil_win: false,
 			stil_sec: 0,
 			ozellik_win: false,
@@ -2131,7 +2139,7 @@ impl GridApp {
 		let selected = egui::Window::new("Komut paleti").open(&mut open).show(ctx, |ui| {
 			ui.text_edit_singleline(&mut query);
 			let terms = query.to_lowercase();
-			let commands: [(&str, fn(&mut Self)); 14] = [
+			let commands: [(&str, fn(&mut Self)); 15] = [
 				("Yeni altyazı", Self::request_new_document),
 				("Altyazı aç", |app| app.tarayici_ac(SecimTur::Altyazi)),
 				("Video aç", |app| app.tarayici_ac(SecimTur::Video)),
@@ -2143,6 +2151,7 @@ impl GridApp {
 				("Çeviri asistanı", Self::open_translation),
 				("Yazım denetimi", |app| app.spelling_open = true),
 				("Zaman kaydır", |app| app.shift_win = true),
+				("Zamanlamayı düzelt", Self::open_timing_processor),
 				("Stil yöneticisi", |app| app.stil_win = true),
 				("Otomasyon", |app| app.lua_window = true),
 				("Yazı tipi ekle", |app| app.tarayici_ac(SecimTur::Font)),
@@ -2201,7 +2210,7 @@ impl GridApp {
 				String::from_utf8_lossy(&buf[..length as usize]).lines().map(str::to_owned).collect()
 			};
 			Ok(LuaScript {
-				path: path.to_owned(), source, names,
+				source, names,
 				#[cfg(target_os = "android")]
 				filters,
 			})
@@ -2209,7 +2218,7 @@ impl GridApp {
 		match result {
 			Ok(script) => {
 				self.note = format!("{} makro yüklendi", script.names.len());
-				self.lua_script = Some(script);
+				self.lua_scripts.insert(path.to_owned(), script);
 			}
 			Err(error) => self.note = format!("Script yüklenemedi: {error}"),
 		}
@@ -2217,9 +2226,17 @@ impl GridApp {
 	}
 
 	fn lua_yonet(&mut self, ctx: &egui::Context) {
+		enum Action {
+			Macro(String, CString, String),
+			#[cfg(target_os = "android")]
+			Filter(CString, String),
+			Reload(String),
+			Remove(String),
+		}
 		let mut open = self.lua_window;
 		if !open { return; }
-		egui::Window::new("Otomasyon").open(&mut open).show(ctx, |ui| {
+		let mut action = None;
+		egui::Window::new("Otomasyon").open(&mut open).vscroll(true).show(ctx, |ui| {
 			if ui.button("Lua / MoonScript dosyası aç…").clicked() {
 				self.tarayici_ac(SecimTur::Lua);
 			}
@@ -2236,40 +2253,42 @@ impl GridApp {
 				self.filtreli_disari_aktar(&script, "Karaoke template");
 			}
 
-			if let Some(script) = &self.lua_script {
-				let path = script.path.clone();
-				let mut selected = None;
-				ui.separator();
-				for name in &script.names {
-					if ui.button(name).clicked() {
-						selected = Some(name.clone());
+			for (path, script) in &self.lua_scripts {
+				let display = std::path::Path::new(path).file_name()
+					.and_then(|name| name.to_str()).unwrap_or(path);
+				egui::CollapsingHeader::new(display).id_salt(path).default_open(true).show(ui, |ui| {
+					for name in &script.names {
+						if ui.button(name).clicked() {
+							action = Some(Action::Macro(path.clone(), script.source.clone(), name.clone()));
+						}
 					}
-				}
-				#[cfg(target_os = "android")]
-				let filter = script.filters.iter().find(|name| {
-					ui.button(format!("{name} ile ASS dışa aktar…")).clicked()
-				}).cloned();
-
-				if let Some(name) = selected {
-					let source = self.lua_script.as_ref().unwrap().source.clone();
-					self.makro_calistir(&source, &name, Some(&path));
-				}
-				#[cfg(target_os = "android")]
-				if let Some(filter) = filter {
-					let source = self.lua_script.as_ref().unwrap().source.clone();
-					self.filtreli_disari_aktar(&source, &filter);
-				}
-
-				if ui.button("Yeniden yükle").clicked() {
-					self.lua_yukle(&path);
-				}
-				if ui.button("Scripti kaldır").clicked() {
-					self.lua_script = None;
-				}
+					#[cfg(target_os = "android")]
+					for filter in &script.filters {
+						if ui.button(format!("{filter} ile ASS dışa aktar…")).clicked() {
+							action = Some(Action::Filter(script.source.clone(), filter.clone()));
+						}
+					}
+					ui.horizontal_wrapped(|ui| {
+						if ui.button("Yeniden yükle").clicked() {
+							action = Some(Action::Reload(path.clone()));
+						}
+						if ui.button("Scripti kaldır").clicked() {
+							action = Some(Action::Remove(path.clone()));
+						}
+					});
+				});
 			}
 			ui.label(&self.note);
 		});
 		self.lua_window = open;
+		match action {
+			Some(Action::Macro(path, source, name)) => self.makro_calistir(&source, &name, Some(&path)),
+			#[cfg(target_os = "android")]
+			Some(Action::Filter(source, filter)) => self.filtreli_disari_aktar(&source, &filter),
+			Some(Action::Reload(path)) => self.lua_yukle(&path),
+			Some(Action::Remove(path)) => { self.lua_scripts.remove(&path); }
+			None => {}
+		}
 	}
 
 	fn makro_uygula(&mut self) {
@@ -2645,6 +2664,91 @@ impl GridApp {
 		});
 	}
 
+	fn open_timing_processor(&mut self) {
+		let styles = self.rows.iter().filter(|row| !row.yorum)
+			.map(|row| (row.stil.clone(), true)).collect();
+		self.timing_processor = Some(TimingProcessor {
+			revision: self.current_revision,
+			styles,
+			selected_only: false,
+			options: crate::timing_processor::Options { bias: 50, ..Default::default() },
+		});
+	}
+
+	fn timing_processor_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.timing_processor.take() else { return };
+		if self.current_revision != state.revision { return; }
+		let mut open = true;
+		let mut apply = false;
+		egui::Window::new("Zamanlamayı düzelt").open(&mut open).vscroll(true).show(ctx, |ui| {
+			ui.checkbox(&mut state.selected_only, "Yalnız seçili satırlar");
+			ui.label("Uygulanacak stiller");
+			ui.horizontal_wrapped(|ui| {
+				for (style, enabled) in &mut state.styles {
+					ui.checkbox(enabled, style.as_str());
+				}
+			});
+			let options = &mut state.options;
+			let field = |ui: &mut egui::Ui, label: &str, value: &mut i64| {
+				ui.horizontal(|ui| {
+					ui.label(label);
+					ui.add(egui::DragValue::new(value).range(0..=60_000).suffix(" ms"));
+				});
+			};
+			field(ui, "Başlangıcı uzat", &mut options.lead_in);
+			field(ui, "Bitişi uzat", &mut options.lead_out);
+			field(ui, "Kapatılacak boşluk", &mut options.gap);
+			field(ui, "Düzeltilecek çakışma", &mut options.overlap);
+			ui.add(egui::Slider::new(&mut options.bias, 0..=100).text("Birleşim konumu (%)"));
+			ui.add_enabled_ui(self.video.as_ref().is_some_and(|video| !video.keyframes().is_empty()), |ui| {
+				ui.label("Ana kareye oturtma");
+				field(ui, "Başlangıç ana kareden önce", &mut options.start_before_key);
+				field(ui, "Başlangıç ana kareden sonra", &mut options.start_after_key);
+				field(ui, "Bitiş ana kareden önce", &mut options.end_before_key);
+				field(ui, "Bitiş ana kareden sonra", &mut options.end_after_key);
+			});
+			apply = ui.add_enabled(state.styles.values().any(|&enabled| enabled), egui::Button::new("Uygula")).clicked();
+		});
+		if apply {
+			self.apply_timing_processor(&state);
+		} else if open {
+			self.timing_processor = Some(state);
+		}
+	}
+
+	fn apply_timing_processor(&mut self, state: &TimingProcessor) {
+		let indices = if state.selected_only { self.selected_rows() } else { (0..self.rows.len()).collect() };
+		let mut lines = Vec::new();
+		for index in indices {
+			let row = &self.rows[index];
+			if row.yorum || !state.styles.get(&row.stil).copied().unwrap_or(false) { continue; }
+			let (Ok(start), Ok(end)) = (ass_ms(&row.bas), ass_ms(&row.son)) else {
+				self.note = format!("{} numaralı satırın zamanı geçersiz", index + 1);
+				return;
+			};
+			if end < start {
+				self.note = format!("{} numaralı satırın bitişi başlangıcından önce", index + 1);
+				return;
+			}
+			lines.push((index, [start, end]));
+		}
+		let original: std::collections::BTreeMap<_, _> = lines.iter().copied().collect();
+		let keys: Vec<i64> = self.video.as_ref().map(|video| {
+			video.keyframes().iter().map(|&frame| i64::from(video.kare_zamani(frame))).collect()
+		}).unwrap_or_default();
+		crate::timing_processor::process(&mut lines, state.options, &keys);
+		let changes: std::collections::BTreeMap<_, _> = lines.into_iter()
+			.filter(|(index, times)| original[index] != *times).collect();
+		if changes.is_empty() {
+			self.note = "Düzeltilecek zaman bulunamadı".into();
+			return;
+		}
+		self.apply_row_batch(changes.keys().copied().collect(), "Zamanlama düzeltildi", |handle, row| {
+			let [start, end] = changes[&row];
+			times_set(handle, row, start, end)
+		});
+	}
+
 	// ---------------- P5.4 gece: paylaşımlı diyalog pencereleri ---------
 	// masaüstü + mobil aynı; Ayarlar penceresi de buraya taşındı
 	/// P5.5: tarayıcıyı istenen türle açar
@@ -2805,6 +2909,7 @@ impl GridApp {
 
 	fn diyaloglar(&mut self, ui: &mut egui::Ui) {
 		self.tarayici_pencere(ui);
+		self.timing_processor_window(ui.ctx());
 		if self.ara_win {
 			let mut ap = self.ara_win;
 			egui::Window::new("Ara-Bul")
@@ -7586,6 +7691,10 @@ impl GridApp {
 				}
 			});
 			mb.menu_button("Timing", |m| {
+				if m.button("Zamanlamayı düzelt…").clicked() {
+					self.open_timing_processor();
+					m.close();
+				}
 				if m
 					.button(format!("{} Zaman kaydır…", ikon::LAYERS))
 					.clicked()
