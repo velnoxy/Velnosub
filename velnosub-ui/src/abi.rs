@@ -2068,10 +2068,27 @@ impl GridApp {
 
 	fn translation_blocks(&self, row: usize) -> Vec<std::ops::Range<usize>> {
 		let Some(row) = self.rows.get(row).filter(|row| !row.yorum) else { return Vec::new() };
-		if self.belge_bicimi() == "srt" && !row.text.trim().is_empty() {
-			return std::iter::once(0..row.text.len()).collect();
-		}
 		crate::ass_tags::translation_ranges(&row.text)
+	}
+
+	fn apply_translation(&mut self, state: &Translation) -> bool {
+		if state.revision != self.current_revision { return false; }
+		let mut translated = std::collections::BTreeMap::new();
+		let mut block_ranges = Vec::new();
+		let mut previous = None;
+		for (&(row, block), value) in state.drafts.iter().rev() {
+			if previous != Some(row) {
+				block_ranges = self.translation_blocks(row);
+				previous = Some(row);
+			}
+			let line = translated.entry(row).or_insert_with(|| self.rows[row].text.clone());
+			let text = value.replace("\r\n", "\\N").replace(['\r', '\n'], "\\N");
+			line.replace_range(block_ranges[block].clone(), &text);
+		}
+		let rows = translated.keys().copied().collect();
+		self.apply_row_batch(rows, "Çeviri uygulandı", |handle, row| {
+			edit_line(handle, row, &translated[&row])
+		})
 	}
 
 	fn translation_window(&mut self, ctx: &egui::Context) {
@@ -2090,7 +2107,11 @@ impl GridApp {
 			ui.label(format!("Satır {} / {} · Metin {} / {}", state.row + 1, self.rows.len(), state.block + 1, blocks.len()));
 			ui.label(source);
 			if ui.add(TextEdit::multiline(&mut draft).hint_text("Çeviriyi yaz")).changed() {
-				state.drafts.insert(key, draft.clone());
+				if draft == source {
+					state.drafts.remove(&key);
+				} else {
+					state.drafts.insert(key, draft.clone());
+				}
 			}
 			ui.horizontal_wrapped(|ui| {
 				if ui.add_enabled(state.row > 0 || state.block > 0, egui::Button::new("Önceki")).clicked() { step = -1; }
@@ -2103,22 +2124,7 @@ impl GridApp {
 			});
 		});
 		if apply {
-			let mut translated = std::collections::BTreeMap::new();
-			let mut block_ranges = Vec::new();
-			let mut previous = None;
-			for (&(row, block), value) in state.drafts.iter().rev() {
-				if previous != Some(row) {
-					block_ranges = self.translation_blocks(row);
-					previous = Some(row);
-				}
-				let line = translated.entry(row).or_insert_with(|| self.rows[row].text.clone());
-				let text = value.replace("\r\n", "\\N").replace(['\r', '\n'], "\\N");
-				line.replace_range(block_ranges[block].clone(), &text);
-			}
-			let rows = translated.keys().copied().collect();
-			if !self.apply_row_batch(rows, "Çeviri uygulandı", |handle, row| {
-				edit_line(handle, row, &translated[&row])
-			}) {
+			if !self.apply_translation(&state) {
 				self.translation = Some(state);
 			}
 		} else if !cancel {
@@ -8507,10 +8513,17 @@ mod tests {
 		assert_eq!(app.rows[0].text, "satır 29");
 		assert_eq!(app.rows[0].kenarlar, margins);
 		let srt = cik.join("ornek.srt");
-		std::fs::write(&srt, "1\n00:00:00,500 --> 00:00:01,000\nİlk satır\n\n").unwrap();
+		std::fs::write(&srt, "1\n00:00:00,500 --> 00:00:01,000\n<i>İlk</i> satır\n\n").unwrap();
 		app.load(srt.to_str().unwrap()).unwrap();
 		assert_eq!(app.belge_bicimi(), "srt");
-		assert_eq!(app.rows[0].text, "İlk satır");
+		let original = app.rows[0].text.clone();
+		app.open_translation();
+		let mut translation = app.translation.take().unwrap();
+		translation.drafts.insert((0, 0), "First".into());
+		assert!(app.apply_translation(&translation), "{}", app.note);
+		assert_eq!(app.rows[0].text, r"{\i1}First{\i} satır");
+		app.geri_al();
+		assert_eq!(app.rows[0].text, original);
 		assert!(app.an_tut(None));
 		edit_line(app.handle.unwrap(), 0, "SRT düzenlendi").unwrap();
 		let srt_cik = cik.join("duzenlenen.srt");
