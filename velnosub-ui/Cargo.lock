@@ -3398,6 +3398,7 @@ dependencies = [
  "cc",
  "eframe",
  "spellbook",
+ "unicode-segmentation",
  "winit",
 ]
 

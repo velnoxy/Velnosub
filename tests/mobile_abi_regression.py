@@ -297,6 +297,52 @@ def test_resolution_resample(abi, workdir):
         abi.velnosub_abi_close(original)
 
 
+def test_karaoke_timing(abi, workdir):
+    document = abi.velnosub_abi_open(bytes(SEED / "karaskel-dene.ass"))
+    assert document >= 0, abi.velnosub_abi_last_error()
+    try:
+        size = abi.velnosub_abi_karaoke_read(document, 0, None, 0)
+        assert size > 0, abi.velnosub_abi_last_error()
+        data = ctypes.create_string_buffer(size + 1)
+        assert abi.velnosub_abi_karaoke_read(document, 0, data, len(data)) == size
+        assert data.value.splitlines()[0] == b"1000\t300\tka"
+        source_length, target_length = ctypes.c_int(), ctypes.c_int()
+        assert abi.velnosub_abi_kanji_match(document, 0, 0, "からおけ".encode(),
+            ctypes.byref(source_length), ctypes.byref(target_length)) == 0, abi.velnosub_abi_last_error()
+        assert (source_length.value, target_length.value) == (1, 1)
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 3, 1, 900) < 0
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 3, 1, 1400) == 0
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 1, 0, 1) == 0
+        output = workdir / "karaoke-split.ass"
+        assert abi.velnosub_abi_save(document, bytes(output)) == 0
+        assert rb"{\k20}k{\k20}a{\kf10}ra" in output.read_bytes()
+        assert abi.velnosub_abi_karaoke_edit(document, 0, 2, 1, 0) == 0
+        assert abi.velnosub_abi_save(document, bytes(output)) == 0
+        assert rb"{\k40}ka{\kf10}ra" in output.read_bytes()
+    finally:
+        abi.velnosub_abi_close(document)
+
+
+def test_style_catalog(abi, workdir):
+    source = abi.velnosub_abi_open(bytes(SEED / "karaskel-dene.ass"))
+    assert source >= 0, abi.velnosub_abi_last_error()
+    target = abi.velnosub_abi_new_document()
+    assert target >= 0, abi.velnosub_abi_last_error()
+    try:
+        catalog = workdir / "catalog" / "series.sty"
+        assert abi.velnosub_abi_catalog_store(source, 1, bytes(catalog)) == 0, abi.velnosub_abi_last_error()
+        assert abi.velnosub_abi_catalog_store(source, 1, bytes(catalog)) == 0
+        assert catalog.read_bytes().count(b"Style: Kara,") == 1
+        assert abi.velnosub_abi_catalog_import(target, bytes(catalog)) == 0, abi.velnosub_abi_last_error()
+        assert abi.velnosub_abi_style_count(target) == 2
+        output = workdir / "catalog-import.ass"
+        assert abi.velnosub_abi_save(target, bytes(output)) == 0
+        assert b"Style: Kara,Arial,24," in output.read_bytes()
+    finally:
+        abi.velnosub_abi_close(target)
+        abi.velnosub_abi_close(source)
+
+
 def main():
     os.environ["VELNOSUB_AEGIINC"] = str(INCLUDES)
     os.environ["VELNOSUB_DATA_DIR"] = str(INCLUDES)
@@ -311,6 +357,8 @@ def main():
         test_automation_and_fonts(abi, workdir)
         test_interactive_macro(abi, workdir)
         test_resolution_resample(abi, workdir)
+        test_karaoke_timing(abi, workdir)
+        test_style_catalog(abi, workdir)
     print("Mobile ABI regressions passed")
 
 

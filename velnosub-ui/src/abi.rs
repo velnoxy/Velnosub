@@ -151,6 +151,12 @@ extern "C" {
 		h: c_int, out_w: *mut c_int, out_h: *mut c_int,
 	) -> c_int;
 	fn velnosub_abi_resample(h: c_int, width: c_int, height: c_int, aspect_mode: c_int) -> c_int;
+	fn velnosub_abi_karaoke_read(h: c_int, row: c_int, out: *mut c_char, capacity: c_int) -> c_int;
+	fn velnosub_abi_karaoke_edit(h: c_int, row: c_int, operation: c_int, index: c_int, value: c_int) -> c_int;
+	fn velnosub_abi_catalog_store(h: c_int, index: c_int, path: *const c_char) -> c_int;
+	fn velnosub_abi_catalog_import(h: c_int, path: *const c_char) -> c_int;
+	fn velnosub_abi_kanji_match(h: c_int, row: c_int, offset: c_int, destination: *const c_char,
+		source_length: *mut c_int, destination_length: *mut c_int) -> c_int;
 	fn velnosub_abi_render_line(
 		h: c_int, idx: c_int, ms: c_int, buf: *mut u8, buflen: c_int,
 	) -> c_int;
@@ -1558,6 +1564,34 @@ struct ResampleDialog {
 	aspect_mode: i32,
 }
 
+struct Syllable {
+	start: i32,
+	end: i32,
+	text: String,
+}
+
+struct KaraokeDialog {
+	row: usize,
+	revision: u64,
+	syllables: Vec<Syllable>,
+	selected: usize,
+	boundary: i32,
+	split_at: usize,
+	drag_boundary: bool,
+	peaks: Option<(Vec<i16>, Vec<i16>)>,
+}
+
+struct KanjiDialog {
+	revision: u64,
+	source_row: usize,
+	target_row: usize,
+	source: Vec<Syllable>,
+	target: Vec<String>,
+	matches: Vec<(usize, usize)>,
+	source_count: usize,
+	target_count: usize,
+}
+
 pub struct GridApp {
 	multi_select: bool,
 	marked_rows: std::collections::BTreeSet<usize>,
@@ -1630,9 +1664,12 @@ pub struct GridApp {
 	shift_tum: bool,
 	timing_processor: Option<TimingProcessor>,
 	resample_dialog: Option<ResampleDialog>,
+	karaoke_dialog: Option<KaraokeDialog>,
+	kanji_dialog: Option<KanjiDialog>,
 	// P8.1: tam stil yöneticisi penceresi + seçili stil
 	stil_win: bool,
 	stil_sec: usize,
+	catalog_name: String,
 	// P8.1: dosya özellikleri (Aegisub File → Properties portu)
 	ozellik_win: bool,
 }
@@ -1826,8 +1863,11 @@ impl GridApp {
 			shift_tum: true,
 			timing_processor: None,
 			resample_dialog: None,
+			karaoke_dialog: None,
+			kanji_dialog: None,
 			stil_win: false,
 			stil_sec: 0,
+			catalog_name: "Varsayılan".into(),
 			ozellik_win: false,
 			aktif: Sekme::Altyazi,
 			ayar_win: false,
@@ -2156,7 +2196,7 @@ impl GridApp {
 		let selected = egui::Window::new("Komut paleti").open(&mut open).show(ctx, |ui| {
 			ui.text_edit_singleline(&mut query);
 			let terms = query.to_lowercase();
-			let commands: [(&str, fn(&mut Self)); 16] = [
+			let commands: [(&str, fn(&mut Self)); 18] = [
 				("Yeni altyazı", Self::request_new_document),
 				("Altyazı aç", |app| app.tarayici_ac(SecimTur::Altyazi)),
 				("Video aç", |app| app.tarayici_ac(SecimTur::Video)),
@@ -2169,6 +2209,8 @@ impl GridApp {
 				("Yazım denetimi", |app| app.spelling_open = true),
 				("Zaman kaydır", |app| app.shift_win = true),
 				("Zamanlamayı düzelt", Self::open_timing_processor),
+				("Karaoke zamanlaması", Self::open_karaoke_dialog),
+				("Kanji zaman aktarımı", Self::open_kanji_dialog),
 				("ASS çözünürlüğünü uyarla", Self::open_resample_dialog),
 				("Stil yöneticisi", |app| app.stil_win = true),
 				("Otomasyon", |app| app.lua_window = true),
@@ -2702,6 +2744,269 @@ impl GridApp {
 		});
 	}
 
+	fn read_karaoke(&self, row: usize, selected: usize) -> Result<KaraokeDialog, String> {
+		let handle = self.handle.ok_or("Önce bir altyazı aç")?;
+		let len = unsafe { velnosub_abi_karaoke_read(handle, row as c_int, std::ptr::null_mut(), 0) };
+		if len < 0 { return Err(last_error()); }
+		let mut data = vec![0u8; len as usize + 1];
+		let read = unsafe { velnosub_abi_karaoke_read(handle, row as c_int, data.as_mut_ptr().cast(), len + 1) };
+		if read != len { return Err(last_error()); }
+		let text = std::str::from_utf8(&data[..len as usize]).map_err(|error| error.to_string())?;
+		let syllables = text.lines().map(|line| {
+			let mut fields = line.splitn(3, '\t');
+			let start: i32 = fields.next()?.parse().ok()?;
+			let duration: i32 = fields.next()?.parse().ok()?;
+			let text = fields.next()?.to_owned();
+			Some(Syllable { start, end: start.checked_add(duration)?, text })
+		}).collect::<Option<Vec<_>>>().ok_or("Hece zamanları okunamadı")?;
+		let line_start = syllables.first().ok_or("Hece bulunamadı")?.start;
+		let line_end = syllables.last().unwrap().end;
+		let peaks = self.audio.as_ref().and_then(|audio| {
+			let start = ms_ornek(i64::from(line_start), audio.rate);
+			let end = ms_ornek(i64::from(line_end), audio.rate).min(audio.toplam);
+			audio_peaks_cek(audio.handle, start, end - start, 240).ok()
+		});
+		let selected = selected.min(syllables.len() - 1);
+		let boundary = syllables[selected].start;
+		Ok(KaraokeDialog {
+			row, revision: self.current_revision, syllables, selected, boundary,
+			split_at: 1, drag_boundary: false, peaks,
+		})
+	}
+
+	fn open_karaoke_dialog(&mut self) {
+		let Some(row) = self.secili else { return };
+		if self.belge_bicimi() == "srt" {
+			self.note = "Karaoke etiketleri için altyazıyı ASS olarak aç".into();
+			return;
+		}
+		match self.read_karaoke(row, 0) {
+			Ok(state) => self.karaoke_dialog = Some(state),
+			Err(error) => self.note = error,
+		}
+	}
+
+	fn karaoke_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.karaoke_dialog.take() else { return };
+		if state.revision != self.current_revision { return; }
+		let mut open = true;
+		let mut action = None;
+		let mut play = false;
+		egui::Window::new("Karaoke zamanlaması").open(&mut open).default_width(360.0).vscroll(true).show(ctx, |ui| {
+			ui.label(format!("Satır {}", state.row + 1));
+			let start = state.syllables[0].start;
+			let end = state.syllables.last().unwrap().end;
+			let duration = (end - start).max(1) as f32;
+			let (response, painter) = ui.allocate_painter(egui::vec2(ui.available_width(), 92.0), egui::Sense::click_and_drag());
+			let rect = response.rect;
+			let x_at = |time: i32| rect.left() + (time - start) as f32 / duration * rect.width();
+			painter.rect_filled(rect, 4, ui.visuals().extreme_bg_color);
+			if let Some((lows, highs)) = &state.peaks {
+				for (index, (&low, &high)) in lows.iter().zip(highs).enumerate() {
+					let x = rect.left() + index as f32 * rect.width() / lows.len() as f32;
+					let y = |value: i16| rect.center().y - f32::from(value) / 32768.0 * rect.height() * 0.45;
+					painter.line_segment([egui::pos2(x, y(low)), egui::pos2(x, y(high))], ui.visuals().widgets.inactive.fg_stroke);
+				}
+			}
+			if let Some(pointer) = response.interact_pointer_pos() {
+				let fraction = ((pointer.x - rect.left()) / rect.width().max(1.0)).clamp(0.0, 1.0);
+				let ms = start + (fraction * duration).round() as i32;
+				if response.drag_started() {
+					state.drag_boundary = false;
+					if let Some((index, nearest)) = state.syllables.iter().enumerate().skip(1)
+						.min_by_key(|(_, syllable)| syllable.start.abs_diff(ms))
+					{
+						if (x_at(nearest.start) - pointer.x).abs() <= 24.0 {
+							state.selected = index;
+							state.split_at = 1;
+							state.drag_boundary = true;
+						}
+					}
+				}
+				if response.dragged() && state.drag_boundary {
+					let maximum = state.syllables[state.selected].end;
+					let minimum = state.syllables[state.selected - 1].start;
+					state.boundary = (((ms + 5) / 10) * 10).clamp(minimum, maximum);
+				}
+			}
+			if response.drag_stopped() {
+				state.drag_boundary = false;
+			}
+			for (index, syllable) in state.syllables.iter().enumerate() {
+				let x = x_at(if index == state.selected { state.boundary } else { syllable.start });
+				let stroke = if index == state.selected {
+					egui::Stroke::new(3.0, ui.visuals().selection.bg_fill)
+				} else { ui.visuals().widgets.active.fg_stroke };
+				painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], stroke);
+			}
+			ui.horizontal_wrapped(|ui| {
+				for (index, syllable) in state.syllables.iter().enumerate() {
+					if ui.selectable_label(index == state.selected, format!("{} · {} ms", syllable.text, syllable.end - syllable.start)).clicked() {
+						state.selected = index;
+						state.boundary = syllable.start;
+						state.split_at = 1;
+					}
+				}
+			});
+			let selected = &state.syllables[state.selected];
+			let chars = selected.text.chars().count();
+			if state.selected > 0 {
+				ui.horizontal_wrapped(|ui| {
+					ui.label("Hece başlangıcı");
+					ui.add(egui::DragValue::new(&mut state.boundary)
+						.range(state.syllables[state.selected - 1].start..=selected.end).suffix(" ms"));
+					if ui.add_enabled(state.boundary != selected.start, egui::Button::new("Sınırı uygula")).clicked() {
+						action = Some((3, state.boundary));
+					}
+				});
+			}
+			ui.horizontal_wrapped(|ui| {
+				play = ui.add_enabled(self.audio.is_some(), egui::Button::new("Heceyi oynat")).clicked();
+				if chars > 1 {
+					ui.add(egui::DragValue::new(&mut state.split_at).range(1..=chars - 1));
+					if ui.button("Karakterden sonra böl").clicked() {
+						let byte = selected.text.char_indices().nth(state.split_at).unwrap().0;
+						action = Some((1, byte as i32));
+					}
+				}
+				if ui.add_enabled(state.selected > 0, egui::Button::new("Öncekiyle birleştir")).clicked() {
+					action = Some((2, 0));
+				}
+				if ui.add_enabled(state.syllables.len() == 1, egui::Button::new("Sözcüklere böl")).clicked() {
+					action = Some((0, 0));
+				}
+			});
+		});
+		if play {
+			if let Some(mut audio) = self.audio.take() {
+				let part = &state.syllables[state.selected];
+				let start = ms_ornek(i64::from(part.start), audio.rate);
+				let end = ms_ornek(i64::from(part.end), audio.rate);
+				self.stop_timeline_playback();
+				self.ses_oynat(&mut audio, start, end - start);
+				self.audio = Some(audio);
+			}
+		}
+		if let Some((operation, value)) = action {
+			let KaraokeDialog { row, selected, .. } = state;
+			self.apply_document_edit("Karaoke zamanlaması güncellendi", |draft| {
+				if unsafe { velnosub_abi_karaoke_edit(draft, row as c_int, operation, selected as c_int, value) } == 0 {
+					Ok(())
+				} else { Err(last_error()) }
+			});
+			if let Ok(updated) = self.read_karaoke(row, selected) {
+				state = updated;
+			}
+		}
+		if open { self.karaoke_dialog = Some(state); }
+	}
+
+	fn open_kanji_dialog(&mut self) {
+		use unicode_segmentation::UnicodeSegmentation;
+		let Some(target_row) = self.secili.filter(|_| self.rows.len() > 1) else {
+			self.note = "Kaynak ve hedef için iki diyalog satırı gerekli".into();
+			return;
+		};
+		let target = &self.rows[target_row];
+		if self.belge_bicimi() == "srt" || target.yorum ||
+			target.text.contains(['{', '}']) || target.text.trim().is_empty() {
+			self.note = "Hedef olarak etiketsiz, boş olmayan bir ASS diyalogu seç".into();
+			return;
+		}
+		let source_row = if target_row == 0 { 1 } else { target_row - 1 };
+		self.kanji_dialog = Some(KanjiDialog {
+			revision: self.current_revision, source_row, target_row,
+			source: Vec::new(), target: target.text.graphemes(true).map(str::to_owned).collect(),
+			matches: Vec::new(), source_count: 1, target_count: 1,
+		});
+	}
+
+	fn kanji_window(&mut self, ctx: &egui::Context) {
+		let Some(mut state) = self.kanji_dialog.take() else { return };
+		if self.current_revision != state.revision { return; }
+		let mut open = true;
+		let mut apply = false;
+		egui::Window::new("Kanji zaman aktarımı").open(&mut open)
+			.default_width(360.0).vscroll(true).show(ctx, |ui| {
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Kaynak satır");
+				let mut row = state.source_row + 1;
+				if ui.add(egui::DragValue::new(&mut row).range(1..=self.rows.len())).changed() {
+					state.source_row = row - 1;
+					state.source.clear();
+					state.matches.clear();
+				}
+				if ui.add_enabled(state.source_row != state.target_row, egui::Button::new("Hece zamanlarını yükle")).clicked() {
+					match self.read_karaoke(state.source_row, 0) {
+						Ok(source) => {
+							state.source = source.syllables;
+							state.matches.clear();
+							state.source_count = 1;
+							state.target_count = 1;
+						}
+						Err(error) => self.note = error,
+					}
+				}
+			});
+			if state.source.is_empty() { return; }
+			let (source, target) = state.matches.iter().fold((0, 0), |(a, b), (c, d)| (a + c, b + d));
+			let remaining_source = state.source.len() - source;
+			let remaining_target = state.target.len() - target;
+			state.source_count = state.source_count.min(remaining_source);
+			state.target_count = state.target_count.min(remaining_target);
+			ui.label(format!("Hedef satır {} · {} / {} karakter", state.target_row + 1, target, state.target.len()));
+			ui.label(state.source[source..].iter().map(|part| part.text.as_str()).collect::<Vec<_>>().join(" · "));
+			ui.label(state.target[target..].concat());
+			ui.horizontal_wrapped(|ui| {
+				ui.label("Kaynak hece");
+				ui.add(egui::DragValue::new(&mut state.source_count).range(0..=remaining_source));
+				ui.label("Hedef karakter");
+				ui.add(egui::DragValue::new(&mut state.target_count).range(0..=remaining_target));
+			});
+			ui.horizontal_wrapped(|ui| {
+				if ui.add_enabled(remaining_source > 0 && remaining_target > 0, egui::Button::new("Otomatik eşleştir")).clicked() {
+					if let (Some(h), Ok(suffix)) = (self.handle, CString::new(state.target[target..].concat())) {
+						let (mut source_length, mut target_length) = (0, 0);
+						if unsafe { velnosub_abi_kanji_match(h, state.source_row as c_int, source as c_int, suffix.as_ptr(),
+							&mut source_length, &mut target_length) } == 0 {
+							state.source_count = (source_length as usize).min(remaining_source);
+							state.target_count = (target_length as usize).min(remaining_target);
+						} else { self.note = last_error(); }
+					}
+				}
+				if ui.add_enabled(state.source_count + state.target_count > 0, egui::Button::new("Eşleştir")).clicked() {
+					state.matches.push((state.source_count, state.target_count));
+					state.source_count = 1;
+					state.target_count = 1;
+				}
+				if ui.add_enabled(!state.matches.is_empty(), egui::Button::new("Son eşleşmeyi geri al")).clicked() {
+					if let Some((a, b)) = state.matches.pop() {
+						state.source_count = a;
+						state.target_count = b;
+					}
+				}
+				apply = ui.add_enabled(remaining_source == 0 && remaining_target == 0, egui::Button::new("Hedefe uygula")).clicked();
+			});
+			ui.label(&self.note);
+		});
+		if apply {
+			let mut text = String::new();
+			let (mut source, mut target) = (0, 0);
+			for &(source_count, target_count) in &state.matches {
+				let duration: i64 = state.source[source..source + source_count].iter()
+					.map(|part| i64::from(part.end) - i64::from(part.start)).sum();
+				text.push_str(&format!("{{\\k{}}}", duration / 10));
+				text.push_str(&state.target[target..target + target_count].concat());
+				source += source_count;
+				target += target_count;
+			}
+			if self.apply_row_batch(vec![state.target_row], "Kanji zamanları aktarıldı", |handle, row| {
+				edit_line(handle, row, &text)
+			}) { return; }
+		}
+		if open { self.kanji_dialog = Some(state); }
+	}
+
 	fn timing_processor_window(&mut self, ctx: &egui::Context) {
 		let Some(mut state) = self.timing_processor.take() else { return };
 		if self.current_revision != state.revision { return; }
@@ -2937,6 +3242,8 @@ impl GridApp {
 	fn diyaloglar(&mut self, ui: &mut egui::Ui) {
 		self.tarayici_pencere(ui);
 		self.timing_processor_window(ui.ctx());
+		self.karaoke_window(ui.ctx());
+		self.kanji_window(ui.ctx());
 		self.resample_window(ui.ctx());
 		if self.ara_win {
 			let mut ap = self.ara_win;
@@ -3126,6 +3433,7 @@ impl GridApp {
 			.default_width(640.0)
 			.resizable(true)
 			.show(ui.ctx(), |su| {
+				self.style_catalog_controls(su, sec);
 				su.horizontal(|sat| {
 					sat.vertical(|v| {
 						v.set_min_width(170.0);
@@ -3512,6 +3820,65 @@ impl GridApp {
 		} else {
 			self.stil_sec = sec.min(self.stiller.len() - 1);
 		}
+	}
+
+	fn style_catalog_controls(&mut self, ui: &mut egui::Ui, style_index: usize) {
+		let style = self.stiller.get(style_index).map(|style| style.name.clone());
+		if ui.add_enabled(style.is_some() && !self.selected_rows().is_empty(),
+			egui::Button::new("Stili seçili altyazı satırlarına uygula")).clicked() {
+			if let Some(style) = style {
+				let rows = self.selected_rows().into_iter()
+					.filter(|&row| self.rows[row].stil != style).collect();
+				self.apply_row_batch(rows, "Stil uygulandı", |handle, row| {
+					meta_set(handle, row, Some(&style), None, None, None, None)
+				});
+			}
+		}
+		let path = ayar_yolu();
+		let root = std::path::Path::new(&path).parent().unwrap_or_else(|| std::path::Path::new("."))
+			.join("catalog");
+		ui.collapsing("Stil depoları", |ui| {
+			let saved = std::fs::read_dir(&root).ok().into_iter().flatten().flatten();
+			let mut names: Vec<_> = saved.filter_map(|entry| {
+				let path = entry.path();
+				if path.extension()?.to_str()? != "sty" { return None; }
+				path.file_stem()?.to_str().map(str::to_owned)
+			}).collect();
+			names.sort_unstable();
+			ui.horizontal_wrapped(|ui| {
+				egui::ComboBox::from_id_salt("style-catalog")
+					.selected_text(&self.catalog_name).show_ui(ui, |ui| {
+						for name in names {
+							ui.selectable_value(&mut self.catalog_name, name.clone(), name);
+						}
+					});
+				ui.add(TextEdit::singleline(&mut self.catalog_name).hint_text("Yeni depo adı")
+					.desired_width(120.0));
+			});
+			let name = self.catalog_name.trim();
+			let valid = !name.is_empty() && name.chars().count() <= 64
+				&& name.chars().all(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_'));
+			if !valid { return; }
+			let filename = root.join(format!("{name}.sty"));
+			let Ok(path) = CString::new(filename.as_os_str().as_encoded_bytes()) else { return };
+			ui.horizontal_wrapped(|ui| {
+				let store = ui.add_enabled(self.stiller.get(style_index).is_some(),
+					egui::Button::new("Seçili stili depoya kopyala")).clicked();
+				if let Some(handle) = self.handle.filter(|_| store) {
+					self.note = if unsafe { velnosub_abi_catalog_store(handle, style_index as c_int, path.as_ptr()) } == 0 {
+						"Stil depoya kopyalandı".into()
+					} else { last_error() };
+				}
+				if ui.add_enabled(filename.is_file(), egui::Button::new("Depodaki stilleri içe aktar")).clicked() {
+					if self.apply_document_edit("Depodaki stiller içe aktarıldı", |draft| {
+						if unsafe { velnosub_abi_catalog_import(draft, path.as_ptr()) } == 0 { Ok(()) }
+						else { Err(last_error()) }
+					}) {
+						self.load_styles();
+					}
+				}
+			});
+		});
 	}
 
 	/// P8.1: tek stil hücresini yaz + listeyi tazele.
@@ -7781,6 +8148,14 @@ impl GridApp {
 				}
 			});
 			mb.menu_button("Timing", |m| {
+				if m.button("Karaoke zamanlaması…").clicked() {
+					self.open_karaoke_dialog();
+					m.close();
+				}
+				if m.button("Kanji zaman aktarımı…").clicked() {
+					self.open_kanji_dialog();
+					m.close();
+				}
 				if m.button("Zamanlamayı düzelt…").clicked() {
 					self.open_timing_processor();
 					m.close();

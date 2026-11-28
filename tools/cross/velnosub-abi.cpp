@@ -14,7 +14,9 @@
 #include "ass_file.h"
 #include "ass_attachment.h"
 #include "ass_info.h"
+#include "ass_karaoke.h"
 #include "ass_style.h"
+#include "ass_style_storage.h"
 #include <ass/ass.h>
 #include <cstdio>
 #include <unistd.h>
@@ -39,11 +41,13 @@
 #include <libaegisub/exception.h>
 #include <libaegisub/fs.h>
 #include <libaegisub/log.h>
+#include <libaegisub/karaoke_matcher.h>
 #include <libaegisub/option.h>
 #include <libaegisub/path.h>
 #include <libaegisub/vfr.h>
 
 #include <algorithm>
+#include <boost/locale/generator.hpp>
 
 // P5.5: kutu-sesi — ffmpeg linki STATİK .a hattıdır (build-apk.sh 8. adım
 // sembol-kapanış denetimi build-time yakalar). DİKKAT: vendored ffmpeg
@@ -795,6 +799,97 @@ int velnosub_abi_edit_line(int h, int idx, const char *text) {
 	return -1;
 }
 
+static AssDialogue const& karaoke_line(AssFile const& file, int row) {
+	if (row < 0 || static_cast<size_t>(row) >= file.Events.size())
+		throw std::runtime_error("karaoke satırı bulunamadı");
+	auto const& line = *std::next(file.Events.begin(), row);
+	if (line.Comment || line.End <= line.Start)
+		throw std::runtime_error("karaoke için pozitif süreli bir diyalog satırı seç");
+	return line;
+}
+
+int velnosub_abi_karaoke_read(int h, int row, char *out, int capacity) {
+	try {
+		AssKaraoke karaoke(&karaoke_line(g_ctx.at(h)->file, row));
+		std::string data;
+		for (auto const& syllable : karaoke) {
+			data += std::to_string(syllable.start_time) + '\t';
+			data += std::to_string(syllable.duration) + '\t';
+			auto text = syllable.text;
+			std::replace(text.begin(), text.end(), '\n', ' ');
+			std::replace(text.begin(), text.end(), '\r', ' ');
+			data += text + '\n';
+		}
+		if (out && capacity > 0) {
+			auto copied = std::min(data.size(), static_cast<size_t>(capacity - 1));
+			std::memcpy(out, data.data(), copied);
+			out[copied] = '\0';
+		}
+		return static_cast<int>(data.size());
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_karaoke_edit(int h, int row, int operation, int index, int value) {
+	try {
+		auto &file = g_ctx.at(h)->file;
+		AssKaraoke karaoke(&karaoke_line(file, row), operation == 0);
+		if (operation != 0) {
+			if (index < 0 || static_cast<size_t>(index) >= karaoke.size())
+				throw std::runtime_error("hece bulunamadı");
+			auto selected = karaoke.begin() + index;
+			switch (operation) {
+				case 1:
+					if (value <= 0 || static_cast<size_t>(value) >= selected->text.size() ||
+					    (static_cast<unsigned char>(selected->text[value]) & 0xc0) == 0x80)
+						throw std::runtime_error("hece ayırma konumu geçersiz");
+					karaoke.AddSplit(index, value);
+					break;
+				case 2:
+					if (index == 0) throw std::runtime_error("ilk hece birleştirilemez");
+					karaoke.RemoveSplit(index);
+					break;
+				case 3:
+					if (index == 0 || value < (selected - 1)->start_time ||
+					    value > selected->start_time + selected->duration)
+						throw std::runtime_error("hece sınırı geçersiz");
+					karaoke.SetStartTime(index, value);
+					break;
+				default:
+					throw std::runtime_error("karaoke işlemi geçersiz");
+			}
+		}
+		return velnosub_core_edit_line_text(file, row, karaoke.GetText().c_str());
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_kanji_match(int h, int row, int offset, const char *destination,
+                            int *source_length, int *destination_length) {
+	try {
+		if (offset < 0 || !destination || !source_length || !destination_length)
+			throw std::runtime_error("eşleştirme girdisi geçersiz");
+		AssKaraoke karaoke(&karaoke_line(g_ctx.at(h)->file, row));
+		if (static_cast<size_t>(offset) > karaoke.size())
+			throw std::runtime_error("eşleştirilecek hece bulunamadı");
+		std::vector<std::string> source;
+		for (auto it = karaoke.begin() + offset; it != karaoke.end(); ++it)
+			source.push_back(it->text);
+		static auto const locale = boost::locale::generator().generate("ja_JP.UTF-8");
+		auto match = agi::auto_match_karaoke(source, destination, locale);
+		*source_length = static_cast<int>(match.source_length);
+		*destination_length = static_cast<int>(match.destination_length);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
 // ---- P4.5 omurgası: stil kolu (alan dizgesi + ölçü/ad düzenleme) -------
 
 // alan dizgesi ('|' ile ayrılmış 13 hane):
@@ -1231,6 +1326,44 @@ int velnosub_abi_resample(int h, int width, int height, int aspect_mode) {
 		settings.ar_mode = static_cast<ResampleARMode>(aspect_mode);
 		settings.source_matrix = settings.dest_matrix = MatrixFromString(file.GetScriptInfo("YCbCr Matrix"));
 		ResampleResolution(&file, settings);
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_catalog_store(int h, int index, const char *path) {
+	if (!path || !*path) { set_err("stil deposu yolu yok"); return -1; }
+	try {
+		auto const& styles = g_ctx.at(h)->file.Styles;
+		if (index < 0 || static_cast<size_t>(index) >= styles.size())
+			throw std::runtime_error("kaydedilecek stil bulunamadı");
+		auto const& source = *std::next(styles.begin(), index);
+		AssStyleStorage catalog;
+		catalog.Load(agi::fs::path(path));
+		if (auto existing = catalog.GetStyle(source.name))
+			*existing = source;
+		else
+			catalog.push_back(std::make_unique<AssStyle>(source));
+		catalog.Save();
+		return 0;
+	}
+	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
+	catch (std::exception const& e) { set_err(e.what()); }
+	return -1;
+}
+
+int velnosub_abi_catalog_import(int h, const char *path) {
+	if (!path || !*path) { set_err("stil deposu yolu yok"); return -1; }
+	try {
+		auto &file = g_ctx.at(h)->file;
+		AssStyleStorage catalog;
+		catalog.Load(agi::fs::path(path));
+		if (catalog.size() == 0)
+			throw std::runtime_error("depoda okunabilir stil bulunamadı");
+		catalog.ReplaceIntoFile(file);
+		file.Commit("import styles", AssFile::COMMIT_STYLES);
 		return 0;
 	}
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
