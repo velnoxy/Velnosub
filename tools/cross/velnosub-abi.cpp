@@ -292,14 +292,15 @@ int velnosub_abi_init(const char *config_json_path) {
 	return -1;
 }
 
-int velnosub_abi_open(const char *in_path) {
+int velnosub_abi_open_encoding(const char *in_path, const char *encoding) {
 	if (!g_ready) { set_err("init çağrılmadı"); return -1; }
+	if (!in_path || !encoding || !*encoding) { set_err("dosya veya kodlama belirtilmedi"); return -1; }
 	try {
 		auto ctx = std::make_unique<Ctx>();
 		agi::fs::path const in(in_path);
-		ctx->reader = SubtitleFormat::GetReader(in, "utf-8");
+		ctx->reader = SubtitleFormat::GetReader(in, encoding);
 		if (!ctx->reader) { set_err("okuyucu bulunamadı: " + std::string(in_path)); return -1; }
-		ctx->reader->ReadFile(&ctx->file, in, agi::vfr::Framerate(), "utf-8");
+		ctx->reader->ReadFile(&ctx->file, in, agi::vfr::Framerate(), encoding);
 		int h = ++g_next;
 		g_ctx.emplace(h, std::move(ctx));
 		return h;
@@ -307,6 +308,10 @@ int velnosub_abi_open(const char *in_path) {
 	catch (agi::Exception const& e) { set_err(e.GetMessage()); }
 	catch (std::exception const& e) { set_err(e.what()); }
 	return -1;
+}
+
+int velnosub_abi_open(const char *in_path) {
+	return velnosub_abi_open_encoding(in_path, "utf-8");
 }
 
 int velnosub_abi_new_document() {
@@ -3132,6 +3137,30 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_velnoxy_velnosubui_DocumentActivity_requestClose(JNIEnv *, jclass) {
 	close_requested.store(true);
 	wake_document_ui();
+}
+
+namespace {
+std::mutex appearance_mutex;
+std::uint32_t appearance[5] = {};
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_velnoxy_velnosubui_DocumentActivity_appearanceChanged(
+	JNIEnv *, jclass, jint dark, jint light_accent, jint dark_accent, jint light_surface, jint dark_surface) {
+	{
+		std::lock_guard<std::mutex> lock(appearance_mutex);
+		appearance[0] = dark ? 2 : 1;
+		appearance[1] = static_cast<std::uint32_t>(light_accent);
+		appearance[2] = static_cast<std::uint32_t>(dark_accent);
+		appearance[3] = static_cast<std::uint32_t>(light_surface);
+		appearance[4] = static_cast<std::uint32_t>(dark_surface);
+	}
+	wake_document_ui();
+}
+
+extern "C" void velnosub_abi_appearance(std::uint32_t *out) {
+	std::lock_guard<std::mutex> lock(appearance_mutex);
+	std::copy_n(appearance, 5, out);
 }
 
 extern "C" int velnosub_abi_document_take_close() {

@@ -56,7 +56,7 @@ mod ikon {
 extern "C" {
 	fn velnosub_abi_init(config_json_path: *const c_char) -> c_int;
 	fn velnosub_abi_new_document() -> c_int;
-	fn velnosub_ui_open_document(in_path: *const c_char) -> c_int;
+	fn velnosub_ui_open_document(in_path: *const c_char, encoding: *const c_char) -> c_int;
 	fn velnosub_abi_event_count(h: c_int) -> c_int;
 	fn velnosub_abi_style_count(h: c_int) -> c_int;
 	fn velnosub_abi_line_text(
@@ -1472,6 +1472,7 @@ extern "C" {
 	fn velnosub_abi_document_poll(path: *mut c_char, len: usize) -> c_int;
 	fn velnosub_abi_document_take_close() -> c_int;
 	fn velnosub_abi_document_set_wake(wake: Option<extern "C" fn()>);
+	fn velnosub_abi_appearance(out: *mut u32);
 }
 
 struct PendingVideo {
@@ -1593,6 +1594,14 @@ struct KanjiDialog {
 }
 
 pub struct GridApp {
+	subtitle_encoding: &'static str,
+	preferred_theme: Option<Tema>,
+	system_colors: bool,
+	high_contrast: bool,
+	appearance_key: Option<(Tema, u32, u32, bool)>,
+	hotkeys: crate::hotkeys::Hotkeys,
+	hotkeys_window: bool,
+	hotkey_capture: Option<crate::hotkeys::Action>,
 	multi_select: bool,
 	marked_rows: std::collections::BTreeSet<usize>,
 	translation: Option<Translation>,
@@ -1702,6 +1711,10 @@ fn ayar_yolu() -> String {
 	std::env::var("VELNOSUB_UI_JSON").unwrap_or_else(|_| "velnosub-ui.json".into())
 }
 
+fn hotkeys_path() -> std::path::PathBuf {
+	std::path::PathBuf::from(ayar_yolu()).with_extension("keys")
+}
+
 /// Arayüz teması: koyu varsayılan; açık tema Ayarlar'dan seçilir
 /// (denetim bulgu 7).
 #[derive(PartialEq, Clone, Copy)]
@@ -1715,6 +1728,8 @@ pub enum Tema {
 pub struct Ayar {
 	pub duzen: Option<String>,
 	pub tema: Option<String>,
+	system_colors: bool,
+	high_contrast: bool,
 }
 
 /// `{ "anahtar": "deger" }` biçimi için sade tarayıcı: anahtarı bulup
@@ -1737,6 +1752,8 @@ pub fn ayar_yukle() -> Ayar {
 	let bos = Ayar {
 		duzen: None,
 		tema: None,
+		system_colors: false,
+		high_contrast: false,
 	};
 	let icerik = match std::fs::read_to_string(ayar_yolu()) {
 		Ok(k) => k,
@@ -1745,13 +1762,23 @@ pub fn ayar_yukle() -> Ayar {
 	Ayar {
 		duzen: deger_bul(&icerik, "ui"),
 		tema: deger_bul(&icerik, "tema"),
+		system_colors: deger_bul(&icerik, "sistem_renkleri").as_deref() == Some("açık"),
+		high_contrast: deger_bul(&icerik, "yüksek_kontrast").as_deref() == Some("açık"),
 	}
 }
 
-pub fn ayar_yaz(duzen: &str, tema: &str) -> std::io::Result<()> {
+#[cfg(test)]
+fn ayar_yaz(duzen: &str, tema: &str) -> std::io::Result<()> {
+	let settings = ayar_yukle();
+	write_appearance(duzen, tema, settings.system_colors, settings.high_contrast)
+}
+
+fn write_appearance(duzen: &str, tema: &str, system_colors: bool, high_contrast: bool) -> std::io::Result<()> {
+	let enabled = |value| if value { "açık" } else { "kapalı" };
 	std::fs::write(
 		ayar_yolu(),
-		format!("{{ \"ui\": \"{duzen}\", \"tema\": \"{tema}\" }}"),
+		format!("{{ \"ui\": \"{duzen}\", \"tema\": \"{tema}\", \"sistem_renkleri\": \"{}\", \"yüksek_kontrast\": \"{}\" }}",
+			enabled(system_colors), enabled(high_contrast)),
 	)
 }
 
@@ -1789,13 +1816,44 @@ pub fn stil_tamir(style: &mut egui::Style, tema: Tema) {
 	style.visuals.weak_text_color = Some(zayif);
 }
 
-/// Anlık üçüncü kolu oku: bu çerçevedeki etkin tema (Ui stilinden).
-fn tema_simdi(ui: &egui::Ui) -> Tema {
-	if ui.style().visuals.dark_mode {
-		Tema::Koyu
+fn apply_material_colors(style: &mut egui::Style, (theme, accent, surface, high_contrast): (Tema, u32, u32, bool)) {
+	use egui::Color32;
+	let rgb = |color: u32| Color32::from_rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
+	let accent = rgb(accent);
+	let surface = rgb(surface);
+	let dark = theme == Tema::Koyu;
+	style.visuals = if dark { egui::Visuals::dark() } else { egui::Visuals::light() };
+	stil_tamir(style, theme);
+	let visuals = &mut style.visuals;
+	let foreground = if kontrast(Color32::BLACK, accent) >= kontrast(Color32::WHITE, accent) {
+		Color32::BLACK
 	} else {
-		Tema::Acik
+		Color32::WHITE
+	};
+	visuals.panel_fill = surface;
+	visuals.window_fill = surface;
+	visuals.selection.bg_fill = accent;
+	visuals.selection.stroke.color = foreground;
+	visuals.widgets.active.bg_fill = accent;
+	visuals.widgets.active.weak_bg_fill = accent;
+	visuals.widgets.active.fg_stroke.color = foreground;
+	if high_contrast {
+		let contrast = if dark { Color32::WHITE } else { Color32::BLACK };
+		visuals.weak_text_color = Some(contrast);
+		visuals.widgets.noninteractive.fg_stroke.color = contrast;
+		visuals.widgets.inactive.fg_stroke.color = contrast;
 	}
+}
+
+fn system_appearance() -> [u32; 5] {
+	#[cfg(target_os = "android")]
+	{
+		let mut colors = [0; 5];
+		unsafe { velnosub_abi_appearance(colors.as_mut_ptr()) };
+		colors
+	}
+	#[cfg(not(target_os = "android"))]
+	{ [0; 5] }
 }
 
 impl GridApp {
@@ -1809,8 +1867,21 @@ impl GridApp {
 				.unwrap_or(-1);
 			let _ = INIT_OK.set(ok_rc == 0);
 		}
+		let settings = ayar_yukle();
 		let mut app = Self {
 			multi_select: false,
+			subtitle_encoding: "UTF-8",
+			preferred_theme: match settings.tema.as_deref() {
+				Some("sistem") => None,
+				Some("acik") => Some(Tema::Acik),
+				_ => Some(Tema::Koyu),
+			},
+			system_colors: settings.system_colors,
+			high_contrast: settings.high_contrast,
+			appearance_key: None,
+			hotkeys: crate::hotkeys::Hotkeys::load(&hotkeys_path()),
+			hotkeys_window: false,
+			hotkey_capture: None,
 			marked_rows: Default::default(),
 			translation: None,
 			spelling_open: false,
@@ -3906,8 +3977,9 @@ impl GridApp {
 			return Err("Altyazı yolu bir dosya değil".into());
 		}
 		let in_c = CString::new(path.to_string()).map_err(|e| e.to_string())?;
+		let encoding = CString::new(self.subtitle_encoding).unwrap();
 		let h = document_io_result(
-			unsafe { velnosub_ui_open_document(in_c.as_ptr()) },
+			unsafe { velnosub_ui_open_document(in_c.as_ptr(), encoding.as_ptr()) },
 			"Altyazı dosyası okunamadı",
 		)?;
 		let ev = unsafe { velnosub_abi_event_count(h) };
@@ -7607,7 +7679,7 @@ impl GridApp {
 			)
 			.min_size(egui::vec2(gen, 96.0)),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Mobil);
+			self.duzen_sec(Duzen::Mobil);
 		}
 		ui.label(
 			RichText::new("Alt sekme çubuğu ve geniş dokunma alanları; küçük ekranda tek elle kullanım için.").weak(),
@@ -7619,7 +7691,7 @@ impl GridApp {
 			)
 			.min_size(egui::vec2(gen, 96.0)),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Masaustu);
+			self.duzen_sec(Duzen::Masaustu);
 		}
 		ui.label(
 			RichText::new("Şeritler üst üste; satır başına iki sütunlu mevcut düzen.").weak(),
@@ -7636,26 +7708,48 @@ impl GridApp {
 		);
 	}
 
-	fn duzen_sec(&mut self, tema: Tema, duzen: Duzen) {
-		let kayit = match duzen {
+	fn duzen_sec(&mut self, duzen: Duzen) {
+		if duzen == Duzen::Secim { return; }
+		self.duzen = duzen;
+		self.save_appearance();
+		self.aktif = Sekme::Altyazi;
+	}
+
+	fn save_appearance(&mut self) {
+		let kayit = match self.duzen {
 			Duzen::Otomatik => "otomatik",
 			Duzen::Mobil => "mobil",
 			Duzen::Masaustu => "masaustu",
-			Duzen::Secim => return,
+			Duzen::Secim => "mobil",
 		};
-		let tema_kel = match tema {
-			Tema::Koyu => "koyu",
-			Tema::Acik => "acik",
+		let tema_kel = match self.preferred_theme {
+			Some(Tema::Koyu) => "koyu",
+			Some(Tema::Acik) => "acik",
+			None => "sistem",
 		};
-		match ayar_yaz(kayit, tema_kel) {
+		match write_appearance(kayit, tema_kel, self.system_colors, self.high_contrast) {
 			Ok(()) => self.note = String::new(),
 			Err(e) => {
 				self.note =
 					format!("ayar yazılamadı ({}): {e}", ayar_yolu());
 			}
 		}
-		self.duzen = duzen;
-		self.aktif = Sekme::Altyazi;
+	}
+
+	fn refresh_appearance(&mut self, ctx: &egui::Context) {
+		let system = system_appearance();
+		let system_light = system[0] == 1 || (system[0] == 0 && ctx.system_theme() == Some(egui::Theme::Light));
+		let theme = self.preferred_theme.unwrap_or(if system_light { Tema::Acik } else { Tema::Koyu });
+		let dark = theme == Tema::Koyu;
+		let (mut accent, mut surface) = if dark { (0xcab4ff, 0x201c29) } else { (0x6744a5, 0xfaf6ff) };
+		if self.system_colors && system[1] != 0 {
+			accent = system[if dark { 2 } else { 1 }];
+			surface = system[if dark { 4 } else { 3 }];
+		}
+		let key = (theme, accent, surface, self.high_contrast);
+		if self.appearance_key == Some(key) { return; }
+		self.appearance_key = Some(key);
+		ctx.all_styles_mut(|style| apply_material_colors(style, key));
 	}
 
 	/// Ayarlar bölümü: düzen seçimi canlı etkilidir ve hep dosyaya yazılır;
@@ -7682,7 +7776,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Otomatik),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Otomatik);
+			self.duzen_sec(Duzen::Otomatik);
 			return;
 		}
 		if ui.add(
@@ -7690,7 +7784,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Mobil),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Mobil);
+			self.duzen_sec(Duzen::Mobil);
 			return;
 		}
 		if ui.add(
@@ -7698,7 +7792,7 @@ impl GridApp {
 				.min_size(egui::vec2(gen, 44.0))
 				.selected(self.duzen == Duzen::Masaustu),
 		).clicked() {
-			self.duzen_sec(tema_simdi(ui), Duzen::Masaustu);
+			self.duzen_sec(Duzen::Masaustu);
 			return;
 		}
 		ui.label(
@@ -7716,29 +7810,26 @@ impl GridApp {
 		ui.add_space(12.0);
 		ui.label(RichText::new("Tema").strong());
 		ui.add_space(4.0);
-		let koyu_simdi = tema_simdi(ui) == Tema::Koyu;
-		if ui.add(
-			egui::Button::new(RichText::new("Koyu tema").size(18.0))
-				.min_size(egui::vec2(gen, 44.0))
-				.selected(koyu_simdi),
-		).clicked() {
-			self.tema_sec(ui, Tema::Koyu);
+		let mut changed = false;
+		ui.horizontal_wrapped(|ui| {
+			for (mode, label) in [(None, "Sistemi izle"), (Some(Tema::Acik), "Açık"), (Some(Tema::Koyu), "Koyu")] {
+				changed |= ui.selectable_value(&mut self.preferred_theme, mode, label).changed();
+			}
+		});
+		if cfg!(target_os = "android") {
+			changed |= ui.add_enabled(system_appearance()[1] != 0,
+				egui::Checkbox::new(&mut self.system_colors, "Duvar kâğıdı renklerini kullan")).changed();
 		}
-		if ui.add(
-			egui::Button::new(RichText::new("Açık tema").size(18.0))
-				.min_size(egui::vec2(gen, 44.0))
-				.selected(!koyu_simdi),
-		).clicked() {
-			self.tema_sec(ui, Tema::Acik);
+		changed |= ui.checkbox(&mut self.high_contrast, "Kontrastı artır").changed();
+		if changed {
+			self.save_appearance();
+			self.refresh_appearance(ui.ctx());
+			ui.ctx().request_repaint();
 		}
-		ui.label(
-			RichText::new(if koyu_simdi {
-				"seçili: koyu tema"
-			} else {
-				"seçili: açık tema"
-			})
-			.weak(),
-		);
+		if ui.add(egui::Button::new("Klavye kısayolları…")
+			.min_size(egui::vec2(gen, 44.0))).clicked() {
+			self.hotkeys_window = true;
+		}
 		ui.add_space(12.0);
 		if ui.add(
 			egui::Button::new("İlk seçim ekranını tekrar göster")
@@ -7755,31 +7846,56 @@ impl GridApp {
 		}
 	}
 
-	fn tema_sec(&mut self, ui: &egui::Ui, tema: Tema) {
-		let kayit = match tema {
-			Tema::Koyu => "koyu",
-			Tema::Acik => "acik",
-		};
-		ui.ctx().all_styles_mut(|st| {
-			st.visuals = match tema {
-				Tema::Koyu => egui::Visuals::dark(),
-				Tema::Acik => egui::Visuals::light(),
-			};
-			stil_tamir(st, tema);
-		});
-		let duzen_kel = match self.duzen {
-			Duzen::Otomatik => "otomatik",
-			Duzen::Mobil => "mobil",
-			Duzen::Masaustu => "masaustu",
-			Duzen::Secim => "mobil",
-		};
-		match ayar_yaz(duzen_kel, kayit) {
-			Ok(()) => self.note = String::new(),
-			Err(e) => {
-				self.note =
-					format!("ayar yazılamadı ({}): {e}", ayar_yolu());
+	fn hotkey_dialog(&mut self, ctx: &egui::Context) {
+		if !self.hotkeys_window { return; }
+		let mut open = true;
+		if let Some(action) = self.hotkey_capture {
+			let pressed = ctx.input_mut(|input| {
+				let index = input.events.iter().position(|event| matches!(event,
+					egui::Event::Key { pressed: true, repeat: false, .. }))?;
+				Some(input.events.remove(index))
+			});
+			if let Some(egui::Event::Key { key, modifiers, .. }) = pressed {
+				use egui::Key::*;
+				match key {
+					Escape => self.hotkey_capture = None,
+					ShiftLeft | ShiftRight | ControlLeft | ControlRight | AltLeft | AltRight |
+						SuperLeft | SuperRight => {}
+					_ => {
+						let modifiers = crate::hotkeys::normal_modifiers(modifiers);
+						let shortcut = egui::KeyboardShortcut::new(modifiers, key);
+						match self.hotkeys.set(action, shortcut) {
+							Ok(()) => {
+								self.hotkey_capture = None;
+								self.note = self.hotkeys.save(&hotkeys_path()).err().map_or_else(
+									|| "Kısayol kaydedildi".into(), |error| format!("Kısayol kaydedilemedi: {error}"));
+							}
+							Err(conflict) => self.note = format!("Bu kısayol {conflict} komutuna atanmış"),
+						}
+					}
+				}
 			}
 		}
+		egui::Window::new("Klavye kısayolları").open(&mut open).vscroll(true).show(ctx, |ui| {
+			for &(action, _, label, _) in crate::hotkeys::ACTIONS {
+				let keys = self.hotkeys.shortcuts(action).iter()
+					.map(|key| ctx.format_shortcut(key)).collect::<Vec<_>>().join(" / ");
+				ui.horizontal_wrapped(|ui| {
+					ui.label(label);
+					let button = if self.hotkey_capture == Some(action) { "Tuşlara bas…" } else { &keys };
+					if ui.button(button).clicked() { self.hotkey_capture = Some(action); }
+				});
+			}
+			if ui.button("Varsayılana dön").clicked() {
+				self.hotkey_capture = None;
+				self.hotkeys.reset();
+				self.note = self.hotkeys.save(&hotkeys_path()).err().map_or_else(
+					|| "Varsayılan kısayollar geri yüklendi".into(), |error| format!("Kısayol kaydedilemedi: {error}"));
+			}
+			ui.label(&self.note);
+		});
+		self.hotkeys_window = open;
+		if !open { self.hotkey_capture = None; }
 	}
 
 	/// Mobil çerçeve: alt sekme çubuğu + tek bölme içerik. Sekmeler yalnız
@@ -8022,9 +8138,16 @@ impl GridApp {
 	/// P4.8.2: aegisub menü çubuğu — mevcut işlevlere bağlı öğeler gerçek,
 	/// ABI hat-alanları (v13) bekleyenler pasif gösterilir
 	fn menu_cubugu(&mut self, ui: &mut egui::Ui) {
-		let tema = tema_simdi(ui);
 		egui::MenuBar::new().ui(ui, |mb| {
 			mb.menu_button("File", |m| {
+				m.menu_button(format!("Altyazı açma kodlaması: {}", self.subtitle_encoding), |menu| {
+					for encoding in ["UTF-8", "UTF-16LE", "UTF-16BE", "Windows-1252", "Windows-1254",
+						"Windows-1251", "ISO-8859-9", "Shift_JIS", "GB18030", "Big5", "EUC-KR", "KOI8-R"] {
+						if menu.selectable_value(&mut self.subtitle_encoding, encoding, encoding).clicked() {
+							menu.close();
+						}
+					}
+				});
 				if m.button("Yeni altyazı").clicked() {
 					self.request_new_document();
 					m.close();
@@ -8249,10 +8372,10 @@ impl GridApp {
 			});
 			mb.menu_button("View", |m| {
 				if m.button(format!("{} Mobil görünüm", ikon::TEXT)).clicked() {
-					self.duzen_sec(tema, Duzen::Mobil);
+					self.duzen_sec(Duzen::Mobil);
 				}
 				if m.button(format!("{} Masaüstü görünüm", ikon::FULL)).clicked() {
-					self.duzen_sec(tema, Duzen::Masaustu);
+					self.duzen_sec(Duzen::Masaustu);
 				}
 				m.horizontal(|m| {
 					if m.button("−").clicked() { self.zoom = (self.zoom - 0.1).max(0.6); }
@@ -8662,6 +8785,7 @@ impl Drop for GridApp {
 
 impl eframe::App for GridApp {
 	fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+		self.refresh_appearance(ui.ctx());
 		#[cfg(target_os = "android")]
 		if self.handle.is_some() && !self.android_ready {
 			self.android_ready = true;
@@ -8713,11 +8837,13 @@ impl eframe::App for GridApp {
 			ui.ctx().request_repaint();
 			return;
 		}
-		if self.macro_form.is_none() && self.translation.is_none() &&
-			ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
+		use crate::hotkeys::Action;
+		if self.macro_form.is_none() && self.translation.is_none() && !self.hotkeys_window
+			&& self.hotkeys.consume(ui, Action::Palette) {
 			self.command_query = Some(String::new());
 		}
 		self.komut_paleti(ui.ctx());
+		self.hotkey_dialog(ui.ctx());
 		// Android uses the classic editor by default at every orientation.
 		// On desktop, the automatic setting adapts to the available space.
 		let etkin = match self.duzen {
@@ -8749,36 +8875,30 @@ impl eframe::App for GridApp {
 			}
 		}
 		if self.bekleyen_belge.is_none() && self.command_query.is_none()
-			&& self.translation.is_none() && self.macro_form.is_none() {
-			const COMMAND: egui::Modifiers = egui::Modifiers::COMMAND;
-			const SHIFT_COMMAND: egui::Modifiers = egui::Modifiers {
-				shift: true,
-				..COMMAND
-			};
-			let key = |modifiers, key| ui.input_mut(|input| input.consume_key(modifiers, key));
-			if key(SHIFT_COMMAND, egui::Key::S) {
+			&& self.translation.is_none() && self.macro_form.is_none() && !self.hotkeys_window {
+			if self.hotkeys.consume(ui, Action::SaveAs) {
 				self.kayit_yeri_sec();
-			} else if key(COMMAND, egui::Key::S) || key(egui::Modifiers::NONE, egui::Key::F2) {
+			} else if self.hotkeys.consume(ui, Action::Save) {
 				self.kaydet();
-			} else if key(COMMAND, egui::Key::O) {
+			} else if self.hotkeys.consume(ui, Action::Open) {
 				self.tarayici_ac(SecimTur::Altyazi);
-			} else if key(COMMAND, egui::Key::N) {
+			} else if self.hotkeys.consume(ui, Action::New) {
 				self.request_new_document();
-			} else if key(COMMAND, egui::Key::H) {
+			} else if self.hotkeys.consume(ui, Action::Find) {
 				self.ara_win = true;
-			} else if key(COMMAND, egui::Key::I) {
+			} else if self.hotkeys.consume(ui, Action::ShiftTimes) {
 				self.shift_win = true;
 			} else if ui.ctx().memory(|memory| memory.focused().is_none()) {
-				if key(SHIFT_COMMAND, egui::Key::Z) || key(COMMAND, egui::Key::Y) {
+				if self.hotkeys.consume(ui, Action::Redo) {
 					self.ileri_al();
-				} else if key(COMMAND, egui::Key::Z) {
+				} else if self.hotkeys.consume(ui, Action::Undo) {
 					self.geri_al();
-				} else if key(COMMAND, egui::Key::A) {
+				} else if self.hotkeys.consume(ui, Action::SelectAll) {
 					self.multi_select = true;
 					self.marked_rows = (0..self.rows.len()).collect();
-				} else if key(COMMAND, egui::Key::D) {
+				} else if self.hotkeys.consume(ui, Action::Duplicate) {
 					self.satir_ekle_tetik(true);
-				} else if key(egui::Modifiers::NONE, egui::Key::Delete) {
+				} else if self.hotkeys.consume(ui, Action::Delete) {
 					self.satir_sil_tetik();
 				}
 			}
@@ -8816,6 +8936,21 @@ impl eframe::App for GridApp {
 #[cfg(test)]
 mod tests {
 	use super::*;
+
+	#[test]
+	fn material_accent_uses_a_readable_selection_foreground() {
+		for (mode, accent, surface) in [
+			(Tema::Koyu, 0xcab4ff, 0x201c29),
+			(Tema::Acik, 0x6744a5, 0xfaf6ff),
+			(Tema::Koyu, 0x407273, 0x151e1d),
+		] {
+			let mut style = egui::Style::default();
+			apply_material_colors(&mut style, (mode, accent, surface, true));
+			let selection = style.visuals.selection;
+			assert!(kontrast(selection.stroke.color, selection.bg_fill) >= 4.5);
+			assert!(kontrast(style.visuals.weak_text_color.unwrap(), style.visuals.panel_fill) >= 7.0);
+		}
+	}
 
 	#[test]
 	fn belge_gecmisi_ve_basarisiz_acma() {

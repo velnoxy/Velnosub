@@ -27,6 +27,29 @@ public final class DocumentActivity extends NativeActivity {
 
     private static native void documentResult(int status, byte[] path);
     private static native void requestClose();
+    private static native void appearanceChanged(int dark, int lightAccent, int darkAccent, int lightSurface, int darkSurface);
+
+    private void publishAppearance() {
+        int night = getResources().getConfiguration().uiMode & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+        int dark = night == android.content.res.Configuration.UI_MODE_NIGHT_YES ? 1 : 0;
+        if (Build.VERSION.SDK_INT >= 31) {
+            appearanceChanged(dark, getColor(android.R.color.system_accent1_700),
+                    getColor(android.R.color.system_accent1_200), getColor(android.R.color.system_neutral1_50),
+                    getColor(android.R.color.system_neutral1_900));
+        } else {
+            appearanceChanged(dark, 0, 0, 0, 0);
+        }
+    }
+
+    @Override protected void onResume() {
+        super.onResume();
+        publishAppearance();
+    }
+
+    @Override public void onConfigurationChanged(android.content.res.Configuration newConfig) {
+        super.onConfigurationChanged(newConfig);
+        publishAppearance();
+    }
 
     private static void report(int status, String path) {
         documentResult(status, path.getBytes(StandardCharsets.UTF_8));

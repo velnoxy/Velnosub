@@ -343,6 +343,23 @@ def test_style_catalog(abi, workdir):
         abi.velnosub_abi_close(source)
 
 
+def test_legacy_encoding(abi, workdir):
+    source = workdir / "turkish.srt"
+    original = "Şiir, Iğdır'da yazıldı."
+    source.write_bytes(f"1\n00:00:01,000 --> 00:00:02,000\n{original}\n\n".encode("cp1254"))
+    document = abi.velnosub_abi_open_encoding(bytes(source), b"Windows-1254")
+    assert document >= 0, abi.velnosub_abi_last_error()
+    try:
+        text = ctypes.create_string_buffer(256)
+        assert abi.velnosub_abi_line_text(document, 0, text, len(text)) > 0
+        assert text.value.decode() == original
+        output = workdir / "converted.srt"
+        assert abi.velnosub_abi_save(document, bytes(output)) == 0
+        assert original in output.read_text(encoding="utf-8-sig")
+    finally:
+        abi.velnosub_abi_close(document)
+
+
 def main():
     os.environ["VELNOSUB_AEGIINC"] = str(INCLUDES)
     os.environ["VELNOSUB_DATA_DIR"] = str(INCLUDES)
@@ -359,6 +376,7 @@ def main():
         test_resolution_resample(abi, workdir)
         test_karaoke_timing(abi, workdir)
         test_style_catalog(abi, workdir)
+        test_legacy_encoding(abi, workdir)
     print("Mobile ABI regressions passed")
 
 
