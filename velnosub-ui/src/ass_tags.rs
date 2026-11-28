@@ -225,45 +225,72 @@ pub fn sayi_al(deger: &str) -> Option<f64> {
 	None
 }
 
-/// `\clip`/`\iclip` değerini vektör noktalarına çöz. Dikdörtgen clip veya
-/// yol komutu olmayan değer `None` döner.
-pub fn vektor_noktalari(metin: &str, ad: &str) -> Option<Vec<(f64, f64)>> {
-	let ham = etiket_al(metin, ad)?;
-	let s = ham.trim();
-	let s = s.strip_prefix('(').and_then(|x| x.strip_suffix(')')).unwrap_or(s);
-	let mut komut: Option<char> = None;
-	let mut sayilar: Vec<f64> = Vec::new();
-	let mut noktalar: Vec<(f64, f64)> = Vec::new();
-	for tok in s.split(|c: char| c == ',' || c.is_whitespace()) {
-		if tok.is_empty() {
-			continue;
-		}
-		let mut kc = tok.chars();
-		if let (Some(c), None) = (kc.next(), kc.next()) {
-			if c.is_ascii_alphabetic() {
-				komut = Some(c.to_ascii_lowercase());
-				sayilar.clear();
-				continue;
-			}
-		}
-		let Ok(v) = tok.parse::<f64>() else { continue };
-		let Some(c) = komut else { continue };
-		let cift = match c {
-			'm' | 'l' => 1,
-			'b' | 's' => 3,
-			_ => 1,
-		};
-		sayilar.push(v);
-		if sayilar.len() == cift * 2 {
-			let x = sayilar[sayilar.len() - 2];
-			let y = sayilar[sayilar.len() - 1];
-			if matches!(c, 'm' | 'l' | 'b' | 's') {
-				noktalar.push((x, y));
-			}
-			sayilar.clear();
+struct ClipPath {
+	scale: Option<u8>,
+	segments: Vec<(char, Vec<(f64, f64)>)>,
+}
+
+impl ClipPath {
+	fn complex(&self) -> bool {
+		self.scale.unwrap_or(1) != 1
+			|| self.segments.iter().skip(1).any(|(command, _)| *command != 'l')
+			|| self.segments.first().is_some_and(|(command, _)| *command != 'm')
+	}
+
+	fn factor(&self) -> f64 {
+		f64::from(1u32 << (self.scale.unwrap_or(1) - 1))
+	}
+}
+
+fn clip_path(metin: &str, ad: &str) -> Option<ClipPath> {
+	let raw = etiket_al(metin, ad)?;
+	let drawing = raw.trim().strip_prefix('(')?.strip_suffix(')')?.trim();
+	let (scale, drawing) = if let Some((head, tail)) = drawing.split_once(',') {
+		let scale: u8 = head.trim().parse().ok()?;
+		if !(1..=30).contains(&scale) { return None; }
+		(Some(scale), tail.trim())
+	} else { (None, drawing) };
+	let mut commands: Vec<(char, Vec<f64>)> = Vec::new();
+	for token in drawing.split_whitespace() {
+		if let Some(command) = token.chars().next().filter(|_| token.len() == 1)
+			.filter(|command| matches!(command, 'm' | 'n' | 'l' | 'b' | 's' | 'p' | 'c')) {
+			commands.push((command, Vec::new()));
+		} else {
+			let number: f64 = token.parse().ok()?;
+			if !number.is_finite() { return None; }
+			commands.last_mut()?.1.push(number);
 		}
 	}
-	if noktalar.is_empty() { None } else { Some(noktalar) }
+	if !matches!(commands.first()?.0, 'm' | 'n') { return None; }
+	let segments = commands.into_iter().map(|(command, coordinates)| {
+		let length = coordinates.len();
+		let valid = match command {
+			'm' | 'n' => length == 2,
+			'l' | 'p' => length >= 2 && length % 2 == 0,
+			'b' => length >= 6 && length % 6 == 0,
+			's' => length >= 6 && length % 2 == 0,
+			'c' => length == 0,
+			_ => false,
+		};
+		valid.then(|| (command, coordinates.chunks_exact(2).map(|xy| (xy[0], xy[1])).collect()))
+	}).collect::<Option<_>>()?;
+	Some(ClipPath { scale, segments })
+}
+
+pub fn vektor_noktalari(metin: &str, ad: &str) -> Option<Vec<(f64, f64)>> {
+	let path = clip_path(metin, ad)?;
+	let factor = path.factor();
+	Some(path.segments.into_iter().flat_map(|(_, points)| points)
+		.map(|(x, y)| (x / factor, y / factor)).collect())
+}
+
+pub(crate) fn complex_clip(metin: &str, ad: &str) -> bool {
+	clip_path(metin, ad).is_some_and(|path| path.complex())
+}
+
+pub(crate) fn clip_segments(metin: &str, ad: &str) -> Option<Vec<(char, usize)>> {
+	let path = clip_path(metin, ad).filter(ClipPath::complex)?;
+	Some(path.segments.into_iter().map(|(command, points)| (command, points.len())).collect())
 }
 
 fn sayi_yaz(v: f64) -> String {
@@ -292,6 +319,27 @@ pub fn vektor_yaz(
 	if noktalar.is_empty() {
 		return etiket_sil(metin, ad);
 	}
+	if let Some(path) = clip_path(metin, ad).filter(ClipPath::complex) {
+		if path.segments.iter().map(|(_, points)| points.len()).sum::<usize>() != noktalar.len() {
+			return metin.to_owned();
+		}
+		let mut value = match path.scale {
+			Some(scale) => format!("({scale},"),
+			None => "(".to_owned(),
+		};
+		let factor = path.factor();
+		let mut points = noktalar.iter();
+		for (index, (command, old_points)) in path.segments.into_iter().enumerate() {
+			if index > 0 { value.push(' '); }
+			value.push(command);
+			for _ in old_points {
+				let &(x, y) = points.next().unwrap();
+				value.push_str(&format!(" {} {}", sayi_yaz(x * factor), sayi_yaz(y * factor)));
+			}
+		}
+		value.push(')');
+		return etiket_yaz(metin, ad, &value);
+	}
 	let ilk = noktalar[0];
 	let mut deger = format!("(m {} {}", sayi_yaz(ilk.0), sayi_yaz(ilk.1));
 	for (x, y) in noktalar.iter().skip(1) {
@@ -307,6 +355,18 @@ pub fn vektor_yaz(
 #[cfg(test)]
 mod testler {
 	use super::*;
+
+	#[test]
+	fn scaled_bezier_edit_preserves_control_points_and_path_commands() {
+		let source = r"{\clip(3,m 0 0 b 24 32 40 48 64 64 l 0 0)}x";
+		assert!(complex_clip(source, "clip"));
+		let mut points = vektor_noktalari(source, "clip").unwrap();
+		assert_eq!(points[1], (6.0, 8.0));
+		points[1] = (7.0, 8.0);
+		let edited = vektor_yaz(source, "clip", &points, true);
+		assert_eq!(edited, r"{\clip(3,m 0 0 b 28 32 40 48 64 64 l 0 0)}x");
+		assert_eq!(vektor_yaz(source, "clip", &points[..4], true), source);
+	}
 
 	#[test]
 	fn pos_oku_yaz_sil() {

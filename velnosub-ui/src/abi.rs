@@ -841,7 +841,7 @@ fn clip_dik_oku(metin: &str) -> Result<Option<((f64, f64, f64, f64), bool)>, ()>
 	} else {
 		return Ok(None);
 	};
-	if ass_tags::vektor_noktalari(metin, ad).is_some() {
+	if ham.bytes().any(|ch| ch.is_ascii_alphabetic()) {
 		return Err(());
 	}
 	let s = sayilar_al(&ham);
@@ -872,6 +872,10 @@ fn clip_vektor_yaz(
 	noktalar: &[(f64, f64)],
 	iclip: bool,
 ) -> String {
+	let source_tag = if ass_tags::etiket_al(metin, "iclip").is_some() { "iclip" } else { "clip" };
+	if ass_tags::complex_clip(metin, source_tag) {
+		return ass_tags::vektor_yaz(metin, source_tag, noktalar, true);
+	}
 	let m = ass_tags::etiket_sil(metin, "clip");
 	let m = ass_tags::etiket_sil(&m, "iclip");
 	ass_tags::vektor_yaz(
@@ -888,7 +892,7 @@ fn clip_vektor_oku(metin: &str) -> Option<(Vec<(f64, f64)>, bool)> {
 		if let Some(mut p) = ass_tags::vektor_noktalari(metin, ad) {
 			// `vektor_yaz(kapali=true)` ilk noktaya dönen kapanışı ekler;
 			// düzenleme listesinde bu yinelenen noktayı göstermeyiz.
-			if p.len() > 1 && p.first() == p.last() {
+			if !ass_tags::complex_clip(metin, ad) && p.len() > 1 && p.first() == p.last() {
 				p.pop();
 			}
 			if !p.is_empty() {
@@ -4850,25 +4854,10 @@ impl GridApp {
 			self.note = "ters: vektör noktaları okunamadı".into();
 			return;
 		}
-		let yeni = if arac == Arac::Vektor {
-			let p = t.vektor.clone().unwrap_or_else(|| {
-				vec![
-					(0.0, 0.0),
-					(t.script_w as f64, 0.0),
-					(t.script_w as f64, t.script_h as f64),
-					(0.0, t.script_h as f64),
-				]
-			});
-			clip_vektor_yaz(&metin, &p, yeni_ic)
-		} else {
-			let r = t.clip.unwrap_or((
-				0.0,
-				0.0,
-				t.script_w as f64,
-				t.script_h as f64,
-			));
-			clip_dik_yaz(&metin, r, yeni_ic)
-		};
+		let previous = if yeni_ic { "clip" } else { "iclip" };
+		let Some(raw) = ass_tags::etiket_al(&metin, previous) else { return };
+		let yeni = ass_tags::etiket_yaz(&ass_tags::etiket_sil(&metin, previous),
+			if yeni_ic { "iclip" } else { "clip" }, &raw);
 		if self.typeset_uygula(idx, yeni) {
 			if let Some(t) = self.typeset.as_mut() {
 				t.iclip = yeni_ic;
@@ -5454,7 +5443,7 @@ impl GridApp {
 				}
 			}
 			// Vektör: kenara tıkla → nokta ekle; uzun bas/sağ tık → nokta sil.
-			if t.arac == Arac::Vektor {
+			if t.arac == Arac::Vektor && !ass_tags::complex_clip(&metin, if t.iclip { "iclip" } else { "clip" }) {
 				if let Some(p) = p {
 					if let Some(ekran) = t.vektor.as_ref().map(|pts| {
 						pts.iter()
@@ -5684,7 +5673,44 @@ impl GridApp {
 								egui::pos2(sx, sy)
 							})
 							.collect();
-						if ekran.len() >= 2 {
+						let tag = if t.iclip { "iclip" } else { "clip" };
+						if let Some(segments) = ass_tags::clip_segments(&metin, tag) {
+							let stroke = egui::Stroke::new(1.8, sari);
+							let controls = egui::Stroke::new(0.8, sari.gamma_multiply(0.6));
+							let mut offset = 0;
+							let mut previous = None;
+							let mut first = None;
+							for (command, count) in segments {
+								let Some(points) = ekran.get(offset..offset + count) else { break };
+								offset += count;
+								match command {
+									'm' | 'n' => {
+										previous = points.first().copied();
+										first = previous;
+									}
+									'b' => for curve in points.chunks_exact(3) {
+										if let Some(start) = previous {
+											ciz.add(egui::epaint::CubicBezierShape::from_points_stroke(
+												[start, curve[0], curve[1], curve[2]], false,
+												egui::Color32::TRANSPARENT, stroke,
+											));
+											ciz.line_segment([start, curve[0]], controls);
+											ciz.line_segment([curve[1], curve[2]], controls);
+										}
+										previous = Some(curve[2]);
+									},
+									'c' => if let (Some(start), Some(end)) = (previous, first) {
+										ciz.line_segment([start, end], controls);
+									},
+									_ => for &point in points {
+										if let Some(start) = previous {
+											ciz.line_segment([start, point], if command == 'l' { stroke } else { controls });
+										}
+										previous = Some(point);
+									},
+								}
+							}
+						} else if ekran.len() >= 2 {
 							for i in 0..ekran.len() {
 								ciz.line_segment(
 									[
