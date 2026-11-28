@@ -21,9 +21,9 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
-      SOURCE_SHA: 0db823107b5ada3a451a8e1d4c71a6e4c5c3f564
-      DESKTOP_RUN: '46129793258'
-      FEDORA_RUN: '46129789941'
+      SOURCE_SHA: 68f4988625566b3f7994131a715c1c9568490e31
+      DESKTOP_RUN: '46136291421'
+      FEDORA_RUN: '46136286912'
       TAG: v0.1.1-desktop-preview
     steps:
       - name: Verify source and wait for the package workflows
