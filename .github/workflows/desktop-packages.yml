@@ -79,7 +79,8 @@ jobs:
       - name: Build and test
         shell: pwsh
         run: |
-          meson setup build --buildtype=release -Ddefault_library=static -Db_vscrt=mt --force-fallback-for=zlib,harfbuzz,freetype2,fribidi,libpng -Dfreetype2:harfbuzz=disabled -Dharfbuzz:freetype=disabled -Dharfbuzz:cairo=disabled -Dharfbuzz:glib=disabled -Dharfbuzz:gobject=disabled -Dharfbuzz:tests=disabled -Dharfbuzz:docs=disabled -Dharfbuzz:icu=disabled -Dfribidi:tests=false -Dfribidi:docs=false -Dlibass:fontconfig=disabled -Dffmpeg:libdav1d=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
+          $PSNativeCommandUseErrorActionPreference = $true
+          meson setup build --buildtype=release -Ddefault_library=static -Db_vscrt=md --force-fallback-for=zlib,harfbuzz,freetype2,fribidi,libpng -Dfreetype2:harfbuzz=disabled -Dharfbuzz:freetype=disabled -Dharfbuzz:cairo=disabled -Dharfbuzz:glib=disabled -Dharfbuzz:gobject=disabled -Dharfbuzz:tests=disabled -Dharfbuzz:docs=disabled -Dharfbuzz:icu=disabled -Dfribidi:tests=false -Dfribidi:docs=false -Dlibass:fontconfig=disabled -Dffmpeg:libdav1d=enabled -Davisynth=disabled -Dbestsource=disabled -Dvapoursynth=disabled
           meson compile -C build
           meson test -C build --print-errorlogs
       - name: Build and smoke test the Windows packages

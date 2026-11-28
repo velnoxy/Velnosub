@@ -27,6 +27,11 @@ try {
     if (Test-Path $Locale) { Copy-Item -LiteralPath $Locale -Destination $Payload -Recurse }
     Get-ChildItem -LiteralPath $Editor[0].DirectoryName -File -Filter '*.dll' |
         Copy-Item -Destination $Payload
+    $RedistRoot = Join-Path $env:VCToolsRedistDir 'x64'
+    $Runtime = @(Get-ChildItem -LiteralPath $RedistRoot -Directory -Filter 'Microsoft.VC*.CRT')
+    if ($Runtime.Count -ne 1) { throw "Expected one MSVC x64 runtime directory under $RedistRoot" }
+    Get-ChildItem -LiteralPath $Runtime[0].FullName -File -Filter '*.dll' |
+        Copy-Item -Destination $Payload
     Copy-Item -LiteralPath (Join-Path $Source 'LICENCE') -Destination $Payload
     $Version = (meson introspect $Build --projectinfo | ConvertFrom-Json).version
 
